@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/schooner-engine",
+    "crates/game-void",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/MuirDun/schooner"
+
+[workspace.dependencies]
+wgpu = "24"
+winit = "0.30"
+glam = "0.29"
+bytemuck = { version = "1.19", features = ["derive"] }
+pollster = "0.4"
+log = "0.4"
+env_logger = "0.11"
+thiserror = "2"
+anyhow = "1"
+
+schooner-engine = { path = "crates/schooner-engine" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

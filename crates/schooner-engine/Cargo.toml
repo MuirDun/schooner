@@ -1,0 +1,16 @@
+[package]
+name = "schooner-engine"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wgpu.workspace = true
+winit.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+log.workspace = true
+thiserror.workspace = true
