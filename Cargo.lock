@@ -526,7 +526,6 @@ name = "game-void"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "env_logger",
  "log",
  "schooner-engine",
 ]
@@ -1553,6 +1552,7 @@ name = "schooner-engine"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "env_logger",
  "glam",
  "log",
  "pollster",
