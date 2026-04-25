@@ -3,11 +3,12 @@ resolver = "3"
 members = [
     "crates/schooner-engine",
     "crates/game-void",
+    "crates/bench-ecs",
 ]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/MuirDun/schooner"
 
@@ -21,6 +22,7 @@ log = "0.4"
 env_logger = "0.11"
 thiserror = "2"
 anyhow = "1"
+criterion = { version = "0.8", default-features = false, features = ["plotters", "cargo_bench_support"] }
 
 schooner-engine = { path = "crates/schooner-engine" }
 

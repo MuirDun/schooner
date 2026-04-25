@@ -16,6 +16,3 @@ Thumbs.db
 # Env / secrets
 .env
 .env.local
-
-# Plans
-plans

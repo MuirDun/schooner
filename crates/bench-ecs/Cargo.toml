@@ -1,0 +1,24 @@
+[package]
+name = "bench-ecs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+# The crate is a small library of bench utilities (the BenchEcs trait,
+# the schooner-sparse-set impl, scenario fixtures). Benchmarks under
+# `benches/` consume it.
+path = "src/lib.rs"
+
+[dependencies]
+schooner-engine.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "ecs_scenarios"
+harness = false
