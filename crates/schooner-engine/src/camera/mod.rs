@@ -7,8 +7,11 @@
 //! Two halves wired through the ECS, never to each other:
 //! - [`projection`] — `Camera`, `Projection`, `ActiveCamera`. Read by
 //!   the renderer to build view / projection matrices.
-//! - `controller` — `FpsController` + `fps_*` systems land in Phase G.
+//! - [`controller`] — `FpsController` component plus the `fps_*`
+//!   systems that read `Input` + `Time` and write `Transform`.
 
+pub mod controller;
 pub mod projection;
 
+pub use controller::{fps_cursor_toggle, fps_look, fps_move, FpsController};
 pub use projection::{ActiveCamera, Camera, Projection};

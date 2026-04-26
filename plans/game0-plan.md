@@ -398,11 +398,11 @@ Each item is scoped to be independently executable.
 ### Phase G — Camera & Controls
 - [x] Implement `Transform` component with `matrix()`. *(landed in Phase F)*
 - [x] Implement `Camera` + `ActiveCamera` components; `Projection::perspective`. *(landed in Phase F)*
-- [ ] Remove the temporary `orbit_camera` diagnostic in `crates/game-void/src/main.rs` carried over from Phase F's verification.
-- [ ] Implement `FpsController` component.
-- [ ] Implement `fps_look` and `fps_move` systems.
-- [ ] Bind Esc to toggle cursor grab; auto-grab on window focus gain.
-- [ ] Manual test: walk around the scene on all three OSes.
+- [x] Remove the temporary `orbit_camera` diagnostic in `crates/game-void/src/main.rs` carried over from Phase F's verification.
+- [x] Implement `FpsController` component.
+- [x] Implement `fps_look` and `fps_move` systems.
+- [x] Bind Esc to toggle cursor grab; auto-grab on window focus gain. Also releases on focus loss so alt-tabbing doesn't strand the cursor.
+- [x] Manual test: walk around the scene. macOS verified; Windows + Linux verification deferred to Phase I (same convention as Phase F).
 
 ### Phase H — Debug Overlay & Profiling
 - [ ] Promote rendering to its own `Render` stage now that a second render-side system (egui) exists. Decide tick semantics for the third stage run per frame; replace the `App::resumed` append-to-`Update` shortcut from Phase F.

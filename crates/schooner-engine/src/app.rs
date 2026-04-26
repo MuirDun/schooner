@@ -296,6 +296,18 @@ impl ApplicationHandler for App {
                     ctx.resize(size.width, size.height);
                 }
             }
+            WindowEvent::Focused(focused) => {
+                // Auto-grab on focus gain so the player drops into
+                // the FPS controller without needing a click. Release
+                // on focus loss so alt-tabbing doesn't strand the
+                // cursor locked over the desktop with no way out.
+                // The intent is written to Input; sync_cursor mirrors
+                // it onto the live Window after the next schedule.
+                if let Some(input) = self.world.resource_mut::<Input>() {
+                    input.set_cursor_grabbed(focused);
+                    input.set_cursor_visible(!focused);
+                }
+            }
             WindowEvent::RedrawRequested => {
                 self.tick();
             }

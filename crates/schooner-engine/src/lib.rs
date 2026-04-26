@@ -11,7 +11,9 @@ pub mod transform;
 pub mod window;
 
 pub use app::{App, AppError};
-pub use camera::{ActiveCamera, Camera, Projection};
+pub use camera::{
+    fps_cursor_toggle, fps_look, fps_move, ActiveCamera, Camera, FpsController, Projection,
+};
 pub use diagnostics::{log_fps_system, log_input_system, FpsLogger};
 pub use ecs::{EntityId, Schedule, Stage, World};
 pub use error::{EngineError, EngineResult};
