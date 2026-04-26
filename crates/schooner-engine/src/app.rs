@@ -12,6 +12,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::ecs::{IntoSystem, Schedule, Stage, World};
 use crate::input::Input;
+use crate::render::{render_frame, ForwardPipeline, MeshRegistry, RenderContext};
 use crate::time::Time;
 use crate::window::WindowConfig;
 
@@ -19,6 +20,8 @@ use crate::window::WindowConfig;
 pub enum AppError {
     #[error("event loop error: {0}")]
     EventLoop(#[from] winit::error::EventLoopError),
+    #[error("render context init failed: {0}")]
+    RenderContext(#[from] crate::render::RenderContextError),
 }
 
 /// Top-level application: owns the window, the ECS world, the
@@ -232,7 +235,46 @@ impl ApplicationHandler for App {
             .expect("failed to create window");
         let size = window.inner_size();
         info!("window created: {}x{}", size.width, size.height);
-        self.window = Some(Arc::new(window));
+        let window = Arc::new(window);
+
+        // Stand up the wgpu device against the just-created window
+        // and insert it as a resource. Async init is blocked on
+        // here because RenderContext is a hard prerequisite for any
+        // frame work; the block happens once per app run.
+        match pollster::block_on(RenderContext::new(window.clone())) {
+            Ok(ctx) => {
+                // Built-in cube + plane upload here, while the
+                // device is still in scope, so the registry is
+                // ready before any frame work runs. Registry
+                // creation is sync — the device handle is a
+                // ref-counted, share-safe view.
+                let registry = MeshRegistry::with_builtins(ctx.device());
+                let pipeline = ForwardPipeline::new(ctx.device(), ctx.surface_format());
+                self.world.insert_resource(ctx);
+                self.world.insert_resource(registry);
+                self.world.insert_resource(pipeline);
+            }
+            Err(err) => {
+                // No way to surface AppError back through the
+                // ApplicationHandler trait — winit owns the loop.
+                // Log and exit; main() sees the loop terminate
+                // without an error, which is the best winit allows.
+                log::error!("render context init failed: {err}");
+                event_loop.exit();
+                return;
+            }
+        }
+
+        // Append render_frame to Update *after* the user's builder
+        // chain has finished registering systems. resumed() runs
+        // on the first event-loop tick, by which point App::run
+        // has already consumed the builder. This is what enforces
+        // "render runs last" without a dedicated Render stage —
+        // see plans/game0-plan.md §3.6.1.
+        self.schedule
+            .add_system(&mut self.world, Stage::Update, render_frame);
+
+        self.window = Some(window);
     }
 
     fn window_event(
@@ -245,6 +287,14 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 info!("close requested");
                 event_loop.exit();
+            }
+            WindowEvent::Resized(size) => {
+                // Forward to the render context. The actual surface
+                // reconfigure + depth-texture rebuild happens there;
+                // the App just routes the event into the resource.
+                if let Some(ctx) = self.world.resource_mut::<RenderContext>() {
+                    ctx.resize(size.width, size.height);
+                }
             }
             WindowEvent::RedrawRequested => {
                 self.tick();

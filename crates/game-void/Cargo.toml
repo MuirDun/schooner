@@ -10,3 +10,4 @@ repository.workspace = true
 schooner-engine.workspace = true
 anyhow.workspace = true
 log.workspace = true
+glam.workspace = true

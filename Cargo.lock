@@ -653,6 +653,7 @@ name = "game-void"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "glam",
  "log",
  "schooner-engine",
 ]

@@ -513,6 +513,136 @@ where
     }
 }
 
+// Arity 5 ----------------------------------------------------------------
+
+impl<F, A, B, C, D, E> System for FunctionSystem<F, (A, B, C, D, E)>
+where
+    A: SystemParam + 'static,
+    B: SystemParam + 'static,
+    C: SystemParam + 'static,
+    D: SystemParam + 'static,
+    E: SystemParam + 'static,
+    F: FnMut(A, B, C, D, E)
+        + for<'w> FnMut(A::Item<'w>, B::Item<'w>, C::Item<'w>, D::Item<'w>, E::Item<'w>)
+        + 'static,
+{
+    fn run(&mut self, world: &mut World) {
+        // SAFETY: see arity-2 above; access check covers all 5.
+        let world_ptr: *mut World = world;
+        unsafe {
+            let a = A::fetch(&mut *world_ptr);
+            let b = B::fetch(&mut *world_ptr);
+            let c = C::fetch(&mut *world_ptr);
+            let d = D::fetch(&mut *world_ptr);
+            let e = E::fetch(&mut *world_ptr);
+            (self.f)(a, b, c, d, e);
+        }
+    }
+
+    fn param_access(&self, world: &mut World) -> Vec<ParamAccess> {
+        vec![
+            A::access(world),
+            B::access(world),
+            C::access(world),
+            D::access(world),
+            E::access(world),
+        ]
+    }
+}
+
+impl<F, A, B, C, D, E> IntoSystem<fn(A, B, C, D, E)> for F
+where
+    A: SystemParam + 'static,
+    B: SystemParam + 'static,
+    C: SystemParam + 'static,
+    D: SystemParam + 'static,
+    E: SystemParam + 'static,
+    F: FnMut(A, B, C, D, E)
+        + for<'w> FnMut(A::Item<'w>, B::Item<'w>, C::Item<'w>, D::Item<'w>, E::Item<'w>)
+        + 'static,
+{
+    type System = FunctionSystem<F, (A, B, C, D, E)>;
+    fn into_system(self) -> Self::System {
+        FunctionSystem {
+            f: self,
+            _marker: PhantomData,
+        }
+    }
+}
+
+// Arity 6 ----------------------------------------------------------------
+
+impl<F, A, B, C, D, E, G> System for FunctionSystem<F, (A, B, C, D, E, G)>
+where
+    A: SystemParam + 'static,
+    B: SystemParam + 'static,
+    C: SystemParam + 'static,
+    D: SystemParam + 'static,
+    E: SystemParam + 'static,
+    G: SystemParam + 'static,
+    F: FnMut(A, B, C, D, E, G)
+        + for<'w> FnMut(
+            A::Item<'w>,
+            B::Item<'w>,
+            C::Item<'w>,
+            D::Item<'w>,
+            E::Item<'w>,
+            G::Item<'w>,
+        ) + 'static,
+{
+    fn run(&mut self, world: &mut World) {
+        // SAFETY: see arity-2 above; access check covers all 6.
+        let world_ptr: *mut World = world;
+        unsafe {
+            let a = A::fetch(&mut *world_ptr);
+            let b = B::fetch(&mut *world_ptr);
+            let c = C::fetch(&mut *world_ptr);
+            let d = D::fetch(&mut *world_ptr);
+            let e = E::fetch(&mut *world_ptr);
+            let g = G::fetch(&mut *world_ptr);
+            (self.f)(a, b, c, d, e, g);
+        }
+    }
+
+    fn param_access(&self, world: &mut World) -> Vec<ParamAccess> {
+        vec![
+            A::access(world),
+            B::access(world),
+            C::access(world),
+            D::access(world),
+            E::access(world),
+            G::access(world),
+        ]
+    }
+}
+
+impl<F, A, B, C, D, E, G> IntoSystem<fn(A, B, C, D, E, G)> for F
+where
+    A: SystemParam + 'static,
+    B: SystemParam + 'static,
+    C: SystemParam + 'static,
+    D: SystemParam + 'static,
+    E: SystemParam + 'static,
+    G: SystemParam + 'static,
+    F: FnMut(A, B, C, D, E, G)
+        + for<'w> FnMut(
+            A::Item<'w>,
+            B::Item<'w>,
+            C::Item<'w>,
+            D::Item<'w>,
+            E::Item<'w>,
+            G::Item<'w>,
+        ) + 'static,
+{
+    type System = FunctionSystem<F, (A, B, C, D, E, G)>;
+    fn into_system(self) -> Self::System {
+        FunctionSystem {
+            f: self,
+            _marker: PhantomData,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

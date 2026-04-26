@@ -383,21 +383,22 @@ Each item is scoped to be independently executable.
 - [x] Manual smoke test: press keys, print states from a throwaway system.
 
 ### Phase F — wgpu Renderer (Minimum Drawable)
-- [ ] Add `Transform` component at engine crate root (`transform.rs`): translation/rotation/scale + `matrix() -> Mat4`. Shared scene-graph primitive — not under `render/`.
-- [ ] Implement `RenderContext` (instance/adapter/device/queue/`Surface<'static>` via `Arc<Window>`, `SurfaceConfiguration`, depth texture). Async init via `pollster::block_on` inside `App::resumed`.
-- [ ] Implement swap-chain resize path: `RenderContext::resize(w, h)` reconfigures surface + recreates depth. Wired to `WindowEvent::Resized` in `App::window_event` (also closes the Phase B leftover).
-- [ ] Handle `SurfaceError::Lost` / `Outdated` by reconfiguring the surface and skipping the frame; panic on `OutOfMemory`. Pulled forward from Phase I to avoid macOS crashes during routine resize.
-- [ ] Write `shaders/forward.wgsl` with Blinn–Phong + one directional light. Vertex layout: pos + normal + uv.
-- [ ] Implement `MeshGpu` + `MeshRegistry`; built-in cube + plane generators registered eagerly during render init at the public constants `MeshHandle::CUBE = 0` and `MeshHandle::PLANE = 1`.
-- [ ] Implement `CameraUniform`, `GlobalLightUniform`, and a per-draw `ModelUniform` buffer indexed by **dynamic offset** (no `Features::PUSH_CONSTANTS`).
-- [ ] Build the forward render pipeline (vertex layout pos + normal + uv, depth write, back-face cull, sRGB swap chain).
-- [ ] Implement `render_frame` system: update camera + light uniforms → acquire frame → encode pass writing each `(Transform, MeshHandle)` with its dynamic-offset model uniform → submit + present. Engine appends this system to `Update` last from inside `App::resumed`; a dedicated `Render` stage is **deferred to Phase H** when the egui overlay forces the question (see §3.6.1).
-- [ ] Add `Camera` + `ActiveCamera` + `DirectionalLight` component types (data only — no controllers; FpsController is Phase G).
-- [ ] Game 0 scene: spawn floor plane + several cubes + one directional light + a static camera with `ActiveCamera`. Verify it renders correctly on all three OSes.
+- [x] Add `Transform` component at engine crate root (`transform.rs`): translation/rotation/scale + `matrix() -> Mat4`. Shared scene-graph primitive — not under `render/`.
+- [x] Implement `RenderContext` (instance/adapter/device/queue/`Surface<'static>` via `Arc<Window>`, `SurfaceConfiguration`, depth texture). Async init via `pollster::block_on` inside `App::resumed`.
+- [x] Implement swap-chain resize path: `RenderContext::resize(w, h)` reconfigures surface + recreates depth. Wired to `WindowEvent::Resized` in `App::window_event` (also closes the Phase B leftover).
+- [x] Handle `SurfaceError::Lost` / `Outdated` by reconfiguring the surface and skipping the frame; panic on `OutOfMemory`. Pulled forward from Phase I to avoid macOS crashes during routine resize.
+- [x] Write `shaders/forward.wgsl` with Blinn–Phong + one directional light. Vertex layout: pos + normal + uv.
+- [x] Implement `MeshGpu` + `MeshRegistry`; built-in cube + plane generators registered eagerly during render init at the public constants `MeshHandle::CUBE = 0` and `MeshHandle::PLANE = 1`.
+- [x] Implement `CameraUniform`, `GlobalLightUniform`, and a per-draw `ModelUniform` buffer indexed by **dynamic offset** (no `Features::PUSH_CONSTANTS`).
+- [x] Build the forward render pipeline (vertex layout pos + normal + uv, depth write, back-face cull, sRGB swap chain).
+- [x] Implement `render_frame` system: update camera + light uniforms → acquire frame → encode pass writing each `(Transform, MeshHandle)` with its dynamic-offset model uniform → submit + present. Engine appends this system to `Update` last from inside `App::resumed`; a dedicated `Render` stage is **deferred to Phase H** when the egui overlay forces the question (see §3.6.1).
+- [x] Add `Camera` + `ActiveCamera` + `DirectionalLight` component types (data only — no controllers; FpsController is Phase G).
+- [x] Game 0 scene: spawn floor plane + several cubes + one directional light + a static camera with `ActiveCamera`. macOS verified; Windows + Linux verification deferred to Phase I per §6 Phase I.
 
 ### Phase G — Camera & Controls
-- [ ] Implement `Transform` component with `matrix()`.
-- [ ] Implement `Camera` + `ActiveCamera` components; `Projection::perspective`.
+- [x] Implement `Transform` component with `matrix()`. *(landed in Phase F)*
+- [x] Implement `Camera` + `ActiveCamera` components; `Projection::perspective`. *(landed in Phase F)*
+- [ ] Remove the temporary `orbit_camera` diagnostic in `crates/game-void/src/main.rs` carried over from Phase F's verification.
 - [ ] Implement `FpsController` component.
 - [ ] Implement `fps_look` and `fps_move` systems.
 - [ ] Bind Esc to toggle cursor grab; auto-grab on window focus gain.
