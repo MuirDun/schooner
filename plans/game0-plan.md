@@ -222,24 +222,31 @@ This is the biggest subsystem. Designed in three layers so each can be understoo
 
 **Layer B — GPU Resource Management (`render/resources.rs`)**
 - `MeshGpu` — vertex buffer, index buffer, index count.
-- `MeshRegistry` resource: `HashMap<MeshHandle, MeshGpu>`. Game 0 registers a `Cube` and `Plane` at startup.
+- `MeshRegistry` resource: handle → `MeshGpu`. The engine eagerly registers two **built-in** meshes during render init — `MeshHandle::CUBE` (= 0) and `MeshHandle::PLANE` (= 1) — as public constants. User-defined meshes start at higher indices via `MeshRegistry::insert`. Built-ins are not Game 0 content — they're test rigs every later game (physics demos, scripting REPL, debug spawns) will want, so they live in the engine, not in `game-void`.
 - `CameraUniform` — view matrix, proj matrix, view-proj, camera position; one `wgpu::Buffer` + `BindGroup`.
 - `GlobalLightUniform` — one directional light (direction, color, ambient).
+- `ModelUniform` — per-draw model matrix, written into a single uniform buffer sized for N draws and indexed via **dynamic offset** at bind time. Push constants are rejected: they require the non-default `Features::PUSH_CONSTANTS`, and at Game 0 entity counts the perf delta is invisible. Dropping the feature gate keeps "works on a clean wgpu install" portable.
 - No material system yet — shader is hard-coded to Blinn–Phong with uniforms.
 
 **Layer C — Frame Execution (`render/forward.rs`)**
-- One system `render_frame` runs last every frame.
+- One system `render_frame` runs last every `Update`. Ordering is achieved by having the engine append `render_frame` to the schedule **inside `App::resumed`**, after the user's builder chain has already registered its systems. No new `Render` stage in Game 0 — see §3.6.1 below.
 - Frame flow:
   1. Update camera uniform from the active camera entity.
   2. Update light uniform.
-  3. Acquire swap chain texture.
-  4. Encode render pass: clear color + depth, bind pipeline, bind globals, iterate `Query<(&Transform, &MeshHandle)>` → upload per-draw model matrix (push constant or dynamic offset into a uniform buffer) → draw indexed.
-  5. Encode egui pass on top.
+  3. Acquire swap chain texture. On `SurfaceError::Lost` / `Outdated`, reconfigure the surface and skip the frame; on `OutOfMemory`, panic. (Pulled forward from Phase I — macOS routinely emits `Outdated` on resize, so handling it now avoids crashes during normal use.)
+  4. Encode render pass: clear color + depth, bind pipeline, bind globals, iterate `Query<(&Transform, &MeshHandle)>` → write the model matrix into the per-draw uniform buffer at this draw's offset → bind the model bind group with that dynamic offset → draw indexed.
+  5. Encode egui pass on top *(Phase H)*.
   6. Submit + present.
 
+**§3.6.1 Render ordering — `Render` stage deferred to Phase H**
+
+For Phase F the closed `Stage` enum stays at `{ Update, FixedUpdate }`. Render ordering is satisfied by a single invariant: the engine appends `render_frame` to `Update` from inside `App::resumed`, which runs after the builder chain (`App::new().add_system(...).run()`) has finished registering user systems — so `render_frame` lands at the end of the system list and runs last every frame.
+
+The dedicated `Render` stage **lands in Phase H**, when the egui overlay introduces a second render-side system that must run after `render_frame` but before present. Phase H is the natural decision point: a second consumer exists, and the tick-semantics question (does a third stage run per frame bump `current_tick`? what does the overlay's own change-detection see?) has a concrete consumer to answer it. Doing the work in Phase F would be speculative on both counts — one system in the stage, no consumer of its tick semantics — so the resumed-append shortcut carries us to the point where the abstraction earns its keep.
+
 **Components the renderer consumes (public engine surface)**
-- `Transform { translation: Vec3, rotation: Quat, scale: Vec3 }` with `matrix() -> Mat4`.
-- `MeshHandle(u32)` — opaque handle into `MeshRegistry`.
+- `Transform { translation: Vec3, rotation: Quat, scale: Vec3 }` with `matrix() -> Mat4`. Lives in `transform.rs` at the engine crate root, **not** under `render/` — `Transform` is a scene-graph primitive shared by camera, physics, audio, and AI in later games. Putting it inside `render/` would force every later subsystem to import the renderer for its pose type. Promoting `math.rs` to a `math/` directory is deferred until it accumulates more types.
+- `MeshHandle(u32)` — opaque handle into `MeshRegistry`. Public constants `MeshHandle::CUBE = 0`, `MeshHandle::PLANE = 1` for the engine-owned built-ins.
 - `Camera { projection: Projection, fov, near, far }` + a marker `ActiveCamera` on the entity whose view is used.
 - `DirectionalLight { direction, color, ambient }` — only one used for now (first one in the query).
 
@@ -365,25 +372,28 @@ Each item is scoped to be independently executable.
 - [x] Write unit tests: spawn/despawn round-trip with generation bump; insert/remove is O(1) and leaves other components intact; join-query correctness across 2- and 3-tuples; `Without<T>` correctly excludes; resource access (`Res` / `ResMut`); `current_tick` increments per `Schedule::run`; `changed_since` returns only mutated entities; `&` access does NOT bump ticks; `&mut` access through `Mut<T>` DOES bump ticks on `DerefMut`, not on construction.
 
 ### Phase D — Time & Main Loop
-- [ ] Implement `Time` resource + accumulator pattern in `App::tick`.
-- [ ] Wire `Update` and `FixedUpdate` stages into the tick.
-- [ ] Add a diagnostic system printing FPS to stdout once per second to validate the loop.
+- [x] Implement `Time` resource + accumulator pattern in `App::tick`.
+- [x] Wire `Update` and `FixedUpdate` stages into the tick.
+- [x] Add a diagnostic system printing FPS to stdout once per second to validate the loop.
 
 ### Phase E — Input
-- [ ] Implement `Input` resource with keyboard + mouse state.
-- [ ] Feed `WindowEvent` into `Input` each frame; call `Input::end_frame` to roll "just-pressed" → "down".
-- [ ] Implement cursor grab/release via `Input::set_cursor_grabbed`.
-- [ ] Manual smoke test: press keys, print states from a throwaway system.
+- [x] Implement `Input` resource with keyboard + mouse state.
+- [x] Feed `WindowEvent` into `Input` each frame; call `Input::end_frame` to roll "just-pressed" → "down".
+- [x] Implement cursor grab/release via `Input::set_cursor_grabbed`.
+- [x] Manual smoke test: press keys, print states from a throwaway system.
 
 ### Phase F — wgpu Renderer (Minimum Drawable)
-- [ ] Implement `RenderContext` (instance/adapter/device/queue/surface config + depth texture).
-- [ ] Implement swap-chain resize path on window resize event.
-- [ ] Write `shaders/forward.wgsl` with Blinn–Phong + one directional light.
-- [ ] Implement `MeshGpu` + `MeshRegistry`; hard-coded `cube` and `plane` mesh generators.
-- [ ] Implement `CameraUniform` and `GlobalLightUniform` buffers + bind group layout.
-- [ ] Build the forward render pipeline (vertex layout pos + normal + uv, depth write, back-face cull).
-- [ ] Implement `render_frame` system: clear → draw all `(Transform, MeshHandle)` entities with the active camera.
-- [ ] Verify: scene with floor + several cubes + directional light renders correctly.
+- [ ] Add `Transform` component at engine crate root (`transform.rs`): translation/rotation/scale + `matrix() -> Mat4`. Shared scene-graph primitive — not under `render/`.
+- [ ] Implement `RenderContext` (instance/adapter/device/queue/`Surface<'static>` via `Arc<Window>`, `SurfaceConfiguration`, depth texture). Async init via `pollster::block_on` inside `App::resumed`.
+- [ ] Implement swap-chain resize path: `RenderContext::resize(w, h)` reconfigures surface + recreates depth. Wired to `WindowEvent::Resized` in `App::window_event` (also closes the Phase B leftover).
+- [ ] Handle `SurfaceError::Lost` / `Outdated` by reconfiguring the surface and skipping the frame; panic on `OutOfMemory`. Pulled forward from Phase I to avoid macOS crashes during routine resize.
+- [ ] Write `shaders/forward.wgsl` with Blinn–Phong + one directional light. Vertex layout: pos + normal + uv.
+- [ ] Implement `MeshGpu` + `MeshRegistry`; built-in cube + plane generators registered eagerly during render init at the public constants `MeshHandle::CUBE = 0` and `MeshHandle::PLANE = 1`.
+- [ ] Implement `CameraUniform`, `GlobalLightUniform`, and a per-draw `ModelUniform` buffer indexed by **dynamic offset** (no `Features::PUSH_CONSTANTS`).
+- [ ] Build the forward render pipeline (vertex layout pos + normal + uv, depth write, back-face cull, sRGB swap chain).
+- [ ] Implement `render_frame` system: update camera + light uniforms → acquire frame → encode pass writing each `(Transform, MeshHandle)` with its dynamic-offset model uniform → submit + present. Engine appends this system to `Update` last from inside `App::resumed`; a dedicated `Render` stage is **deferred to Phase H** when the egui overlay forces the question (see §3.6.1).
+- [ ] Add `Camera` + `ActiveCamera` + `DirectionalLight` component types (data only — no controllers; FpsController is Phase G).
+- [ ] Game 0 scene: spawn floor plane + several cubes + one directional light + a static camera with `ActiveCamera`. Verify it renders correctly on all three OSes.
 
 ### Phase G — Camera & Controls
 - [ ] Implement `Transform` component with `matrix()`.
@@ -394,6 +404,7 @@ Each item is scoped to be independently executable.
 - [ ] Manual test: walk around the scene on all three OSes.
 
 ### Phase H — Debug Overlay & Profiling
+- [ ] Promote rendering to its own `Render` stage now that a second render-side system (egui) exists. Decide tick semantics for the third stage run per frame; replace the `App::resumed` append-to-`Update` shortcut from Phase F.
 - [ ] Add `egui`, `egui-wgpu`, `egui-winit` deps; wire the egui render pass after the forward pass.
 - [ ] Add `DebugState` resource; F1 toggles overlay visibility.
 - [ ] Display FPS, frame time (ms), entity count, active-camera position in a default window.
@@ -402,7 +413,6 @@ Each item is scoped to be independently executable.
 
 ### Phase I — Polish & Done-Bar Verification
 - [ ] Add basic `env_logger` config driven by `RUST_LOG`; log init/resize/surface-lost events.
-- [ ] Handle `SurfaceError::Lost` / `Outdated` by reconfiguring the surface.
 - [ ] Verify `cargo run -p game-void` on Windows, Linux, macOS.
 - [ ] Add a tiny GitHub Actions workflow: `cargo check` on all three OSes on PR.
 - [ ] Write a `crates/schooner-engine/README.md` with a 1-page architecture overview and how to add a system / component (this is the seed of future docs).

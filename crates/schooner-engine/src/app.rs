@@ -5,11 +5,13 @@ use std::time::Instant;
 use log::{info, warn};
 use thiserror::Error;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowId};
+use winit::keyboard::PhysicalKey;
+use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::ecs::{IntoSystem, Schedule, Stage, World};
+use crate::input::Input;
 use crate::time::Time;
 use crate::window::WindowConfig;
 
@@ -38,6 +40,12 @@ pub struct App {
     world: World,
     schedule: Schedule,
     last_frame: Option<Instant>,
+    /// Last cursor-grab state we pushed to the window — used to
+    /// elide redundant syscalls on frames where Input did not
+    /// change.
+    cursor_grab_pushed: bool,
+    /// Last cursor-visibility we pushed; same elision purpose.
+    cursor_visible_pushed: bool,
 }
 
 impl Default for App {
@@ -49,16 +57,21 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let mut world = World::new();
-        // Time is engine-intrinsic — insert it now so systems
-        // registered before `run()` can declare `Res<Time>` /
-        // `ResMut<Time>` without a separate setup step.
+        // Time and Input are engine-intrinsic — insert them now so
+        // systems registered before `run()` can declare `Res<Time>`
+        // / `Res<Input>` without a separate setup step.
         world.insert_resource(Time::default());
+        world.insert_resource(Input::new());
         Self {
             window_config: WindowConfig::default(),
             window: None,
             world,
             schedule: Schedule::new(),
             last_frame: None,
+            // Match the OS default: a freshly created winit window
+            // is not grabbed and shows the cursor.
+            cursor_grab_pushed: false,
+            cursor_visible_pushed: true,
         }
     }
 
@@ -78,6 +91,21 @@ impl App {
     pub fn insert_resource<R: Any + Send + Sync>(mut self, value: R) -> Self {
         self.world.insert_resource(value);
         self
+    }
+
+    /// Enable the once-per-second FPS log on the `Update` stage.
+    /// Phase H replaces this with an egui overlay; until then it
+    /// is the cheapest way to confirm the loop is ticking.
+    pub fn with_fps_logging(self) -> Self {
+        self.insert_resource(crate::diagnostics::FpsLogger::default())
+            .add_system(Stage::Update, crate::diagnostics::log_fps_system)
+    }
+
+    /// Log every keyboard / mouse-button edge through `log::info`.
+    /// Throwaway smoke test for Phase E — turn it on, press keys,
+    /// confirm the pipeline records them.
+    pub fn with_input_logging(self) -> Self {
+        self.add_system(Stage::Update, crate::diagnostics::log_input_system)
     }
 
     /// Register a system in the given stage. Systems are run in
@@ -132,6 +160,58 @@ impl App {
             self.schedule.run_fixed(&mut self.world);
         }
         self.schedule.run(&mut self.world);
+
+        // After systems have run, mirror the requested cursor state
+        // onto the actual Window. Doing it here (not before the
+        // schedule) means a system that flips grab/visibility this
+        // frame takes effect before the next event-loop iteration.
+        self.sync_cursor();
+
+        // End-of-frame rollover: clear one-shot edges and per-frame
+        // mouse delta so the next frame starts fresh. Held state
+        // (down keys, cursor position, grab/visibility) persists.
+        if let Some(input) = self.world.resource_mut::<Input>() {
+            input.end_frame();
+        }
+    }
+
+    /// Push the desired cursor state from `Input` onto the live
+    /// `Window`, eliding the syscall when nothing changed.
+    ///
+    /// Cursor grab uses `Locked` first (macOS) and falls back to
+    /// `Confined` (Windows / Linux X11+Wayland). Trying both in
+    /// order is the standard winit recipe — neither mode is
+    /// universally supported, but every desktop OS supports at
+    /// least one.
+    fn sync_cursor(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Some(input) = self.world.resource::<Input>() else {
+            return;
+        };
+
+        let want_grab = input.cursor_grabbed();
+        let want_visible = input.cursor_visible();
+
+        if want_grab != self.cursor_grab_pushed {
+            let result = if want_grab {
+                window
+                    .set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+            } else {
+                window.set_cursor_grab(CursorGrabMode::None)
+            };
+            match result {
+                Ok(()) => self.cursor_grab_pushed = want_grab,
+                Err(err) => warn!("set_cursor_grab({want_grab}) failed: {err}"),
+            }
+        }
+
+        if want_visible != self.cursor_visible_pushed {
+            window.set_cursor_visible(want_visible);
+            self.cursor_visible_pushed = want_visible;
+        }
     }
 }
 
@@ -169,7 +249,48 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.tick();
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                // Drop OS auto-repeat: `record_key` is idempotent on
+                // repeats anyway, but skipping early avoids touching
+                // the world borrow per autorepeat tick.
+                if event.repeat {
+                    return;
+                }
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    let pressed = matches!(event.state, ElementState::Pressed);
+                    if let Some(input) = self.world.resource_mut::<Input>() {
+                        input.record_key(code, pressed);
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let pressed = matches!(state, ElementState::Pressed);
+                if let Some(input) = self.world.resource_mut::<Input>() {
+                    input.record_mouse_button(button, pressed);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(input) = self.world.resource_mut::<Input>() {
+                    input.record_mouse_position(position.x as f32, position.y as f32);
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        // Raw mouse motion: unaffected by cursor clamping at screen
+        // edges. This is what FPS look-controllers want, not the
+        // window-relative `CursorMoved` deltas.
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            if let Some(input) = self.world.resource_mut::<Input>() {
+                input.record_mouse_motion(dx as f32, dy as f32);
+            }
         }
     }
 
