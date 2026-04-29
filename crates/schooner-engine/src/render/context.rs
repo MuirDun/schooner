@@ -22,11 +22,11 @@ use std::sync::Arc;
 use log::{info, warn};
 use thiserror::Error;
 use wgpu::{
-    Adapter, Backends, CompositeAlphaMode, Device, DeviceDescriptor, Extent3d, Features, Instance,
-    InstanceDescriptor, Limits, MemoryHints, PowerPreference, PresentMode, Queue,
-    RequestAdapterOptions, RequestDeviceError, Surface, SurfaceConfiguration, SurfaceError,
-    SurfaceTexture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
-    TextureViewDescriptor,
+    Adapter, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, DeviceDescriptor,
+    ExperimentalFeatures, Extent3d, Features, Instance, InstanceDescriptor, Limits, MemoryHints,
+    PowerPreference, PresentMode, Queue, RequestAdapterError, RequestAdapterOptions,
+    RequestDeviceError, Surface, SurfaceConfiguration, SurfaceTexture, TextureDescriptor,
+    TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor, Trace,
 };
 use winit::window::Window;
 
@@ -47,8 +47,8 @@ pub const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 pub enum RenderContextError {
     #[error("wgpu surface creation failed: {0}")]
     CreateSurface(#[from] wgpu::CreateSurfaceError),
-    #[error("no GPU adapter compatible with the surface")]
-    NoCompatibleAdapter,
+    #[error("no GPU adapter compatible with the surface: {0}")]
+    RequestAdapter(#[from] RequestAdapterError),
     #[error("device request failed: {0}")]
     RequestDevice(#[from] RequestDeviceError),
 }
@@ -83,9 +83,9 @@ impl RenderContext {
         // PRIMARY = native backends (Metal/Vulkan/DX12) only. WebGL
         // is excluded by design — Game 0 is desktop-only. If WASM
         // ever lands, this is the line that opens it.
-        let instance = Instance::new(&InstanceDescriptor {
+        let instance = Instance::new(InstanceDescriptor {
             backends: Backends::PRIMARY,
-            ..Default::default()
+            ..InstanceDescriptor::new_without_display_handle()
         });
 
         // Cloning the Arc into create_surface is what gives us
@@ -104,8 +104,7 @@ impl RenderContext {
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
-            .await
-            .ok_or(RenderContextError::NoCompatibleAdapter)?;
+            .await?;
 
         let info = adapter.get_info();
         info!(
@@ -119,15 +118,14 @@ impl RenderContext {
         // driver pick allocation strategy without the engine
         // pretending to know better.
         let (device, queue) = adapter
-            .request_device(
-                &DeviceDescriptor {
-                    label: Some("schooner-device"),
-                    required_features: Features::empty(),
-                    required_limits: Limits::default(),
-                    memory_hints: MemoryHints::Performance,
-                },
-                None,
-            )
+            .request_device(&DeviceDescriptor {
+                label: Some("schooner-device"),
+                required_features: Features::empty(),
+                required_limits: Limits::default(),
+                experimental_features: ExperimentalFeatures::default(),
+                memory_hints: MemoryHints::Performance,
+                trace: Trace::Off,
+            })
             .await?;
 
         let size = window.inner_size();
@@ -209,32 +207,39 @@ impl RenderContext {
 
     /// Acquire the next swap-chain texture. Returns `None` when the
     /// caller should skip this frame (zero-sized window, or a
-    /// recoverable surface error that we just reconfigured around).
+    /// recoverable surface state we just reconfigured around).
     ///
     /// `Lost` / `Outdated` are routine on macOS during normal
     /// resizes — the right reaction is to reconfigure and try again
-    /// next frame, not to crash. `OutOfMemory` is unrecoverable and
-    /// panics; `Timeout` is benign and skips a frame.
+    /// next frame, not to crash. `Suboptimal` still hands back a
+    /// usable texture; we present it and reconfigure for the next
+    /// frame so we don't drop a visible frame on a transient mismatch.
+    /// `Validation` errors arrive as a sentinel on this enum starting
+    /// in wgpu 29 — out-of-memory now flows through the device-lost
+    /// callback, not through this match.
     pub fn acquire_frame(&mut self) -> Option<SurfaceTexture> {
         if self.config.width == 0 || self.config.height == 0 {
             return None;
         }
         match self.surface.get_current_texture() {
-            Ok(frame) => Some(frame),
-            Err(SurfaceError::Lost | SurfaceError::Outdated) => {
+            CurrentSurfaceTexture::Success(frame) => Some(frame),
+            CurrentSurfaceTexture::Suboptimal(frame) => {
+                warn!("surface suboptimal; reconfiguring for next frame");
+                self.surface.configure(&self.device, &self.config);
+                Some(frame)
+            }
+            CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
                 warn!("surface lost/outdated; reconfiguring");
                 self.surface.configure(&self.device, &self.config);
                 None
             }
-            Err(SurfaceError::Timeout) => {
+            CurrentSurfaceTexture::Timeout => {
                 warn!("surface acquire timed out; skipping frame");
                 None
             }
-            Err(SurfaceError::OutOfMemory) => {
-                panic!("surface out of memory — unrecoverable");
-            }
-            Err(SurfaceError::Other) => {
-                warn!("surface acquire failed with unspecified error; skipping frame");
+            CurrentSurfaceTexture::Occluded => None,
+            CurrentSurfaceTexture::Validation => {
+                warn!("surface validation error; skipping frame");
                 None
             }
         }

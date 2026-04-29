@@ -60,7 +60,7 @@ winit RedrawRequested  →  App::tick
                             └─ present
 ```
 
-`render_frame` is engine-appended to `Update` from inside `App::resumed`, after the user's builder chain has finished. That's how "render runs last" is enforced in Game 0; a dedicated `Render` stage lands in Phase H when egui introduces a second render-side system.
+`render_frame` lives in the dedicated `Render` stage, engine-appended from inside `App::resumed` after the user's builder chain has finished. The schedule runs `FixedUpdate` × N → `Update` → `Render` per frame, each stage bumping `current_tick` once.
 
 ## What the renderer owns (scope)
 
@@ -89,7 +89,7 @@ winit RedrawRequested  →  App::tick
 
 **Phase G (camera controls)** writes `Transform.rotation` and `Transform.translation` on the active camera entity. The renderer doesn't change.
 
-**Phase H (debug overlay)** adds an egui pass that runs after `render_frame` but before present. This is the trigger for promoting rendering to its own `Render` stage — see `plans/game0-plan.md` §3.6.1. The forward pipeline doesn't change; the schedule does.
+**Phase H (debug overlay)** adds the egui pass inside `render_frame`, between the forward pass and present, via a `DebugOverlay` resource. The forward pipeline doesn't change; `render_frame` gains a second pass.
 
 **Game 1 (physics)** writes `Transform` from Rapier each step. The renderer reads `Transform` the same way it always did.
 
@@ -99,7 +99,6 @@ winit RedrawRequested  →  App::tick
 
 ## Open questions to resolve before later phases
 
-- **`Render` stage tick semantics** — when Phase H promotes rendering to its own stage, does running it bump `current_tick`? The egui overlay's change detection has to live with whichever answer we pick.
 - **Asset format** — glTF or custom binary. Decide during Game 1 planning.
 - **Shadow map technique** — single-cascade shadow map vs. cascaded shadow maps for outdoor. Decide during Game 2 design.
 - **Material model** — when more than one material exists, is "material" a component on the entity, a key inside `MeshGpu`, or a separate registry? Decide when the second material appears.

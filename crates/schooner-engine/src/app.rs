@@ -10,9 +10,10 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::ecs::{IntoSystem, Schedule, Stage, World};
+use crate::debug::{debug_input_system, DebugState, ProfilerView};
+use crate::ecs::{exclusive, IntoSystem, Schedule, Stage, World};
 use crate::input::Input;
-use crate::render::{render_frame, ForwardPipeline, MeshRegistry, RenderContext};
+use crate::render::{render_frame, DebugOverlay, ForwardPipeline, MeshRegistry, RenderContext};
 use crate::time::Time;
 use crate::window::WindowConfig;
 
@@ -33,10 +34,11 @@ pub enum AppError {
 ///    we ask the window for a redraw.
 /// 2. winit fires `RedrawRequested` → we call [`App::tick`], which
 ///    advances [`Time`], runs `FixedUpdate` 0..N times against the
-///    accumulator, and runs `Update` once.
+///    accumulator, then `Update` once, then `Render` once.
 ///
-/// Render submission joins the loop in Phase F; for now the tick
-/// only drives ECS systems.
+/// `Render` is the dedicated stage where the forward pass and the
+/// debug overlay live. It bumps `current_tick` like every other
+/// stage — see `ecs/schedule.rs` for the tick-semantics rationale.
 pub struct App {
     window_config: WindowConfig,
     window: Option<Arc<Window>>,
@@ -65,11 +67,24 @@ impl App {
         // / `Res<Input>` without a separate setup step.
         world.insert_resource(Time::default());
         world.insert_resource(Input::new());
+        // DebugState rides along — visible by default, F1 toggles.
+        // The overlay's wgpu plumbing (DebugOverlay) lands later in
+        // `resumed` once the device exists.
+        world.insert_resource(DebugState::default());
+        // ProfilerView registers a sink with puffin's GlobalProfiler
+        // immediately on construction so the first frame's data has
+        // somewhere to land. The sink survives until ProfilerView
+        // is dropped (which happens when the World drops).
+        world.insert_resource(ProfilerView::new());
+        let mut schedule = Schedule::new();
+        // F1 toggle runs in Update so the visibility flip is
+        // observable to render_frame the same frame.
+        schedule.add_system(&mut world, Stage::Update, debug_input_system);
         Self {
             window_config: WindowConfig::default(),
             window: None,
             world,
-            schedule: Schedule::new(),
+            schedule,
             last_frame: None,
             // Match the OS default: a freshly created winit window
             // is not grabbed and shows the cursor.
@@ -97,8 +112,8 @@ impl App {
     }
 
     /// Enable the once-per-second FPS log on the `Update` stage.
-    /// Phase H replaces this with an egui overlay; until then it
-    /// is the cheapest way to confirm the loop is ticking.
+    /// Cheap, log-driven; useful in headless smoke tests or when
+    /// the egui overlay is hidden.
     pub fn with_fps_logging(self) -> Self {
         self.insert_resource(crate::diagnostics::FpsLogger::default())
             .add_system(Stage::Update, crate::diagnostics::log_fps_system)
@@ -142,6 +157,21 @@ impl App {
     /// run `Update` once. The first call always reports a delta of
     /// zero — there is no prior frame to measure against.
     fn tick(&mut self) {
+        // Per-frame puffin housekeeping. `set_scopes_on` is a relaxed
+        // atomic store — calling it every frame is essentially free,
+        // and it lets the profiler checkbox in the overlay flip
+        // collection on/off without the App needing extra signal
+        // plumbing. `new_frame` flushes the previous frame's data
+        // into all registered sinks (including ProfilerView).
+        let scopes_on = self
+            .world
+            .resource::<DebugState>()
+            .map(|d| d.show_profiler)
+            .unwrap_or(false);
+        puffin::set_scopes_on(scopes_on);
+        puffin::GlobalProfiler::lock().new_frame();
+        puffin::profile_scope!("frame");
+
         let now = Instant::now();
         let real_delta = match self.last_frame.replace(now) {
             Some(prev) => now.duration_since(prev).as_secs_f32(),
@@ -163,6 +193,7 @@ impl App {
             self.schedule.run_fixed(&mut self.world);
         }
         self.schedule.run(&mut self.world);
+        self.schedule.run_render(&mut self.world);
 
         // After systems have run, mirror the requested cursor state
         // onto the actual Window. Doing it here (not before the
@@ -250,9 +281,12 @@ impl ApplicationHandler for App {
                 // ref-counted, share-safe view.
                 let registry = MeshRegistry::with_builtins(ctx.device());
                 let pipeline = ForwardPipeline::new(ctx.device(), ctx.surface_format());
+                let overlay =
+                    DebugOverlay::new(window.clone(), ctx.device(), ctx.surface_format());
                 self.world.insert_resource(ctx);
                 self.world.insert_resource(registry);
                 self.world.insert_resource(pipeline);
+                self.world.insert_resource(overlay);
             }
             Err(err) => {
                 // No way to surface AppError back through the
@@ -265,14 +299,15 @@ impl ApplicationHandler for App {
             }
         }
 
-        // Append render_frame to Update *after* the user's builder
-        // chain has finished registering systems. resumed() runs
-        // on the first event-loop tick, by which point App::run
-        // has already consumed the builder. This is what enforces
-        // "render runs last" without a dedicated Render stage —
-        // see plans/game0-plan.md §3.6.1.
+        // Append render_frame to the dedicated Render stage. It
+        // lands here from resumed() rather than from App::new() so
+        // any user systems registered for Stage::Render via the
+        // builder chain run before the engine's frame system —
+        // useful for debug viewers that want to read pre-render
+        // state. `render_frame` is exclusive — see its module doc
+        // for why.
         self.schedule
-            .add_system(&mut self.world, Stage::Update, render_frame);
+            .add_system(&mut self.world, Stage::Render, exclusive(render_frame));
 
         self.window = Some(window);
     }
@@ -283,6 +318,18 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        // Funnel the event through the egui overlay first. If egui
+        // consumed it (mouse over an overlay window, keyboard focus
+        // in a text field), short-circuit so the gameplay-side
+        // Input resource doesn't *also* see the event. Close /
+        // Resize / Focus are still processed below regardless —
+        // those are App-level signals, not user-typed input.
+        let egui_consumed = if let Some(overlay) = self.world.resource_mut::<DebugOverlay>() {
+            overlay.on_window_event(&event).consumed
+        } else {
+            false
+        };
+
         match event {
             WindowEvent::CloseRequested => {
                 info!("close requested");
@@ -312,6 +359,12 @@ impl ApplicationHandler for App {
                 self.tick();
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if egui_consumed {
+                    // egui owns the keystroke (e.g. text-field focus).
+                    // Skip recording it on the gameplay-side Input so
+                    // typing in the overlay can't double-fire WASD.
+                    return;
+                }
                 // Drop OS auto-repeat: `record_key` is idempotent on
                 // repeats anyway, but skipping early avoids touching
                 // the world borrow per autorepeat tick.
@@ -326,12 +379,18 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if egui_consumed {
+                    return;
+                }
                 let pressed = matches!(state, ElementState::Pressed);
                 if let Some(input) = self.world.resource_mut::<Input>() {
                     input.record_mouse_button(button, pressed);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                if egui_consumed {
+                    return;
+                }
                 if let Some(input) = self.world.resource_mut::<Input>() {
                     input.record_mouse_position(position.x as f32, position.y as f32);
                 }

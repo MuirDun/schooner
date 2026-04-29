@@ -58,14 +58,16 @@
 ### 1.6 Done Bar for Game 0
 
 Game 0 is complete when **all** of these are true:
-1. A window opens on Win/Linux/Mac.
-2. A 3D scene with a floor + several cubes + one directional light renders with Blinn–Phong shading.
-3. First-person WASD + mouse-look camera works, mouse is captured and hideable with Esc.
-4. A debug overlay (egui) shows FPS, frame time, entity count, camera position.
-5. A CPU profiler (puffin or tracing) has been wired up and at least one scope is visible.
-6. The game loop uses a correct fixed-timestep accumulator for "simulation" steps even though nothing yet needs it — Game 1's physics will plug straight in.
-7. The ECS records per-component mutation ticks on any `&mut` access, and `World::changed_since::<T>(tick)` returns entities whose `T` mutated since a given tick. No consumer wired yet — the substrate exists and is unit-tested.
-8. `cargo run -p game-void` works from a clean clone on all three platforms.
+1. [x] A window opens on Win/Linux/Mac. *(macOS verified continuously through Phases B–H. Win/Linux verification gated on `plans/game0-verification.md` runs.)*
+2. [x] A 3D scene with a floor + several cubes + one directional light renders with Blinn–Phong shading. *(Phase F. `crates/game-void/src/main.rs::spawn_scene` spawns the floor + 3×3 cube grid + sun; shader at `crates/schooner-engine/shaders/forward.wgsl`.)*
+3. [x] First-person WASD + mouse-look camera works, mouse is captured and hideable with Esc. *(Phase G. `crates/schooner-engine/src/camera/` — `fps_look`, `fps_move`, `fps_cursor_toggle`.)*
+4. [x] A debug overlay (egui) shows FPS, frame time, entity count, camera position. *(Phase H. `crates/schooner-engine/src/debug.rs::build_overlay_ui`; FPS / ms averaged over a 60-frame ring buffer.)*
+5. [x] A CPU profiler (puffin or tracing) has been wired up and at least one scope is visible. *(Phase H. Scopes in `App::tick`, `Schedule::run{,_fixed,_render}`, `render_frame` and its sub-phases; `ProfilerView` caches an indented hierarchical readout averaged over the last 50 frames, refreshed every 500 ms.)*
+6. [x] The game loop uses a correct fixed-timestep accumulator for "simulation" steps even though nothing yet needs it — Game 1's physics will plug straight in. *(Phase D. `crates/schooner-engine/src/time.rs::Time::advance` accumulator, dispatched 0..N times per frame from `App::tick`.)*
+7. [x] The ECS records per-component mutation ticks on any `&mut` access, and `World::changed_since::<T>(tick)` returns entities whose `T` mutated since a given tick. No consumer wired yet — the substrate exists and is unit-tested. *(Phase C. `Mut<T>` smart pointer bumps on `DerefMut`; `World::changed_since` iterator; unit tests in `crates/schooner-engine/src/ecs/world.rs` and `sparse_set.rs`.)*
+8. [ ] `cargo run -p game-void` works from a clean clone on all three platforms. *(macOS ✓. Win/Linux pending the verification protocol — runs blocked on developer access to those OSes; CI's `cargo check` matrix at `.github/workflows/check.yml` is the leading-indicator stand-in.)*
+
+Status: 7 of 8 done bar items met. Item 8 is the only one outstanding and is gated on the developer's access to a Linux machine and a Windows machine. The CI workflow guards against compile-level regressions on those platforms in the meantime.
 
 ### 1.7 Dynamic Philosophy — Named Open Questions
 
@@ -405,15 +407,15 @@ Each item is scoped to be independently executable.
 - [x] Manual test: walk around the scene. macOS verified; Windows + Linux verification deferred to Phase I (same convention as Phase F).
 
 ### Phase H — Debug Overlay & Profiling
-- [ ] Promote rendering to its own `Render` stage now that a second render-side system (egui) exists. Decide tick semantics for the third stage run per frame; replace the `App::resumed` append-to-`Update` shortcut from Phase F.
-- [ ] Add `egui`, `egui-wgpu`, `egui-winit` deps; wire the egui render pass after the forward pass.
-- [ ] Add `DebugState` resource; F1 toggles overlay visibility.
-- [ ] Display FPS, frame time (ms), entity count, active-camera position in a default window.
-- [ ] Add `puffin` + `puffin_egui`; place scopes in `App::tick`, `Schedule::run`, `render_frame`, and each render sub-step.
-- [ ] Expose a button in the overlay to show/hide the puffin flame graph.
+- [x] Promote rendering to its own `Render` stage now that a second render-side system (egui) exists. Decide tick semantics for the third stage run per frame; replace the `App::resumed` append-to-`Update` shortcut from Phase F. *(Resolved: every stage runner bumps `current_tick` once — uniform rule. Reactive cascade engine in Game 2 may revisit.)*
+- [x] Add `egui`, `egui-wgpu`, `egui-winit` deps; wire the egui render pass after the forward pass. *(Pinned to the egui 0.34 / wgpu 29 set with `default-features = false` to skip accesskit/arboard/clipboard/webbrowser. Encoded inside `render_frame` after the forward pass; loads, doesn't clear.)*
+- [x] Add `DebugState` resource; F1 toggles overlay visibility.
+- [x] Display FPS, frame time (ms), entity count, active-camera position in a default window. *(FPS / ms averaged over a 60-frame ring buffer.)*
+- [x] Add `puffin` + ~~`puffin_egui`~~; place scopes in `App::tick`, `Schedule::run`, `render_frame`, and each render sub-step. *(Dropped `puffin_egui` — its release cadence trails egui by one minor and there is no version pairing for egui 0.34. Replaced its UI by reading `puffin::GlobalProfiler` ourselves: a sink fills an `Arc<Mutex<FrameView>>`, `ProfilerView::refresh` rebuilds a cached `ProfilerSnapshot` at most every 500 ms aggregating the last 50 frames via `merge_scopes_for_thread`, and `build_profiler_panel` renders the cached hierarchy as an indented egui grid.)*
+- [x] Expose a button in the overlay to show/hide the puffin ~~flame graph~~ scope table. *(Checkbox flips `DebugState::show_profiler`, which gates `puffin::set_scopes_on(...)` in `App::tick` so collection cost is paid only while the panel is open.)*
 
 ### Phase I — Polish & Done-Bar Verification
-- [ ] Add basic `env_logger` config driven by `RUST_LOG`; log init/resize/surface-lost events.
+- [x] Add basic `env_logger` config driven by `RUST_LOG`; log init/resize/surface-lost events. *(Already wired in Phase B/F — `crates/schooner-engine/src/logging.rs::init` takes a `LogConfig` with three-tier precedence (`RUST_LOG` → `fallback_filter` → `default_level`), default fallback quiets `wgpu_core`/`wgpu_hal`/`naga`/`winit` to `warn`. Init/resize/surface-lost events log at `info!`/`warn!` from `app.rs` and `render/context.rs`.)*
 - [ ] Verify `cargo run -p game-void` on Windows, Linux, macOS.
 - [ ] Add a tiny GitHub Actions workflow: `cargo check` on all three OSes on PR.
 - [ ] Write a `crates/schooner-engine/README.md` with a 1-page architecture overview and how to add a system / component (this is the seed of future docs).

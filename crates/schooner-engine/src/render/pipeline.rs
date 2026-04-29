@@ -74,8 +74,15 @@ impl ForwardPipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("forward-pipeline-layout"),
-            bind_group_layouts: &[&camera_layout, &light_layout, &model_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[
+                Some(&camera_layout),
+                Some(&light_layout),
+                Some(&model_layout),
+            ],
+            // wgpu 29 renamed push-constant capacity to "immediate
+            // size" and gated it behind Features::IMMEDIATES; we use
+            // dynamic-offset uniforms instead, so leave it at zero.
+            immediate_size: 0,
         });
 
         let shader = device.create_shader_module(ShaderModuleDescriptor {
@@ -113,13 +120,20 @@ impl ForwardPipeline {
             },
             depth_stencil: Some(DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
+                // wgpu 29 lifted these to Option to mirror the
+                // WebGPU spec's "None means depth not written /
+                // not tested." For an opaque forward pass we want
+                // both on.
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Less),
                 stencil: StencilState::default(),
                 bias: DepthBiasState::default(),
             }),
             multisample: MultisampleState::default(),
-            multiview: None,
+            // Replaces the old `multiview` field. `None` means
+            // single-view (no array-layer broadcast); the mask is
+            // only used when rendering into multiple layers at once.
+            multiview_mask: None,
             cache: None,
         });
 

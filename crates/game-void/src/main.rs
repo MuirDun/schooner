@@ -10,8 +10,6 @@ fn main() -> anyhow::Result<()> {
 
     let mut app = App::new()
         .with_window_config(WindowConfig::new("Schooner — The Void", 1280, 720))
-        .with_fps_logging()
-        .with_input_logging()
         // Order matters: cursor toggle runs first so the same frame's
         // look/move see the new grab state. render_frame is appended
         // last by App::resumed.

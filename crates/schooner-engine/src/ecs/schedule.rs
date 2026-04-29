@@ -1,24 +1,31 @@
-//! Ordered system execution for the two fixed Game 0 stages.
+//! Ordered system execution for the three fixed Game 0 stages.
 //!
-//! The engine runs systems in exactly two stages, named by [`Stage`]:
-//! - [`Stage::Update`] — variable timestep, once per frame. Input,
-//!   camera, rendering prep. `delta` scales with real frame time.
+//! The engine runs systems in exactly three stages, named by [`Stage`]:
 //! - [`Stage::FixedUpdate`] — fixed timestep, 0..N times per frame,
 //!   driven by an accumulator in the App loop.
 //!   Physics and deterministic game logic land here.
+//! - [`Stage::Update`] — variable timestep, once per frame. Input,
+//!   camera, gameplay logic. `delta` scales with real frame time.
+//! - [`Stage::Render`] — once per frame, after `Update`. Owns the
+//!   forward pass, the egui overlay, and any future post-process
+//!   work. Systems here are expected to read the post-`Update`
+//!   snapshot of the world; the engine appends `render_frame` to
+//!   this stage from `App::resumed` after the user's builder chain.
 //!
-//! The stage set is a closed enum.
-//! Game-side custom stages would likely live in the scripting
-//! layer, not the Rust core — so the enum cannot be extended by
-//! downstream crates.
+//! The stage set is a closed enum. Game-side custom stages would
+//! likely live in the scripting layer, not the Rust core — so the
+//! enum cannot be extended by downstream crates.
 //!
 //! ## Tick semantics
 //!
-//! [`Schedule::run`] and [`Schedule::run_fixed`] both bump
-//! `world.current_tick` exactly once before dispatching their stage.
-//! A frame with one `Update` and three `FixedUpdate` steps therefore
-//! advances `current_tick` by four; change detection inside a
-//! stage-run sees a coherent snapshot.
+//! [`Schedule::run_fixed`], [`Schedule::run`], and
+//! [`Schedule::run_render`] each bump `world.current_tick` exactly
+//! once before dispatching their stage. A frame with three
+//! `FixedUpdate` steps therefore advances `current_tick` by 5
+//! (3 fixed + Update + Render). The uniform rule "every stage run
+//! = one tick" keeps change-detection comparisons across stages
+//! straightforward; if the reactive cascade engine in Game 2 wants
+//! a different convention, that's the place to revisit it.
 //!
 //! ## Scope (Game 0)
 //!
@@ -39,8 +46,9 @@ use crate::ecs::world::World;
 /// enum keeps stage-handling code honest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stage {
-    Update,
     FixedUpdate,
+    Update,
+    Render,
 }
 
 /// Ordered system list for a single [`Stage`].
@@ -77,8 +85,9 @@ impl SystemStage {
 /// (variable tick) and [`Schedule::run_fixed`] (driven by the
 /// fixed-timestep accumulator).
 pub struct Schedule {
-    update: SystemStage,
     fixed_update: SystemStage,
+    update: SystemStage,
+    render: SystemStage,
 }
 
 impl Default for Schedule {
@@ -90,8 +99,9 @@ impl Default for Schedule {
 impl Schedule {
     pub fn new() -> Self {
         Self {
-            update: SystemStage::new(),
             fixed_update: SystemStage::new(),
+            update: SystemStage::new(),
+            render: SystemStage::new(),
         }
     }
 
@@ -118,8 +128,9 @@ impl Schedule {
         }
         let boxed: Box<dyn System> = Box::new(system);
         match stage {
-            Stage::Update => self.update.push(boxed),
             Stage::FixedUpdate => self.fixed_update.push(boxed),
+            Stage::Update => self.update.push(boxed),
+            Stage::Render => self.render.push(boxed),
         }
         self
     }
@@ -127,6 +138,7 @@ impl Schedule {
     /// Advance `world.current_tick` by one, then run every
     /// [`Stage::Update`] system in registration order.
     pub fn run(&mut self, world: &mut World) {
+        puffin::profile_scope!("update_stage");
         world.increment_tick();
         self.update.run(world);
     }
@@ -135,14 +147,26 @@ impl Schedule {
     /// [`Stage::FixedUpdate`] system in registration order.
     /// Called 0..N times per frame by the App's accumulator.
     pub fn run_fixed(&mut self, world: &mut World) {
+        puffin::profile_scope!("fixed_stage");
         world.increment_tick();
         self.fixed_update.run(world);
     }
 
+    /// Advance `world.current_tick` by one, then run every
+    /// [`Stage::Render`] system in registration order. Called once
+    /// per frame after [`Schedule::run`]; this is where the forward
+    /// pass and egui overlay live.
+    pub fn run_render(&mut self, world: &mut World) {
+        puffin::profile_scope!("render_stage");
+        world.increment_tick();
+        self.render.run(world);
+    }
+
     pub fn system_count(&self, stage: Stage) -> usize {
         match stage {
-            Stage::Update => self.update.len(),
             Stage::FixedUpdate => self.fixed_update.len(),
+            Stage::Update => self.update.len(),
+            Stage::Render => self.render.len(),
         }
     }
 }
@@ -162,8 +186,9 @@ mod tests {
     fn empty_schedule_runs_without_panic() {
         let mut world = World::new();
         let mut sched = Schedule::new();
-        sched.run(&mut world);
         sched.run_fixed(&mut world);
+        sched.run(&mut world);
+        sched.run_render(&mut world);
     }
 
     #[test]
@@ -185,7 +210,16 @@ mod tests {
     }
 
     #[test]
-    fn frame_with_three_fixed_steps_advances_tick_by_four() {
+    fn run_render_bumps_current_tick_exactly_once() {
+        let mut world = World::new();
+        let before = world.current_tick;
+        let mut sched = Schedule::new();
+        sched.run_render(&mut world);
+        assert_eq!(world.current_tick, before + 1);
+    }
+
+    #[test]
+    fn frame_with_three_fixed_steps_advances_tick_by_five() {
         let mut world = World::new();
         let before = world.current_tick;
         let mut sched = Schedule::new();
@@ -193,7 +227,8 @@ mod tests {
         sched.run_fixed(&mut world);
         sched.run_fixed(&mut world);
         sched.run(&mut world);
-        assert_eq!(world.current_tick, before + 4);
+        sched.run_render(&mut world);
+        assert_eq!(world.current_tick, before + 5);
     }
 
     #[test]
@@ -393,11 +428,13 @@ mod tests {
         // on Stage). Keeps the closed-set invariant honest.
         fn _exhaustive(s: Stage) -> &'static str {
             match s {
-                Stage::Update => "update",
                 Stage::FixedUpdate => "fixed",
+                Stage::Update => "update",
+                Stage::Render => "render",
             }
         }
-        assert_eq!(_exhaustive(Stage::Update), "update");
         assert_eq!(_exhaustive(Stage::FixedUpdate), "fixed");
+        assert_eq!(_exhaustive(Stage::Update), "update");
+        assert_eq!(_exhaustive(Stage::Render), "render");
     }
 }

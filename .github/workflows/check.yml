@@ -1,0 +1,64 @@
+name: check
+
+# Runs on every PR to main and on direct pushes to main. The matrix
+# stands in for the cross-platform `cargo run` verification we can't
+# do from the developer's macOS-only workstation: if the engine
+# stops compiling on Linux or Windows we find out before the change
+# lands, not when someone clones the repo on those OSes.
+#
+# Scope: `cargo check` only — full builds + tests aren't worth the CI
+# minutes at Game 0, and a `check` failure already means the build is
+# broken. Tests + clippy land here when there's a reason for them.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel an in-progress run on the same PR/branch when a new commit
+# lands — matrix CI on three OSes burns minutes fast otherwise.
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: cargo check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        # Pin to the workspace's `rust-version`. Keeps CI honest if
+        # the repo bumps MSRV; failing here is better than failing on
+        # a contributor's machine.
+        with:
+          toolchain: 1.95
+
+      - name: Install Linux GUI deps
+        if: runner.os == 'Linux'
+        # winit + wgpu link against system libs on Linux; the
+        # ubuntu-latest runner doesn't have them by default.
+        # `xkbcommon-dev` covers winit's keyboard layer; the
+        # `libwayland-dev` + `libxkbcommon-dev` pair covers both
+        # winit backends. wgpu's Vulkan loader is already present.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libxkbcommon-x11-dev \
+            libx11-dev
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo check (workspace)
+        run: cargo check --workspace --all-targets
