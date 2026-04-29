@@ -416,10 +416,10 @@ Each item is scoped to be independently executable.
 
 ### Phase I — Polish & Done-Bar Verification
 - [x] Add basic `env_logger` config driven by `RUST_LOG`; log init/resize/surface-lost events. *(Already wired in Phase B/F — `crates/schooner-engine/src/logging.rs::init` takes a `LogConfig` with three-tier precedence (`RUST_LOG` → `fallback_filter` → `default_level`), default fallback quiets `wgpu_core`/`wgpu_hal`/`naga`/`winit` to `warn`. Init/resize/surface-lost events log at `info!`/`warn!` from `app.rs` and `render/context.rs`.)*
-- [ ] Verify `cargo run -p game-void` on Windows, Linux, macOS.
-- [ ] Add a tiny GitHub Actions workflow: `cargo check` on all three OSes on PR.
-- [ ] Write a `crates/schooner-engine/README.md` with a 1-page architecture overview and how to add a system / component (this is the seed of future docs).
-- [ ] Walk through the Done Bar (§1.6); check off each item.
+- [ ] Verify `cargo run -p game-void` on Windows, Linux, macOS. *(macOS ✓ throughout development. Win/Linux blocked on developer access to those OSes; protocol at `plans/game0-verification.md`.)*
+- [x] Add a tiny GitHub Actions workflow: `cargo check` on all three OSes on PR. *(`.github/workflows/check.yml` — matrix on macos-latest / ubuntu-latest / windows-latest, pinned to MSRV 1.95, includes the Linux GUI deps and `Swatinem/rust-cache`.)*
+- [x] Write a `crates/schooner-engine/README.md` with a 1-page architecture overview and how to add a system / component (this is the seed of future docs). *(Idea-level only per the architecture-docs convention — no struct shapes / signatures that rot.)*
+- [x] Walk through the Done Bar (§1.6); check off each item. *(7 of 8 met with file-line evidence; item 8 is the cross-OS run that's gated on developer access.)*
 
 ### Phase J — Pre-Game-1 Tech Hygiene (optional but recommended before starting Kinesis)
 - [ ] Write a one-page "lessons learned" note: what hurt, what to change before Game 1.
