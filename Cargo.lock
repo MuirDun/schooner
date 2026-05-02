@@ -823,7 +823,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "game-void"
+name = "game"
 version = "0.1.0"
 dependencies = [
  "anyhow",
