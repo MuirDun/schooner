@@ -18,11 +18,19 @@ impl ChangeTicks {
 
 type DenseIndex = u32;
 
+/// Sentinel marking an empty sparse slot. `Vec<DenseIndex>` halves the
+/// sparse array's footprint vs. `Vec<Option<DenseIndex>>` (no niche on
+/// `u32`). `u32::MAX` is unreachable as a real dense index — the dense
+/// arrays are `Vec`s of `(EntityId, T)` whose length is bounded by
+/// allocator-addressable memory, well below 4 G entries per type.
+const EMPTY: DenseIndex = DenseIndex::MAX;
+
 /// Sparse-set storage for a single component type.
 ///
 /// Layout:
-/// - `sparse[entity.index]` → `Some(dense_idx)` if this entity stores a
-///   value, else `None`. Grown on demand to the largest seen index.
+/// - `sparse[entity.index]` → dense index, or [`EMPTY`] if this entity
+///   stores no value. Grown on demand to the largest seen index, padded
+///   with `EMPTY`.
 /// - `dense[dense_idx]` = `(EntityId, T)`. The `EntityId` carries the
 ///   generation so stale lookups can be detected.
 /// - `ticks[dense_idx]` — parallel to `dense`, change-detection
@@ -32,7 +40,7 @@ type DenseIndex = u32;
 /// and truncate. Iteration order is NOT insertion-stable.
 #[derive(Debug)]
 pub struct SparseSet<T> {
-    sparse: Vec<Option<DenseIndex>>,
+    sparse: Vec<DenseIndex>,
     dense: Vec<(EntityId, T)>,
     ticks: Vec<ChangeTicks>,
 }
@@ -65,10 +73,11 @@ impl<T> SparseSet<T> {
     pub fn insert(&mut self, entity: EntityId, value: T, tick: u64) -> Option<T> {
         let slot = entity.index as usize;
         if slot >= self.sparse.len() {
-            self.sparse.resize(slot + 1, None);
+            self.sparse.resize(slot + 1, EMPTY);
         }
 
-        if let Some(dense_idx) = self.sparse[slot] {
+        let dense_idx = self.sparse[slot];
+        if dense_idx != EMPTY {
             let dense_idx = dense_idx as usize;
             // Contract: `World::despawn` must `remove` before a slot is
             // recycled to a new generation. If this fires, a storage was
@@ -82,7 +91,7 @@ impl<T> SparseSet<T> {
             Some(old)
         } else {
             let dense_idx = self.dense.len() as DenseIndex;
-            self.sparse[slot] = Some(dense_idx);
+            self.sparse[slot] = dense_idx;
             self.dense.push((entity, value));
             self.ticks.push(ChangeTicks::new(tick));
             None
@@ -92,20 +101,20 @@ impl<T> SparseSet<T> {
     /// Remove and return the value, or `None` if absent or stale.
     pub fn remove(&mut self, entity: EntityId) -> Option<T> {
         let slot = entity.index as usize;
-        let dense_idx = self.sparse.get(slot).copied().flatten()? as usize;
+        let dense_idx = self.dense_index(slot)? as usize;
         if self.dense[dense_idx].0 != entity {
             return None;
         }
 
         let (_, value) = self.dense.swap_remove(dense_idx);
         self.ticks.swap_remove(dense_idx);
-        self.sparse[slot] = None;
+        self.sparse[slot] = EMPTY;
 
         // If swap-remove moved the last entry into `dense_idx`, update
         // its sparse pointer to the new position.
         if dense_idx < self.dense.len() {
             let moved_entity = self.dense[dense_idx].0;
-            self.sparse[moved_entity.index as usize] = Some(dense_idx as DenseIndex);
+            self.sparse[moved_entity.index as usize] = dense_idx as DenseIndex;
         }
 
         Some(value)
@@ -117,14 +126,14 @@ impl<T> SparseSet<T> {
 
     pub fn get(&self, entity: EntityId) -> Option<&T> {
         let slot = entity.index as usize;
-        let dense_idx = self.sparse.get(slot).copied().flatten()? as usize;
+        let dense_idx = self.dense_index(slot)? as usize;
         let (stored, value) = &self.dense[dense_idx];
         (*stored == entity).then_some(value)
     }
 
     pub fn get_mut(&mut self, entity: EntityId) -> Option<&mut T> {
         let slot = entity.index as usize;
-        let dense_idx = self.sparse.get(slot).copied().flatten()? as usize;
+        let dense_idx = self.dense_index(slot)? as usize;
         let (stored, value) = &mut self.dense[dense_idx];
         (*stored == entity).then_some(value)
     }
@@ -137,7 +146,7 @@ impl<T> SparseSet<T> {
         entity: EntityId,
     ) -> Option<(&mut T, &mut ChangeTicks)> {
         let slot = entity.index as usize;
-        let dense_idx = self.sparse.get(slot).copied().flatten()? as usize;
+        let dense_idx = self.dense_index(slot)? as usize;
         if self.dense[dense_idx].0 != entity {
             return None;
         }
@@ -149,7 +158,7 @@ impl<T> SparseSet<T> {
 
     pub fn ticks(&self, entity: EntityId) -> Option<ChangeTicks> {
         let slot = entity.index as usize;
-        let dense_idx = self.sparse.get(slot).copied().flatten()? as usize;
+        let dense_idx = self.dense_index(slot)? as usize;
         if self.dense[dense_idx].0 != entity {
             return None;
         }
@@ -158,11 +167,20 @@ impl<T> SparseSet<T> {
 
     pub fn ticks_mut(&mut self, entity: EntityId) -> Option<&mut ChangeTicks> {
         let slot = entity.index as usize;
-        let dense_idx = self.sparse.get(slot).copied().flatten()? as usize;
+        let dense_idx = self.dense_index(slot)? as usize;
         if self.dense[dense_idx].0 != entity {
             return None;
         }
         Some(&mut self.ticks[dense_idx])
+    }
+
+    /// Resolve sparse slot → dense index, returning `None` for both
+    /// out-of-bounds and `EMPTY` slots. Single point of truth for the
+    /// sentinel encoding so callers stay readable.
+    #[inline]
+    fn dense_index(&self, slot: usize) -> Option<DenseIndex> {
+        let raw = *self.sparse.get(slot)?;
+        (raw != EMPTY).then_some(raw)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (EntityId, &T)> + '_ {

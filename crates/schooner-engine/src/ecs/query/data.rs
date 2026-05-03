@@ -33,12 +33,19 @@
 //! from typed impls so shik's `world.query_dyn(&[ids])` reuses the
 //! same join machinery — only the user-facing surface changes.
 
+use smallvec::SmallVec;
+
 use crate::ecs::query::fetch::{
     check_no_alias, handle_as_read, handle_as_write, name_of_component, split_storages,
     StorageHandle,
 };
 use crate::ecs::world::Mut;
 use crate::ecs::{Component, ComponentId, EntityId, SparseSet, World};
+
+/// Inline capacity for [`QueryAccess::components`]. Covers the common
+/// queries: 1/2/3-tuple data with up to one filter slot in the
+/// combined alias check. Wider queries spill to the heap.
+pub(crate) const ACCESS_INLINE: usize = 4;
 
 /// Per-component access descriptor: which component, in which mode.
 ///
@@ -54,9 +61,14 @@ pub struct ComponentAccess {
 
 /// The access set of a whole query — every component it touches, in
 /// declaration order.
+///
+/// `components` is a `SmallVec` so the common 1/2/3-tuple queries stay
+/// stack-allocated through the per-query setup path (`access` is built
+/// fresh on every `world.query::<D>()`). Wider queries fall back to the
+/// heap.
 #[derive(Clone, Debug, Default)]
 pub struct QueryAccess {
-    pub components: Vec<ComponentAccess>,
+    pub components: SmallVec<[ComponentAccess; ACCESS_INLINE]>,
 }
 
 impl QueryAccess {

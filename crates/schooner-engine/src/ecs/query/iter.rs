@@ -27,7 +27,9 @@
 //! mutable handle inside `Fetch` is over a *different* component
 //! storage (the alias check guarantees it).
 
-use crate::ecs::query::data::{build_fetch_with_filter, QueryData};
+use smallvec::SmallVec;
+
+use crate::ecs::query::data::{build_fetch_with_filter, QueryData, ACCESS_INLINE};
 use crate::ecs::query::filter::QueryFilter;
 use crate::ecs::query::join::Join;
 use crate::ecs::ComponentId;
@@ -48,7 +50,7 @@ pub struct QueryIter<'w, D: QueryData, F: QueryFilter = ()> {
 impl<'w, D: QueryData, F: QueryFilter> QueryIter<'w, D, F> {
     pub(crate) fn new(world: &'w mut World, state: D::State, filter_state: F::State) -> Self {
         let data_access = D::access(&state);
-        let required: Vec<ComponentId> =
+        let required: SmallVec<[ComponentId; ACCESS_INLINE]> =
             data_access.components.iter().map(|c| c.component_id).collect();
         let driver = Join::new(world, &required);
         let fetch = build_fetch_with_filter::<D, F>(&state, &filter_state, world);

@@ -28,9 +28,17 @@
 
 use std::any::TypeId;
 
-use crate::ecs::query::data::{ComponentAccess, QueryAccess};
+use smallvec::SmallVec;
+
+use crate::ecs::query::data::{ComponentAccess, QueryAccess, ACCESS_INLINE};
 use crate::ecs::{Component, ComponentStorage, SparseSet, World};
 use crate::error::EngineError;
+
+/// Stack-allocated handle list for the common-case query (≤
+/// [`ACCESS_INLINE`] components). Same inline cap as
+/// [`QueryAccess::components`] so a query that fits one fits the other.
+pub type Handles<'w> = SmallVec<[StorageHandle<'w>; ACCESS_INLINE]>;
+pub type FilterHandles<'w> = SmallVec<[Option<StorageHandle<'w>>; ACCESS_INLINE]>;
 
 /// One resolved storage borrow. Read or Write — the variant matches
 /// the requested access mode.
@@ -89,7 +97,7 @@ pub fn split_storages<'w>(
     world: &'w mut World,
     data_access: &QueryAccess,
     filter_access: &QueryAccess,
-) -> Option<(Vec<StorageHandle<'w>>, Vec<Option<StorageHandle<'w>>>)> {
+) -> Option<(Handles<'w>, FilterHandles<'w>)> {
     // Required: every data storage must exist.
     for c in &data_access.components {
         if world.storage(c.component_id).is_none() {
@@ -104,7 +112,7 @@ pub fn split_storages<'w>(
     // the same `'w` lifetime; the resulting handles never alias.
     let world_ptr: *mut World = world;
 
-    let mut data_handles = Vec::with_capacity(data_access.components.len());
+    let mut data_handles: Handles<'w> = SmallVec::with_capacity(data_access.components.len());
     for c in &data_access.components {
         unsafe {
             let storage_ptr = (*world_ptr)
@@ -118,7 +126,8 @@ pub fn split_storages<'w>(
         }
     }
 
-    let mut filter_handles = Vec::with_capacity(filter_access.components.len());
+    let mut filter_handles: FilterHandles<'w> =
+        SmallVec::with_capacity(filter_access.components.len());
     for c in &filter_access.components {
         unsafe {
             let storage_ptr_opt = (*world_ptr).storage_box_ptr(c.component_id);
