@@ -41,3 +41,18 @@ I'm a experienced Rust developer. I'm about to make a large video game, with the
 - Scripting language would be intergrated at the early stage, UI, game logic, AI tree - everything which is not requires high computation power is would be done in this language. Rust for core and critical perfomance. But the communication with the language must be fast, as well as the language itself - bytecoded or comppiled.
 - For physics we would integrate another library, I think rapier.
 - The Engine must be oprimized for large open worlds and heavy compilcated living AI. So, the ECS architecture must be optimized for this.
+
+---
+
+## Current state of the project (as of the most recent planning session)
+
+- **Game 0 (The Void) is complete.** Engine scaffold lives: sparse-set ECS with per-component change-detection ticks, wgpu forward renderer, FPS camera, debug overlay, profiler, CI matrix.
+- **The active game lives in `crates/game/`.** Run with `cargo run -p game`. Crate name stays `game` regardless of which game is being developed.
+- **Previously shipped games live in `games/<n>-<name>/`** — excluded from the workspace, frozen against the engine commit they last built against.
+- **Architecture vision** is in `plans/architecture/*.md` — `overview.md`, `ecs.md`, `world-state.md`, `language-binding.md`, `glyph.md`, `chronicle.md`, `ai.md`, `reactivity.md`, `rendering.md`. Idea-level docs; concrete shapes live in code.
+- **Game progression** is in `plans/plan.md` (Games 0–5; Game 2 split into 2A and 2B).
+- **Two scripting languages over one VM** — Glyph (procedural gameplay, Game 2A) and Chronicle (declarative world rules, Game 4).
+- **Layered world architecture** — five layers: World State (relational DB), World Simulation (Chronicle + background tick), Agent Behavior (Blackboard + Utility AI + HTN), Local Simulation (ECS), and a tiered reactive event backbone connecting them.
+- **Rendering aesthetic is locked** — forward rendering permanently, MSAA never TAA, dreamy + grounded look, no PBR/deferred/GI/SSR/TAA/film-grain.
+
+When planning, treat these as the ground state. New plans land in `plans/`; new architecture vision lands in `plans/architecture/`. Do not modify games in `games/` — they are frozen snapshots.
