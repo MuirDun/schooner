@@ -96,7 +96,7 @@ The first four are technical justifications. The fifth is the honest one: this i
 
 Glyph arrives in stages, each motivated by concrete pain in the previous game.
 
-- **v0.1 (Game 2A) — Dynamic.** S-expression syntax. Bytecode and VM. Hot reload. Rust FFI. Dynamically typed. The minimum that scripts a horror game's logic and lets us feel where dynamic typing hurts.
+- **v0.1 (Game 2A) — Dynamic.** Shik syntax. Bytecode and VM. Hot reload. Rust FFI. Dynamically typed. The minimum that scripts a horror game's logic and lets us feel where dynamic typing hurts.
 - **v0.5 (Game 2B → Game 3) — Typed.** Type inference. Engine-intrinsic component types known to the compiler. Pattern matching by component shape, with the compiler verifying matches. Better error messages.
 - **v1.0 (Game 4) — Expressive.** Hygienic macros, driven by the spell-composition needs Game 3's immersive-sim foundations expose. Refinement types on domain values. ECS queries embedded in the language with the compiler emitting specialised opcodes. Profiling-driven optimisation passes for the hot paths Game 4's NPC counts surface.
 

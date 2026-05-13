@@ -60,39 +60,66 @@ graph TD
 
 ---
 
-### Game 1: Kinesis — Physics Puzzle
-**Genre:** First-person physics puzzle game. Think Portal meets Psi-Ops — you have telekinetic powers and use them to solve environmental puzzles. Grab objects, throw them, stack them, trigger mechanisms. Some puzzles involve destruction — collapse a wall to open a path, shatter a support to drop a bridge.
+### Game 1: Kinesis — Psychological-Horror Physics Puzzle
+**Genre:** First-person psychological-horror physics puzzle. The player wakes in a Mahli biological research facility on a hostile planet, learns telekinetic mechanics one room at a time, and discovers across four hours that they are the substrate of an experiment, not its subject. Five acts (chamber → cage → flight chambers → cage → labyrinth) with six possible endings. 3–4 hour runtime, novelette pacing.
 
-**What you see:** First-person. A series of test chambers or connected rooms. You can grab objects with a telekinesis force, push/pull them, rotate them in the air, and launch them. Puzzles require moving objects onto pressure plates, building bridges from debris, breaking through destructible walls, redirecting energy beams by positioning reflectors. Each chamber teaches a new mechanic, culminating in multi-step puzzles that combine them.
+**Production staging:** Detailed plan in [`../crates/game/plan.md`](../crates/game/plan.md), with seven Parts staged under [`../crates/game/implementation/`](../crates/game/implementation/). Design spine under [`../crates/game/design/`](../crates/game/design/).
 
 **Engine subsystems built:**
 
-*Physics + interaction (the core dimension):*
+*Physics + interaction (the original core dimension):*
 - [ ] Rapier physics integration — rigid bodies, colliders, joints, constraints
 - [ ] Physics-ECS bridge — sync transforms between Rapier and ECS each fixed-update
 - [ ] Collision events — **first Tier 2 cross-layer event channel**: physics publishes contacts; gameplay systems consume on the next frame
-- [ ] Force application system — directional / radial forces from gameplay onto bodies
-- [ ] Constraint-based interaction — grab, hold, rotate physics objects with player input
-- [ ] Destructible objects — break meshes into physics fragments on impact threshold
+- [ ] Force application system — directional / radial / impulse forces from gameplay onto bodies
+- [ ] Constraint-based interaction — grab, hold, push, pull at close range and at telekinesis range; mouse-wheel distance adjust
+- [ ] Throwing — impulse launch of held objects
+- [ ] Repulsion against surfaces — self-impulse, enables short-burst flight
+- [ ] Destructible objects — break meshes into authored physics fragments on impact threshold
 - [ ] Trigger volumes — detect entity presence in a region, fire Tier 2 events
+- [ ] Pressure plates — held-state trigger
 - [ ] Basic material system (physics) — mass, friction, restitution, breakability per material kind
 
+*Renderer + atmosphere extensions (pulled in from G2A because Kinesis cannot ship without them):*
+- [ ] Per-instance material parameters — albedo, roughness, emissive; enables same-geometry material variants (iron polished / default / pitted)
+- [ ] Spot + point light components with per-light parameters
+- [ ] Per-light shadow maps for spot lights (single map per light, indoor-scoped — cascaded shadow maps stay deferred to Game 3 for outdoor sun)
+- [ ] Post-process pipeline v0 — tonemap, color grade, vignette, fullscreen overlay slot
+- [ ] Atmospheric fog with analytic in-scattering through spot cones (god-rays)
+- [ ] Decals + transparency v0 — textured-quad decals with depth-bias; `AlphaBlend` material flag for glass and wall art
+- [ ] Frosted-glass material with view-angle Fresnel
+
 *Asset pipeline v0 (the minimum to stop hardcoding meshes):*
-- [ ] **glTF mesh loader** — load authored meshes from disk into `MeshRegistry`; replaces the Game 0 hardcoded cube/plane workflow for anything that isn't a debug primitive
-- [ ] **Texture loader** — load PNG/KTX textures from disk; bind into the existing forward shader's albedo slot
-- [ ] **Manual reload** — a developer-facing key combo or CLI flag that re-reads asset files; no file watcher yet (that's Game 2A's v1)
-- [ ] **Level/scene loader** — load a discrete level from a glTF scene file (or a small custom scene-list format if glTF scenes prove awkward); levels declare their meshes, textures, light, and entity layout
+- [ ] **glTF mesh loader** — load authored meshes from disk into `MeshRegistry`; replaces Game 0's hardcoded cube/plane workflow for anything that isn't a debug primitive
+- [ ] **Texture loader** — load PNG/KTX textures from disk; bind into the forward shader's albedo slot via `Material`
+- [ ] **Manual reload** — a developer-facing key combo that re-reads asset files; no file watcher yet (Game 2A's v1)
+- [ ] **Level/scene loader** — load a discrete level from a glTF scene file (or a small custom scene-list format if glTF scenes prove awkward); levels declare their meshes, textures, light setup, and entity layout
 - [ ] **Level transitions** — tear down current level entities, load next level; reuses the loader
 
+*World-mind systems (the Kinesis spine that ports to Chronicle in Game 4):*
+- [ ] Single declarative world-state representation (Rust, rule-shaped per `architecture/chronicle.md` philosophy) — eye state, chamber comfort, food appearance, ambient mood are *derived* from attitude tracks, not procedurally cascaded
+- [ ] Save system v0 — per-scene closed-schema serialization (not generalized ECS serialization — that's Game 2A); autosave at scene boundaries; slot-per-save (no overwriting)
+- [ ] Chamber-state persistence rule — engine surface that allows displaced-object state to survive player respawn (consumed by Kinesis's "Researcher has stopped tidying" beat in Acts 3–5)
+
+*Audio:*
+- [ ] Audio integration via `kira` or `rodio` — impact sounds, vocalization triggers, per-zone ambient beds
+- [ ] **Positional audio v0** — position + distance attenuation; *no occlusion* (occlusion is Game 2B's job)
+- [ ] Sample-based multi-note audio system (the Act 4 instrument; reusable for any sample-driven instrument)
+- [ ] Death-sequence audio routing — muffling + red-noise wake
+
+*Mahli presentation (engine-side surfaces; the choreography that drives them is gameplay):*
+- [ ] Eye-render shader / animation states — UV-pan, dilation, glow intensity, position drift; state-channel selector
+- [ ] Keyframed transform-track animation v0 — tentacle paths; reusable for any non-skeletal animated entity (skeletal animation stays in Game 4)
+
 *Supporting systems:*
-- [ ] Simple particle effects — impact sparks, debris dust, energy visuals (CPU-driven for now)
+- [ ] Simple particle effects — impact sparks, debris dust, telekinesis hold field, repulsion impact ring, destruction debris, food scent-cloud (CPU-driven for now)
 - [ ] Debug rendering — wireframe colliders, force vectors, trigger volumes (overlay-style, behind a debug flag)
-- [ ] Basic UI — puzzle-state indicators, reticle, level-transition prompt (Rust-side for now; Glyph-driven UI is Game 2A)
-- [ ] Audio integration (`rodio` or `kira`) — impact sounds, ambient, positional audio basics
+- [ ] HUD glyph overlay system — pictographic verb glyphs (5–6), fade-driven, with disuse-timeout reappearance; mode indicator; mode-tinted reticle (no text, no in-author voice)
+- [ ] Death sequence — fade-to-white + red-noise overlay through the post-process overlay slot
 
-**Why this game:** Physics is a dependency for almost everything after it — character controllers, object interaction, environmental simulation. A puzzle game is the right choice over a pure sandbox because: (1) it forces you to build **precise, controllable physics interactions** (grab, hold, throw, trigger), which are exactly the verbs the final RPG needs for object manipulation in the world; (2) puzzle design requires trigger systems and game-state logic, which lays groundwork for scripted events in Game 2A; (3) the Portal-like structure of discrete test chambers is a natural fit for the current asset situation — clean geometric environments, no need for organic terrain yet; (4) destruction mechanics stress-test physics performance and teach you about mesh fragmentation, which carries forward to combat and world interaction; (5) the asset pipeline v0 lands here because Game 1 is the first game with *authored* content beyond Game 0's procedural primitives — you can no longer get away with hardcoded meshes, but you also do not yet need hot reload or a scene editor, so v0 stays tight.
+**Why this game:** Kinesis is the engine's first ship target. The original Game 1 plan was "physics-puzzle to teach the engine physics," but the scope-of-Kinesis discussion (2026-05-13) found that Game 2A's renderer, save, and audio work all need to land *here* — the game cannot ship as designed otherwise. That re-staging is what these subsystem additions reflect. The principles still hold: (1) physics is the dependency wall for almost everything later — character controllers, object interaction, environmental simulation; (2) precise controllable physics interactions are exactly the verbs the final RPG needs; (3) the discrete-chamber structure is a natural fit for the current asset situation — clean geometric environments, no organic terrain yet; (4) destruction mechanics stress-test physics performance; (5) the asset pipeline v0 lands here because Game 1 is the first game with authored content beyond Game 0's procedural primitives.
 
-**Releasable?** With enough clever puzzles and a coherent aesthetic, absolutely. Physics puzzle games have a dedicated audience. Even a short 1-2 hour experience works well on itch.io or Steam.
+**Releasable?** Yes — Kinesis is the first ship target. The novelette pacing (3–4 hours, tightly designed) and the marketable psychological-horror angle make it a real release rather than a tech demo.
 
 ---
 
@@ -111,15 +138,13 @@ Game 2 is split. The original single-game scope packed scripting VM, FFI, hot re
 - [ ] Hot reload for scripts (file watcher → recompile → swap module, in-flight state preserved where possible)
 - [ ] Script-driven game logic — item pickups, door triggers, puzzle sequences, scripted scares, win/lose conditions
 - [ ] Script-driven UI — inventory, HUD, notes/journals, dialogue (no NPC yet)
-- [ ] **Asset pipeline v1** — extends Game 1's v0 with: file-watcher-driven hot reload of meshes, textures, and shaders; richer scene format (entity layouts, component overrides, light placements); broader texture format support if needed
-- [ ] Scene serialization — save/load full level state (placed objects, puzzle state, mid-level checkpoints) to data files
-- [ ] Lighting upgrade — cascaded shadow maps for the sun, one spot light for the flashlight, point/spot light support
-- [ ] Post-process pipeline lands in full — tone curve with shadow lift, warm colour grade, warm height fog, vignette (per `architecture/rendering.md`)
+- [ ] **Asset pipeline v1** — extends Game 1's v0 with file-watcher-driven hot reload of meshes, textures, and shaders; richer scene format (entity layouts, component overrides, light placements); broader texture format support if needed
+- [ ] **Generalized scene serialization** — extends Game 1's per-scene closed-schema saves to a reflection-aware scene format that survives schema evolution
+- [ ] **Post-process pipeline matures** — refined LUT-based color grading, warm-height-fog refinements, additional overlay capabilities (Game 1 landed the lean version)
 - [ ] Foliage translucency shader written and exercised on a few interior plants — keeps the shader path real for Game 3
-- [ ] 3D spatial audio v1 — positional sources, attenuation
 - [ ] Tier 2 cross-layer event queue formalised (collision events from Game 1 generalised)
 
-**Why this split:** Scripting is the new dimension. Horror is the right vehicle because the loop (hide, explore, escape) is simple enough to debug a new VM under, while the atmosphere demands the asset pipeline and post-process work. No AI yet — the script-engine boundary is hard enough on its own.
+**Why this split:** Scripting is the new dimension introduced in 2A. Horror is the right vehicle because the loop (hide, explore, escape) is simple enough to debug a new VM under. The renderer's indoor atmospherics — spot/point lighting with shadows, post-process v0, fog, decals, positional audio — all shipped with Kinesis, so 2A inherits a renderer that can already carry a horror facility. The new pressure here is the Rust↔Glyph FFI boundary and the asset-pipeline maturation, not the visual language. No AI yet — the script-engine boundary is hard enough on its own.
 
 #### Game 2B — Whisper: The Hunter
 
@@ -340,13 +365,14 @@ The crate boundaries above are an aspiration, not a Game 0 commitment. Through G
 - [x] **World coordinate system** — Y-up, right-handed. NDC depth 0..1 (wgpu default). Units: 1.0 = 1 metre. Reverse-Z deferred to Game 3 when outdoor depth precision starts to matter.
 - [x] **Entity ID scheme** — `EntityId { index: u32, generation: u32 }`, 8 bytes, `Copy`. Generational index handles stale-reference detection. Named/stable string IDs for authored content live in a separate registry resource, not baked into `EntityId`.
 - [x] **Shader language** — WGSL only. Shaders loaded at runtime for development iteration; hot-reload arrives with the asset pipeline in Game 2A.
+- [x] **Kinesis-driven Game 1 expansion** *(2026-05-14)* — Spot+point lights with per-light shadow maps, post-process pipeline v0 (tonemap, color grade, vignette, fog, overlay slot), atmospheric fog with analytic god-ray in-scattering, decals + transparency v0, save system v0 (per-scene closed-schema), positional audio v0 (no occlusion), eye-render and keyframed-transform animation systems all land in Game 1 because Kinesis cannot ship as designed without them. Game 2A focuses on Glyph + asset-pipeline-v1 (file-watcher hot reload + generalized scene serialization) + post-process maturation. Audio occlusion stays in Game 2B; cascaded shadow maps stay in Game 3 (outdoor). Detailed staging in `crates/game/plan.md`.
 
 ### Open — to be resolved before or during the game that needs them
 
-- [ ] **Asset format** *(decide during Game 1 planning, build in Game 2A)* — glTF for meshes first; custom binary only if glTF proves insufficient. Hot-reload strategy is committed; the file watcher and reload semantics are detailed during Game 2A planning.
+- [x] **Asset format** *(resolved 2026-05-14 during Kinesis planning)* — glTF for meshes, PNG/KTX for textures, manual reload in Game 1; file-watcher-driven hot reload + richer scene format in Game 2A.
 - [ ] **Glyph FFI binding mechanism** *(decide during Game 2A planning)* — exact wire format between Rust and the bytecode VM. Constrained by performance (hundreds of NPCs running utility AI in Glyph every agent tick) and by hot-reload semantics.
 - [ ] **Cascade depth and budget** *(decide during Game 2A wiring of Tier 1 reactive)* — synchronous within a frame is decided; the specific recursion-depth cap and budget-overrun behaviour are tuned when real consumers exist.
-- [ ] **Light-shaft technique for Game 3** *(decide during Game 3 prototyping)* — screen-space god rays vs coarse volumetric pass. Both are cheap; choice is aesthetic + profiling.
+- [ ] **Light-shaft technique for outdoor Game 3** *(decide during Game 3 prototyping)* — screen-space god rays vs coarse volumetric pass for sun-through-trees. Indoor analytic in-scattering through spot cones was chosen for Game 1; the outdoor case remains separate and open.
 - [ ] **SSAO inclusion in Game 3** *(decide during Game 3 prototyping)* — included only if it pulls its weight. Hemisphere ambient + contact shadows may be enough.
 - [ ] **Relationship graph as first-class ECS concept** *(parked, revisit Game 4)* — Flecs-style relationships in the ECS, or keep modelling via entity-ID fields and rely on Layer 1 for the relational queries? Parked until the need is concrete; current leaning is to keep it out of the ECS because Layer 1 is where relations live.
 - [ ] **JIT for Glyph** *(parked, revisit Game 4 if profiling forces it)* — bytecode VM with specialised opcodes is the floor; JIT is the ceiling if the floor is not enough.
@@ -358,8 +384,8 @@ The crate boundaries above are an aspiration, not a Game 0 commitment. Through G
 | Game | Codename | New Major Dimension | Key Engine Milestone |
 |------|----------|---------------------|----------------------|
 | 0 | The Void | Rendering + ECS | Can draw 3D and iterate entities; reactive Tier 1 substrate in place |
-| 1 | Kinesis | Physics + Interaction | Controllable physics, triggers, destruction; first Tier 2 events |
-| 2A | Whisper: Scripted | Glyph language + asset pipeline | Game logic and UI in Glyph; hot reload; full post-process pipeline |
+| 1 | Kinesis | Physics + interaction + Kinesis-scale indoor engine | Controllable physics, triggers, destruction, first Tier 2 events; spot+point lights with shadows, post-process v0 with fog & god-rays, decals, save v0, positional audio v0, Mahli presentation systems |
+| 2A | Whisper: Scripted | Glyph language + asset-pipeline maturation | Game logic and UI in Glyph; script + asset hot reload; scene serialization generalized; post-process matures |
 | 2B | Whisper: The Hunter | Agent layer foundations | Blackboard + Utility AI + HTN; perception + navigation; character material tier |
 | 3 | Castaway | Open world + immersive-sim substrate | Streaming terrain, outdoor renderer, material reactions, propagation systems, group AI |
 | 4 | Vagrants | Living simulation (full layered architecture) | World State + Chronicle + hydration bridge; world thread; Glyph v1.0 |
@@ -374,16 +400,25 @@ The crate boundaries above are an aspiration, not a Game 0 commitment. Through G
 | ECS (sparse-set storage) | **new** | reuse | reuse | reuse | extend | extend | reuse |
 | Change-detection (Tier 1) | **new** | reuse | extend | reuse | reuse | reuse | reuse |
 | Cross-layer events (Tier 2) | — | **new** | extend | extend | extend | extend | reuse |
-| Forward renderer | **new** | extend | extend | reuse | **major extend** | extend | reuse |
-| Post-process pipeline | — | — | **new** | reuse | extend | reuse | reuse |
-| Material tiers (world/character) | — | — | partial | **new** | extend | reuse | reuse |
+| Forward renderer | **new** | **major extend** | extend | reuse | **major extend** | extend | reuse |
+| Post-process pipeline | — | **new** (lean) | extend (matures) | reuse | extend | reuse | reuse |
+| Material tiers (world/character) | — | **new** (world) | reuse | **new** (character) | extend | reuse | reuse |
+| Spot + point lights | — | **new** | reuse | reuse | extend | reuse | reuse |
+| Per-light shadow maps | — | **new** | reuse | reuse | extend (cascaded for sun) | reuse | reuse |
+| Atmospheric fog & god-rays | — | **new** | reuse | reuse | extend | reuse | reuse |
+| Decals + transparency | — | **new** | reuse | reuse | reuse | reuse | reuse |
 | Foliage translucency | — | — | **new** (test) | reuse | extend | reuse | reuse |
 | Hero/shell/imposter vegetation | — | — | — | — | **new** | reuse | reuse |
 | Input | **new** | reuse | reuse | reuse | reuse | reuse | reuse |
 | Physics (Rapier) | — | **new** | reuse | reuse | extend | reuse | reuse |
 | Audio | — | **new** | reuse | extend | reuse | reuse | reuse |
+| Positional audio v0 | — | **new** | reuse | extend (+occlusion) | reuse | reuse | reuse |
 | Asset pipeline (v0 minimal) | — | **new** | reuse | reuse | reuse | reuse | reuse |
 | Asset pipeline v1 (hot reload + scenes) | — | — | **new** | reuse | extend | reuse | reuse |
+| Save v0 (per-scene closed-schema) | — | **new** | reuse | reuse | reuse | reuse | reuse |
+| Save (generalized scene serialization) | — | — | **new** | reuse | extend | extend | reuse |
+| Keyframed transform animation | — | **new** | reuse | reuse | reuse | reuse | reuse |
+| HUD glyph overlay system | — | **new** | extend | extend | extend | extend | extend |
 | Glyph v0.1 (dynamic) | — | — | **new** | extend | — | — | — |
 | Glyph v0.5 (typed) | — | — | — | — | **new** | extend | — |
 | Glyph v1.0 (macros + refinement) | — | — | — | — | — | **new** | extend |
