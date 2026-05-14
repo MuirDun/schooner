@@ -2,7 +2,7 @@ use glam::{Quat, Vec3};
 use schooner_engine::logging::{self, LogConfig};
 use schooner_engine::{
     fps_cursor_toggle, fps_look, fps_move, ActiveCamera, App, Camera, DirectionalLight,
-    FpsController, MeshHandle, Stage, Transform, WindowConfig, World,
+    FpsController, Material, MeshHandle, Stage, Transform, WindowConfig, World,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -46,6 +46,13 @@ fn spawn_scene(world: &mut World) {
     // center y is 0.5 + epsilon — the epsilon is what keeps the
     // cube's bottom face from being exactly coplanar with the
     // floor at y=0, which would z-fight under Depth32Float + Less.
+    //
+    // The front row (z = 1, closest to the camera) carries three
+    // explicit `Material`s as the Phase 1.A.4 smoke test: warm
+    // polished, neutral mid, and cool dim. The rear two rows have
+    // no `Material` and fall back to `Material::DEFAULT` — a
+    // side-by-side visual comparison that the fallback path also
+    // still works.
     const CUBE_LIFT: f32 = 0.001;
     for x in -1..=1 {
         for z in -1..=1 {
@@ -59,6 +66,27 @@ fn spawn_scene(world: &mut World) {
                 )),
             );
             world.insert(cube, MeshHandle::CUBE);
+            if z == 1 {
+                let material = match x {
+                    -1 => Material {
+                        albedo: Vec3::new(1.0, 0.7, 0.5),
+                        roughness: 0.15,
+                        ..Material::DEFAULT
+                    },
+                    0 => Material {
+                        albedo: Vec3::splat(0.7),
+                        roughness: 0.5,
+                        ..Material::DEFAULT
+                    },
+                    1 => Material {
+                        albedo: Vec3::new(0.3, 0.4, 0.55),
+                        roughness: 0.85,
+                        ..Material::DEFAULT
+                    },
+                    _ => unreachable!(),
+                };
+                world.insert(cube, material);
+            }
         }
     }
 

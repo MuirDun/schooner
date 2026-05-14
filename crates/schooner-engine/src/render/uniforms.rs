@@ -14,6 +14,8 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
+use crate::material::Material;
+
 /// Camera uniform — `view`, `proj`, `view_proj`, `position`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -78,21 +80,44 @@ impl LightUniformData {
     }
 }
 
-/// Per-draw model matrix uniform.
+/// Per-draw model + material uniform.
 ///
-/// Stored alone in its own struct because `ForwardPipeline` packs
-/// many of these into a single buffer indexed by dynamic offset —
-/// see `pipeline.rs` for the alignment story.
+/// Carries everything a single draw needs that varies per entity:
+/// the model matrix (for vertex transform) and the shading params
+/// (albedo, roughness, emissive). `ForwardPipeline` packs many of
+/// these into one buffer indexed by dynamic offset — see
+/// `pipeline.rs` for the alignment story.
+///
+/// Layout in `[f32; 4]` slots:
+/// - `model` — 64 B (4 × vec4)
+/// - `albedo_roughness` — 16 B (`xyz` = albedo, `w` = roughness)
+/// - `emissive` — 16 B (`xyz` = emissive color, `w` = intensity)
+///
+/// Total 96 B, well under the 256-byte dynamic-offset stride.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct ModelUniformData {
     pub model: [[f32; 4]; 4],
+    pub albedo_roughness: [f32; 4],
+    pub emissive: [f32; 4],
 }
 
 impl ModelUniformData {
-    pub fn from_matrix(model: Mat4) -> Self {
+    pub fn new(model: Mat4, material: &Material) -> Self {
         Self {
             model: model.to_cols_array_2d(),
+            albedo_roughness: [
+                material.albedo.x,
+                material.albedo.y,
+                material.albedo.z,
+                material.roughness,
+            ],
+            emissive: [
+                material.emissive.x,
+                material.emissive.y,
+                material.emissive.z,
+                material.emissive_intensity,
+            ],
         }
     }
 }

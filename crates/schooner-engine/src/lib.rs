@@ -6,6 +6,7 @@ pub mod ecs;
 pub mod error;
 pub mod input;
 pub mod logging;
+pub mod material;
 pub mod render;
 pub mod time;
 pub mod transform;
@@ -25,6 +26,7 @@ pub use ecs::{EntityId, Schedule, Stage, World};
 pub use error::{EngineError, EngineResult};
 pub use input::{Input, KeyCode, MouseButton};
 pub use logging::LogConfig;
+pub use material::{BlendMode, Material};
 pub use render::{
     render_frame, DebugOverlay, DirectionalLight, ForwardPipeline, MeshHandle, MeshRegistry,
 };

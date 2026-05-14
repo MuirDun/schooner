@@ -256,9 +256,11 @@ fn create_model_layout(device: &Device) -> BindGroupLayout {
         label: Some("model-bgl"),
         entries: &[BindGroupLayoutEntry {
             binding: 0,
-            // Vertex-only — the model matrix is consumed in
-            // position + normal transform.
-            visibility: ShaderStages::VERTEX,
+            // VERTEX_FRAGMENT: vertex reads `model` for position +
+            // normal transform; fragment reads `albedo_roughness`
+            // and `emissive` for per-instance shading from 1.A.3
+            // onward.
+            visibility: ShaderStages::VERTEX_FRAGMENT,
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Uniform,
                 // The load-bearing flag: enables the per-draw

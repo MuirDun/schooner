@@ -35,6 +35,7 @@ use crate::debug::{
     build_overlay_ui, DebugState, OverlayInteract, OverlayMetrics, ProfilerView,
 };
 use crate::ecs::World;
+use crate::material::Material;
 use crate::render::context::RenderContext;
 use crate::render::light::DirectionalLight;
 use crate::render::mesh::MeshHandle;
@@ -83,10 +84,26 @@ pub fn render_frame(world: &mut World) {
                 LightUniformData::new(Vec3::new(0.0, -1.0, 0.0), Vec3::ZERO, Vec3::splat(0.3))
             });
 
-        let mut draws: Vec<(glam::Mat4, MeshHandle)> = world
-            .query::<(&Transform, &MeshHandle)>()
+        // Two-pass collection: gather entity ids that have a mesh,
+        // then resolve `Transform` and the *optional* `Material` per
+        // entity. Single-pass chaining of `iter` and `get` fights
+        // the borrow checker — the iterator holds a shared borrow
+        // of the world while the closure wants its own. Collecting
+        // entity ids first ends the iter borrow before the lookups.
+        let mesh_entities: Vec<(crate::ecs::EntityId, MeshHandle)> = world
+            .iter::<MeshHandle>()
+            .map(|(entity, handle)| (entity, *handle))
+            .collect();
+        let mut draws: Vec<(glam::Mat4, MeshHandle, Material)> = mesh_entities
             .into_iter()
-            .map(|(t, h)| (t.matrix(), *h))
+            .filter_map(|(entity, handle)| {
+                let transform = world.get::<Transform>(entity)?;
+                let material = world
+                    .get::<Material>(entity)
+                    .copied()
+                    .unwrap_or(Material::DEFAULT);
+                Some((transform.matrix(), handle, material))
+            })
             .collect();
         if draws.len() as u64 > MAX_DRAWS_PER_FRAME {
             warn!(
@@ -155,12 +172,12 @@ pub fn render_frame(world: &mut World) {
             0,
             bytemuck::bytes_of(&light_uniform),
         );
-        for (i, (model, _)) in draws.iter().enumerate() {
+        for (i, (model, _, material)) in draws.iter().enumerate() {
             let offset = (i as u64) * MODEL_UNIFORM_STRIDE;
             queue.write_buffer(
                 &pipeline.model_buffer,
                 offset,
-                bytemuck::bytes_of(&ModelUniformData::from_matrix(*model)),
+                bytemuck::bytes_of(&ModelUniformData::new(*model, material)),
             );
         }
 
@@ -192,7 +209,7 @@ pub fn render_frame(world: &mut World) {
         pass.set_bind_group(0, &pipeline.camera_bind_group, &[]);
         pass.set_bind_group(1, &pipeline.light_bind_group, &[]);
 
-        for (i, (_, handle)) in draws.iter().enumerate() {
+        for (i, (_, handle, _)) in draws.iter().enumerate() {
             let Some(mesh) = meshes.get(*handle) else {
                 warn!("render_frame: missing mesh for handle {handle:?}; skipping draw");
                 continue;

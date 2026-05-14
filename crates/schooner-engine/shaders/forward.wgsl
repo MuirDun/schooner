@@ -27,6 +27,10 @@ struct LightUniform {
 
 struct ModelUniform {
     model: mat4x4<f32>,
+    // .xyz = albedo (linear), .w = roughness ∈ [0, 1].
+    albedo_roughness: vec4<f32>,
+    // .xyz = emissive color (linear), .w = emissive intensity.
+    emissive: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -75,17 +79,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n_dot_l = max(dot(n, l), 0.0);
     let n_dot_h = max(dot(n, h), 0.0);
 
-    // Hard-coded base color and shininess — Game 0 has no
-    // material system. White diffuse, modest specular, exponent
-    // tuned to give visible highlights on the cube without
-    // over-tightening on the plane.
-    let base = vec3<f32>(0.8, 0.8, 0.8);
+    let albedo = model.albedo_roughness.xyz;
+    let roughness = model.albedo_roughness.w;
+
+    // Map roughness ∈ [0, 1] to Blinn–Phong shininess. Calibrated
+    // so roughness = 0.5 yields shininess ≈ 32 — matching the
+    // Game 0 hardcoded value, so a Material::DEFAULT surface reads
+    // the same as the pre-Material baseline. Lower roughness
+    // tightens the highlight (mirror-ish at 0); higher broadens
+    // it (near-Lambertian at 1).
+    let shininess = pow(2.0, mix(0.0, 10.0, 1.0 - roughness));
+
+    // Specular stays white (dielectric approximation). Not tinted
+    // by albedo — that's the metallic case, which the architecture
+    // vision intentionally does not pursue.
     let specular_strength = 0.3;
-    let shininess = 32.0;
 
-    let diffuse = base * n_dot_l * light.color.rgb;
+    let diffuse = albedo * n_dot_l * light.color.rgb;
     let specular = vec3<f32>(specular_strength) * pow(n_dot_h, shininess) * light.color.rgb;
-    let ambient = base * light.ambient.rgb;
+    let ambient = albedo * light.ambient.rgb;
 
-    return vec4<f32>(ambient + diffuse + specular, 1.0);
+    // Emissive is the surface's own light — added outside the lit
+    // term so it survives shadow and ambient is irrelevant.
+    let emissive = model.emissive.xyz * model.emissive.w;
+
+    return vec4<f32>(ambient + diffuse + specular + emissive, 1.0);
 }
