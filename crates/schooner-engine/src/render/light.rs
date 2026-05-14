@@ -153,6 +153,24 @@ impl Default for PointLight {
     }
 }
 
+/// Marker component requesting that a light cast shadows.
+///
+/// Attach to a `SpotLight` entity to opt that light into the
+/// depth-only shadow pass. Lights without this marker pay no
+/// shadow cost — both bandwidth (no depth render) and shading
+/// (the forward shader skips the comparison sample).
+///
+/// Indoor Kinesis scenes typically want one shadow caster (the
+/// overhead chamber spot); rarely two. The runtime cap lives at
+/// [`crate::render::shadow::MAX_SHADOW_CASTERS`].
+///
+/// Point-light shadows are not supported in Phase 1.C — they need
+/// cube maps (six render passes per light), and the only point
+/// lights in Kinesis are dim service-corridor accents that don't
+/// carry visible shadowing anyway.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Shadowcaster;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -20,13 +20,14 @@ use std::num::NonZeroU64;
 
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingResource, BindingType, BlendState, Buffer, BufferBindingType,
-    BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthBiasState,
-    DepthStencilState, Device, Face, FragmentState, FrontFace, MultisampleState,
-    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, RenderPipeline,
-    RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState,
-    TextureFormat, VertexState,
+    AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
+    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState,
+    Buffer, BufferBindingType, BufferUsages, ColorTargetState, ColorWrites, CompareFunction,
+    DepthBiasState, DepthStencilState, Device, Face, FilterMode, FragmentState, FrontFace,
+    MipmapFilterMode, MultisampleState, PipelineLayoutDescriptor, PolygonMode, PrimitiveState,
+    PrimitiveTopology, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType,
+    SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState,
+    TextureFormat, TextureSampleType, TextureViewDimension, VertexState,
 };
 
 use crate::render::context::DEPTH_FORMAT;
@@ -61,6 +62,19 @@ pub struct ForwardPipeline {
 
     pub model_buffer: Buffer,
     pub model_bind_group: BindGroup,
+
+    /// BGL for `@group(3)` — depth-array texture + comparison
+    /// sampler. Exposed so [`ShadowMaps`] can construct its bind
+    /// group against this layout.
+    ///
+    /// [`ShadowMaps`]: crate::render::ShadowMaps
+    pub shadow_bgl: BindGroupLayout,
+
+    /// Comparison sampler shared by every spot's shadow lookup.
+    /// `CompareFunction::Less` with linear filtering — the linear
+    /// filter does built-in 2×2 PCF for the comparison result, and
+    /// the shader stacks a 3×3 tap loop on top for the soft edge.
+    pub comparison_sampler: Sampler,
 }
 
 impl ForwardPipeline {
@@ -71,6 +85,7 @@ impl ForwardPipeline {
         let camera_layout = create_camera_layout(device);
         let lights_layout = create_lights_layout(device);
         let model_layout = create_model_layout(device);
+        let shadow_bgl = create_shadow_layout(device);
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("forward-pipeline-layout"),
@@ -78,6 +93,7 @@ impl ForwardPipeline {
                 Some(&camera_layout),
                 Some(&lights_layout),
                 Some(&model_layout),
+                Some(&shadow_bgl),
             ],
             // wgpu 29 renamed push-constant capacity to "immediate
             // size" and gated it behind Features::IMMEDIATES; we use
@@ -189,6 +205,32 @@ impl ForwardPipeline {
             }],
         });
 
+        // Comparison sampler shared across every spot's shadow
+        // tap. Linear filter + ClampToEdge: the linear filter does
+        // 2×2 PCF on the comparison result; the shader adds a 3×3
+        // tap kernel around the centre UV for a wider soft edge.
+        // ClampToEdge handles fragments whose UV falls on the
+        // shadow-map border without sampling neighbour layers;
+        // out-of-frustum fragments are guarded in the shader.
+        let comparison_sampler = device.create_sampler(&SamplerDescriptor {
+            label: Some("shadow-comparison-sampler"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: MipmapFilterMode::Nearest,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: 1.0,
+            // The comparison itself: `reference < sampled` ⇒ lit.
+            // Surface depth (light-space z) is the reference; the
+            // shadow map's stored depth is `sampled`. A surface
+            // closer to the light than the occluder is unshadowed.
+            compare: Some(CompareFunction::Less),
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
+
         Self {
             pipeline,
             camera_buffer,
@@ -197,6 +239,8 @@ impl ForwardPipeline {
             lights_bind_group,
             model_buffer,
             model_bind_group,
+            shadow_bgl,
+            comparison_sampler,
         }
     }
 }
@@ -271,6 +315,38 @@ fn create_model_layout(device: &Device) -> BindGroupLayout {
             },
             count: None,
         }],
+    })
+}
+
+fn create_shadow_layout(device: &Device) -> BindGroupLayout {
+    device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("shadow-bgl"),
+        entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                // Fragment-only — shadow sampling lives in shading.
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Depth,
+                    // 2D array: one allocation, N layers, the
+                    // shader picks the layer per-fragment from the
+                    // spot's shadow_index. See `ShadowMaps` for
+                    // the planning trade-off vs binding_array.
+                    view_dimension: TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::FRAGMENT,
+                // Comparison sampler: paired with the depth
+                // texture, `textureSampleCompare` returns the
+                // filtered comparison result in [0, 1].
+                ty: BindingType::Sampler(SamplerBindingType::Comparison),
+                count: None,
+            },
+        ],
     })
 }
 

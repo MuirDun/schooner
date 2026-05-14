@@ -36,8 +36,12 @@ struct SpotLight {
     direction_range: vec4<f32>,
     // .xyz = color (unit tint), .w = inner cone cosine.
     color_inner_cos: vec4<f32>,
-    // .x = outer cone cosine, .yzw padding.
-    outer_cos_pad: vec4<f32>,
+    // .x = outer cone cosine, .y = shadow_index (negative ⇒ no
+    // shadow), .zw padding.
+    outer_cos_shadow: vec4<f32>,
+    // Light-space view-projection matrix. Read only when
+    // shadow_index >= 0; zero matrix for non-shadowcasters.
+    view_proj: mat4x4<f32>,
 };
 
 struct PointLight {
@@ -54,7 +58,8 @@ struct LightsUniform {
     spots: array<SpotLight, 8>,
     points: array<PointLight, 16>,
     // .x = directional count (0 or 1), .y = spot count, .z = point
-    // count, .w = padding.
+    // count, .w = shadow PCF half-kernel (0 → 1×1, 1 → 3×3,
+    // 2 → 5×5). Driven by the P debug key via `DebugState`.
     counts: vec4<u32>,
 };
 
@@ -69,6 +74,8 @@ struct ModelUniform {
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 @group(1) @binding(0) var<uniform> lights: LightsUniform;
 @group(2) @binding(0) var<uniform> model: ModelUniform;
+@group(3) @binding(0) var shadow_maps: texture_depth_2d_array;
+@group(3) @binding(1) var shadow_sampler: sampler_comparison;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -132,6 +139,63 @@ fn range_attenuation(dist: f32, range: f32) -> f32 {
     return window * window / (1.0 + dist * dist);
 }
 
+// Variable-radius PCF tap. Half-kernel size comes from
+// `lights.counts.w` (0/1/2 → 1×1/3×3/5×5); the loop is uniform
+// across the workgroup because the source is a uniform buffer.
+// The comparison sampler's bilinear filter already gives 2×2 PCF
+// per tap, so a 3×3 kernel here is effectively a 4×4 weighted
+// average — generous soft edges at low texture cost.
+//
+// Returns 1.0 (lit) when the fragment falls outside the shadow
+// frustum or behind its far plane. ClampToEdge on the sampler
+// hides the visible boundary; the depth-range guard ensures
+// fragments past the spot's `range` aren't comparison-tested
+// against potentially-stale depth at the texture edge.
+fn sample_shadow_pcf(layer: i32, uv: vec2<f32>, depth: f32) -> f32 {
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0
+        || depth < 0.0 || depth > 1.0) {
+        return 1.0;
+    }
+    let dims = textureDimensions(shadow_maps);
+    let texel = 1.0 / vec2<f32>(f32(dims.x), f32(dims.y));
+    let half_k = i32(lights.counts.w);
+    let kernel_side = 2 * half_k + 1;
+    let tap_count = f32(kernel_side * kernel_side);
+    var sum = 0.0;
+    for (var y = -half_k; y <= half_k; y = y + 1) {
+        for (var x = -half_k; x <= half_k; x = x + 1) {
+            let offset = vec2<f32>(f32(x), f32(y)) * texel;
+            sum = sum + textureSampleCompare(
+                shadow_maps, shadow_sampler, uv + offset, layer, depth);
+        }
+    }
+    return sum / tap_count;
+}
+
+// Project a world-space position into a spot light's shadow-map
+// UV + depth. Returns the layer to sample (caller checks it
+// against -1 before sampling).
+fn spot_shadow_factor(spot: SpotLight, world_position: vec3<f32>) -> f32 {
+    let shadow_idx = i32(spot.outer_cos_shadow.y);
+    if (shadow_idx < 0) {
+        return 1.0;
+    }
+    let light_space = spot.view_proj * vec4<f32>(world_position, 1.0);
+    if (light_space.w <= 0.0) {
+        // Behind the light's near plane — outside the frustum,
+        // treat as fully lit (the surface contributes via the
+        // cone falloff anyway).
+        return 1.0;
+    }
+    let proj = light_space.xyz / light_space.w;
+    // NDC.xy ∈ [-1, 1] → UV ∈ [0, 1]. Y is flipped because NDC's
+    // +Y is up while texture +V is down.
+    let uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
+    // NDC.z is already in [0, 1] for wgpu/RH projection — same
+    // convention `Mat4::perspective_rh` produces.
+    return sample_shadow_pcf(shadow_idx, uv, proj.z);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
@@ -180,16 +244,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // directly in the beam; falls off as the angle widens.
         let cone_dot = dot(to_surface_n, spot.direction_range.xyz);
         let cone_factor = smoothstep(
-            spot.outer_cos_pad.x,
+            spot.outer_cos_shadow.x,
             spot.color_inner_cos.w,
             cone_dot,
         );
 
         let range_factor = range_attenuation(dist, spot_range);
+        // Shadow factor multiplies the radiance so the cone shape
+        // and range falloff still apply at the silhouette of the
+        // shadow — a fragment in shadow but inside the cone is
+        // dimmer-but-still-tinted, not pitch black.
+        let shadow_factor = spot_shadow_factor(spot, in.world_position);
         let radiance = spot.color_inner_cos.xyz
                      * spot.position_intensity.w
                      * cone_factor
-                     * range_factor;
+                     * range_factor
+                     * shadow_factor;
 
         // Surface-to-light is the negation of light-to-surface.
         let l = -to_surface_n;

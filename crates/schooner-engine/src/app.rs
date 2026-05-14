@@ -13,7 +13,10 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::debug::{debug_input_system, DebugState, ProfilerView};
 use crate::ecs::{exclusive, IntoSystem, Schedule, Stage, World};
 use crate::input::Input;
-use crate::render::{render_frame, DebugOverlay, ForwardPipeline, MeshRegistry, RenderContext};
+use crate::render::{
+    render_frame, DebugOverlay, ForwardPipeline, MeshRegistry, RenderContext, ShadowMaps,
+    ShadowPipeline,
+};
 use crate::time::Time;
 use crate::window::WindowConfig;
 
@@ -281,11 +284,25 @@ impl ApplicationHandler for App {
                 // ref-counted, share-safe view.
                 let registry = MeshRegistry::with_builtins(ctx.device());
                 let pipeline = ForwardPipeline::new(ctx.device(), ctx.surface_format());
+                // The shadow pipeline reuses the forward pipeline's
+                // per-draw model buffer through a refcounted bind
+                // group, so one queue write of model uniforms feeds
+                // both the shadow and forward passes.
+                let shadow_pipeline = ShadowPipeline::new(ctx.device(), &pipeline.model_buffer);
+                // ShadowMaps allocates the 2D-array depth texture
+                // upfront (16 MB), builds its per-layer views, and
+                // constructs the forward-side @group(3) bind group
+                // against the pipeline's shadow BGL + comparison
+                // sampler. Per-frame work is just `set_active_count`.
+                let shadow_maps =
+                    ShadowMaps::new(ctx.device(), &pipeline.shadow_bgl, &pipeline.comparison_sampler);
                 let overlay =
                     DebugOverlay::new(window.clone(), ctx.device(), ctx.surface_format());
                 self.world.insert_resource(ctx);
                 self.world.insert_resource(registry);
                 self.world.insert_resource(pipeline);
+                self.world.insert_resource(shadow_pipeline);
+                self.world.insert_resource(shadow_maps);
                 self.world.insert_resource(overlay);
             }
             Err(err) => {

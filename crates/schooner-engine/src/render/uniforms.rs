@@ -96,6 +96,20 @@ impl DirectionalLightUniformData {
 /// Cone falloff is stored as cosines (matching `SpotLight` on the
 /// CPU side) so the fragment shader's `smoothstep` doesn't need a
 /// per-fragment `cos()`.
+///
+/// `shadow_index` is encoded as `f32` in the `.y` slot of
+/// `outer_cos_shadow`. The shader compares against `0.0` instead
+/// of using `i32` to keep the slot in a `vec4<f32>` neighbourhood
+/// and avoid a `bitcast` or a separate `vec4<i32>` member. A
+/// negative value means "no shadow" — non-shadowcasting spots
+/// pass `-1.0` and the shadow-sampling branch skips them.
+///
+/// `view_proj` is the light-space matrix the forward shader uses
+/// to project world position into the spot's shadow map (the same
+/// matrix the shadow pass uses to render that map). Storing it
+/// per-spot duplicates it against `ShadowPipeline::vp_buffer`, at
+/// 64 B × 8 spots = 512 B added — trivial vs. the simpler bind
+/// group story (no extra binding for the forward shader to read).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct SpotLightUniformData {
@@ -105,8 +119,12 @@ pub struct SpotLightUniformData {
     pub direction_range: [f32; 4],
     /// `xyz` = color (unit tint), `w` = inner cone cosine.
     pub color_inner_cos: [f32; 4],
-    /// `x` = outer cone cosine, `yzw` padding.
-    pub outer_cos_pad: [f32; 4],
+    /// `x` = outer cone cosine, `y` = shadow_index as f32
+    /// (`-1.0` ⇒ no shadow), `zw` padding.
+    pub outer_cos_shadow: [f32; 4],
+    /// Light-space view-projection matrix. Zero matrix when
+    /// `shadow_index < 0` (never read in that case).
+    pub view_proj: [[f32; 4]; 4],
 }
 
 impl SpotLightUniformData {
@@ -118,12 +136,15 @@ impl SpotLightUniformData {
         range: f32,
         inner_cone_cos: f32,
         outer_cone_cos: f32,
+        shadow_index: i32,
+        view_proj: [[f32; 4]; 4],
     ) -> Self {
         Self {
             position_intensity: [position.x, position.y, position.z, intensity],
             direction_range: [direction.x, direction.y, direction.z, range],
             color_inner_cos: [color.x, color.y, color.z, inner_cone_cos],
-            outer_cos_pad: [outer_cone_cos, 0.0, 0.0, 0.0],
+            outer_cos_shadow: [outer_cone_cos, shadow_index as f32, 0.0, 0.0],
+            view_proj,
         }
     }
 }
@@ -151,13 +172,16 @@ impl PointLightUniformData {
 /// point arrays, and per-type active counts.
 ///
 /// `counts.x` = directional count (0 or 1), `.y` = spot count,
-/// `.z` = point count, `.w` = pad. The shader iterates each array
-/// `..counts.[y|z]`; trailing slots are stale data and never read.
+/// `.z` = point count, `.w` = shadow PCF half-kernel (0 / 1 / 2,
+/// driven by `DebugState::pcf_kernel`). The shader iterates each
+/// light array `..counts.[y|z]`; trailing slots are stale data
+/// and never read.
 ///
-/// At 1 + 8 + 16 lights this struct is 1088 B — comfortably below
-/// any uniform-buffer size limit (typically 64 KB on desktop GPUs).
-/// If indoor scenes ever push past this scale we'd move to a
-/// storage buffer; uniform is the right call for now.
+/// Spot lights grew to 128 B (each carries its own shadow VP);
+/// totals are 48 + 8 × 128 + 16 × 32 + 16 = 1600 B. Still
+/// comfortably below the 64 KB uniform-buffer limit. If indoor
+/// scenes ever push past this scale we'd move to a storage
+/// buffer; uniform is the right call for now.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct LightsUniformData {

@@ -18,7 +18,7 @@ pub use camera::{
 };
 pub use debug::{
     build_overlay_ui, build_profiler_panel, debug_input_system, DebugState, FrameStats,
-    OverlayInteract, OverlayMetrics, ProfilerRow, ProfilerSnapshot, ProfilerView,
+    OverlayInteract, OverlayMetrics, PcfKernel, ProfilerRow, ProfilerSnapshot, ProfilerView,
     FRAME_STAT_WINDOW,
 };
 pub use diagnostics::{log_fps_system, log_input_system, FpsLogger};
@@ -29,7 +29,7 @@ pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
 pub use render::{
     render_frame, DebugOverlay, DirectionalLight, ForwardPipeline, MeshHandle, MeshRegistry,
-    PointLight, SpotLight,
+    PointLight, Shadowcaster, ShadowMaps, ShadowPipeline, SpotLight,
 };
 pub use time::{Time, DEFAULT_FIXED_HZ, MAX_FIXED_STEPS_PER_FRAME};
 pub use transform::Transform;

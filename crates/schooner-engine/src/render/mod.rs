@@ -25,15 +25,20 @@ pub mod mesh;
 pub mod overlay;
 pub mod pipeline;
 pub mod registry;
+pub mod shadow;
 pub mod uniforms;
 
 pub use context::{RenderContext, RenderContextError, DEPTH_FORMAT};
 pub use forward::render_frame;
-pub use light::{DirectionalLight, PointLight, SpotLight};
+pub use light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
 pub use mesh::{cube_mesh, plane_mesh, MeshData, MeshGpu, MeshHandle, Vertex};
 pub use overlay::DebugOverlay;
 pub use pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 pub use registry::MeshRegistry;
+pub use shadow::{
+    compute_shadow_vp, ShadowMaps, ShadowPipeline, MAX_SHADOW_CASTERS, SHADOW_MAP_RESOLUTION,
+    SHADOW_VP_UNIFORM_STRIDE,
+};
 pub use uniforms::{
     CameraUniformData, DirectionalLightUniformData, LightsUniformData, ModelUniformData,
     PointLightUniformData, SpotLightUniformData, MAX_POINT_LIGHTS, MAX_SPOT_LIGHTS,

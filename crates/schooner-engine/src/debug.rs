@@ -101,6 +101,9 @@ pub struct DebugState {
     /// Profiler panel visibility. Toggled by a button inside the
     /// overlay. The panel itself populates in chunk 6 with puffin.
     pub show_profiler: bool,
+    /// Shadow-map PCF kernel size. P cycles. Shipping default is
+    /// [`PcfKernel::Soft3x3`].
+    pub pcf_kernel: PcfKernel,
     pub frame_stats: FrameStats,
 }
 
@@ -109,19 +112,67 @@ impl Default for DebugState {
         Self {
             overlay_visible: true,
             show_profiler: false,
+            pcf_kernel: PcfKernel::Soft3x3,
             frame_stats: FrameStats::new(),
         }
     }
 }
 
-/// System: read `Input::just_pressed(F1)` and toggle the overlay.
+/// PCF kernel size for shadow sampling.
 ///
-/// Lives on `Stage::Update` so the flip is visible to `render_frame`
+/// The shader reads the half-kernel value (0 / 1 / 2) from
+/// `LightsUniformData::counts[3]` and runs a `(2k+1)×(2k+1)` tap
+/// loop. Cycled at runtime with `P` so the developer can A/B
+/// shadow softness against geometry. The default `Soft3x3` is the
+/// shipping setting — the wider option exists to validate that
+/// fewer taps don't visibly help the indoor shadow scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PcfKernel {
+    /// 1×1 — single comparison tap. Hard shadow edges. Useful as a
+    /// baseline to see what PCF is contributing.
+    Single,
+    /// 3×3 — nine taps. The shipping default; soft enough at 1024²
+    /// for a 6–10 m indoor cast that the silhouette reads as
+    /// natural without obvious banding.
+    Soft3x3,
+    /// 5×5 — twenty-five taps. Wider blur; exists for the toggle
+    /// comparison, not as a recommended setting.
+    Wide5x5,
+}
+
+impl PcfKernel {
+    /// Half-kernel size as written to the shader's
+    /// `lights.counts.w` slot. `(2 × half_kernel + 1)²` taps total.
+    pub fn half_kernel(self) -> u32 {
+        match self {
+            PcfKernel::Single => 0,
+            PcfKernel::Soft3x3 => 1,
+            PcfKernel::Wide5x5 => 2,
+        }
+    }
+
+    /// Cycle Single → Soft3x3 → Wide5x5 → Single.
+    pub fn cycle(self) -> Self {
+        match self {
+            PcfKernel::Single => PcfKernel::Soft3x3,
+            PcfKernel::Soft3x3 => PcfKernel::Wide5x5,
+            PcfKernel::Wide5x5 => PcfKernel::Single,
+        }
+    }
+}
+
+/// System: read debug-key presses and update [`DebugState`].
+///
+/// Lives on `Stage::Update` so flips are visible to `render_frame`
 /// in the same frame the key was pressed. Runs even when the
 /// overlay is hidden so the player can re-summon it.
 pub fn debug_input_system(input: Res<Input>, mut debug: ResMut<DebugState>) {
     if input.just_pressed(KeyCode::F1) {
         debug.overlay_visible = !debug.overlay_visible;
+    }
+    if input.just_pressed(KeyCode::KeyP) {
+        debug.pcf_kernel = debug.pcf_kernel.cycle();
+        log::info!("debug: PCF kernel → {:?}", debug.pcf_kernel);
     }
 }
 

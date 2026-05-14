@@ -3,14 +3,20 @@
 //! Frame flow (also documented in `architecture/render.md`):
 //!
 //! 1. Resolve the active camera. If none exists, skip the frame.
-//! 2. Build and upload the camera + light uniforms.
+//! 2. Snapshot the draw list, lights, and shadowcaster view-proj
+//!    matrices through ECS queries.
 //! 3. Acquire a swap-chain texture; on `Lost`/`Outdated` reconfigure
 //!    and skip.
-//! 4. For each `(Transform, MeshHandle)`: write its model matrix
-//!    into the per-draw uniform buffer at slot `i`'s offset, bind
-//!    the model group with that dynamic offset, draw indexed.
-//! 5. Build the egui frame and encode the overlay pass on top.
-//! 6. Submit + present.
+//! 4. Reallocate the shadow-map set if the caster count changed.
+//! 5. Write camera, lights, model, and shadow-VP uniforms before any
+//!    pass begins — the shadow and forward passes share the model
+//!    buffer through separate bind groups, so a single write feeds
+//!    both.
+//! 6. For each shadowcaster: depth-only render pass into its shadow
+//!    map, rendering the entire draw list from that light's POV.
+//! 7. Forward pass — same draw list, lit + (in 1.C.4) shadow-sampled.
+//! 8. Build the egui frame and encode the overlay pass on top.
+//! 9. Submit + present.
 //!
 //! ## Why exclusive
 //!
@@ -23,7 +29,7 @@
 //! `Res`/`ResMut` borrows. Renderer parallelism is not a Game 0
 //! concern; revisit when the parallel scheduler arrives.
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use log::warn;
 use wgpu::{
     CommandEncoderDescriptor, IndexFormat, LoadOp, Operations, RenderPassColorAttachment,
@@ -31,15 +37,20 @@ use wgpu::{
 };
 
 use crate::camera::{ActiveCamera, Camera};
-use crate::debug::{DebugState, OverlayInteract, OverlayMetrics, ProfilerView, build_overlay_ui};
+use crate::debug::{
+    build_overlay_ui, DebugState, OverlayInteract, OverlayMetrics, PcfKernel, ProfilerView,
+};
 use crate::ecs::World;
 use crate::material::Material;
 use crate::render::context::RenderContext;
-use crate::render::light::{DirectionalLight, PointLight, SpotLight};
+use crate::render::light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
 use crate::render::mesh::MeshHandle;
 use crate::render::overlay::DebugOverlay;
 use crate::render::pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 use crate::render::registry::MeshRegistry;
+use crate::render::shadow::{
+    compute_shadow_vp, ShadowMaps, ShadowPipeline, MAX_SHADOW_CASTERS, SHADOW_VP_UNIFORM_STRIDE,
+};
 use crate::render::uniforms::{
     CameraUniformData, DirectionalLightUniformData, LightsUniformData, MAX_POINT_LIGHTS,
     MAX_SPOT_LIGHTS, ModelUniformData, PointLightUniformData, SpotLightUniformData,
@@ -62,8 +73,16 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// sibling `Transform` (translation = position, rotation = aim);
 /// directional is positionless. Overflow past the fixed caps is
 /// warned and dropped.
-fn build_lights_uniform(world: &mut World) -> LightsUniformData {
+///
+/// Returns the lights uniform plus the per-shadowcaster view-proj
+/// matrices, in `shadow_index` order. The returned VP vec aligns
+/// 1:1 with the shadow-pass loop and with each spot's
+/// `shadow_index` field in the uniform — index `i` in the vec is
+/// the matrix the shadow pass writes into layer `i` and the
+/// matrix referenced by any spot bearing `shadow_index = i`.
+fn build_lights_uniform(world: &mut World) -> (LightsUniformData, Vec<Mat4>) {
     let mut data = LightsUniformData::zeroed();
+    let mut shadow_vps: Vec<Mat4> = Vec::new();
 
     // Directional: first one wins. Fall back to the placeholder's
     // ambient-grey when no DirectionalLight exists.
@@ -91,10 +110,14 @@ fn build_lights_uniform(world: &mut World) -> LightsUniformData {
 
     // Spots: iter the components, resolve sibling Transform per
     // entity (same iter-then-get pattern as the mesh draw path).
+    // A second component lookup checks for `Shadowcaster` — when
+    // present and under the cap, the spot gets the next
+    // `shadow_index` and contributes its VP to `shadow_vps`.
     let spot_entities: Vec<crate::ecs::EntityId> =
         world.iter::<SpotLight>().map(|(e, _)| e).collect();
     let mut spot_count = 0usize;
     let total_spots = spot_entities.len();
+    let mut total_casters = 0usize;
     for entity in spot_entities {
         if spot_count == MAX_SPOT_LIGHTS {
             break;
@@ -107,6 +130,25 @@ fn build_lights_uniform(world: &mut World) -> LightsUniformData {
         };
         // Default spot-forward is local -Z (camera-forward convention).
         let direction = (transform.rotation * Vec3::NEG_Z).normalize_or_zero();
+
+        // Shadow assignment. The total caster count includes
+        // overflow so the warn fires accurately; the assigned
+        // index is `-1` once the cap is reached.
+        let is_caster = world.get::<Shadowcaster>(entity).is_some();
+        let (shadow_index, view_proj_cols) = if is_caster {
+            total_casters += 1;
+            if shadow_vps.len() < MAX_SHADOW_CASTERS {
+                let vp = compute_shadow_vp(&transform, &spot);
+                let idx = shadow_vps.len() as i32;
+                shadow_vps.push(vp);
+                (idx, vp.to_cols_array_2d())
+            } else {
+                (-1, Mat4::ZERO.to_cols_array_2d())
+            }
+        } else {
+            (-1, Mat4::ZERO.to_cols_array_2d())
+        };
+
         data.spots[spot_count] = SpotLightUniformData::new(
             transform.translation,
             direction,
@@ -115,6 +157,8 @@ fn build_lights_uniform(world: &mut World) -> LightsUniformData {
             spot.range,
             spot.inner_cone_cos,
             spot.outer_cone_cos,
+            shadow_index,
+            view_proj_cols,
         );
         spot_count += 1;
     }
@@ -122,6 +166,12 @@ fn build_lights_uniform(world: &mut World) -> LightsUniformData {
         warn!(
             "render_frame: {} SpotLights exceeds MAX_SPOT_LIGHTS ({}); dropping overflow",
             total_spots, MAX_SPOT_LIGHTS
+        );
+    }
+    if total_casters > MAX_SHADOW_CASTERS {
+        warn!(
+            "render_frame: {} Shadowcasters exceeds MAX_SHADOW_CASTERS ({}); dropping overflow",
+            total_casters, MAX_SHADOW_CASTERS
         );
     }
     data.counts[1] = spot_count as u32;
@@ -157,7 +207,13 @@ fn build_lights_uniform(world: &mut World) -> LightsUniformData {
     }
     data.counts[2] = point_count as u32;
 
-    data
+    // counts[3] is overwritten in render_frame from `DebugState`
+    // (PCF kernel) — left zero here, but treated as authoritative
+    // only after that pass. Keeping the assignment out of this
+    // function keeps `build_lights_uniform` independent of debug
+    // state.
+
+    (data, shadow_vps)
 }
 
 pub fn render_frame(world: &mut World) {
@@ -166,7 +222,7 @@ pub fn render_frame(world: &mut World) {
     // 1. Snapshot scene data through queries. Block-scoped puffin
     //    spans nest correctly under `render_frame` and let the
     //    profiler attribute time to the right phase.
-    let (cam_matrix, camera, cam_pos, lights_uniform, draws) = {
+    let (cam_matrix, camera, cam_pos, lights_uniform, draws, shadowcaster_vps) = {
         puffin::profile_scope!("snapshot");
 
         let camera_data = world
@@ -179,7 +235,17 @@ pub fn render_frame(world: &mut World) {
             return;
         };
 
-        let lights_uniform = build_lights_uniform(world);
+        let (mut lights_uniform, shadowcaster_vps) = build_lights_uniform(world);
+        // PCF kernel is debug state, threaded through the lights
+        // uniform's spare `counts.w` slot rather than its own
+        // bind group — the shader reads it inside the spot loop,
+        // so co-locating with the rest of the per-frame lighting
+        // payload is the cheapest path. Default is `Soft3x3`.
+        let pcf_half_kernel = world
+            .resource::<DebugState>()
+            .map(|d| d.pcf_kernel.half_kernel())
+            .unwrap_or_else(|| PcfKernel::Soft3x3.half_kernel());
+        lights_uniform.counts[3] = pcf_half_kernel;
 
         // Two-pass collection: gather entity ids that have a mesh,
         // then resolve `Transform` and the *optional* `Material` per
@@ -211,7 +277,14 @@ pub fn render_frame(world: &mut World) {
             draws.truncate(MAX_DRAWS_PER_FRAME as usize);
         }
 
-        (cam_matrix, camera, cam_pos, lights_uniform, draws)
+        (
+            cam_matrix,
+            camera,
+            cam_pos,
+            lights_uniform,
+            draws,
+            shadowcaster_vps,
+        )
     };
 
     // 2. Acquire the swap-chain frame and clone device/queue handles.
@@ -243,19 +316,31 @@ pub fn render_frame(world: &mut World) {
     let proj = camera.projection.matrix(aspect);
     let camera_uniform = CameraUniformData::new(view, proj, cam_pos);
 
+    // 4. Record how many shadow-map layers are in active use this
+    //    frame. No GPU allocation — the texture is permanent;
+    //    `set_active_count` only updates the bookkeeping the
+    //    shadow-pass loop reads.
+    {
+        let Some(maps) = world.resource_mut::<ShadowMaps>() else {
+            warn!("render_frame: ShadowMaps missing");
+            return;
+        };
+        maps.set_active_count(shadowcaster_vps.len());
+    }
+
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
         label: Some("frame-encoder"),
     });
 
-    // 4. Forward pass.
+    // 5. Pre-pass writes. All per-frame uniform buffers are written
+    //    here, before any render pass begins, so the shadow pass
+    //    and the forward pass both observe the same up-to-date
+    //    contents. `queue.write_buffer` is queue-scheduled — order
+    //    within submit() is preserved.
     {
-        puffin::profile_scope!("forward_pass");
+        puffin::profile_scope!("uniform_writes");
         let Some(pipeline) = world.resource::<ForwardPipeline>() else {
             warn!("render_frame: ForwardPipeline missing");
-            return;
-        };
-        let Some(meshes) = world.resource::<MeshRegistry>() else {
-            warn!("render_frame: MeshRegistry missing");
             return;
         };
 
@@ -277,6 +362,96 @@ pub fn render_frame(world: &mut World) {
                 bytemuck::bytes_of(&ModelUniformData::new(*model, material)),
             );
         }
+
+        let Some(shadow) = world.resource::<ShadowPipeline>() else {
+            warn!("render_frame: ShadowPipeline missing");
+            return;
+        };
+        for (i, vp) in shadowcaster_vps.iter().enumerate() {
+            let offset = (i as u64) * SHADOW_VP_UNIFORM_STRIDE;
+            // Pack as the same `[[f32; 4]; 4]` shape the forward
+            // pipeline's CameraUniformData uses — bytemuck reads
+            // the same 64 B regardless.
+            let cols: [[f32; 4]; 4] = vp.to_cols_array_2d();
+            queue.write_buffer(&shadow.vp_buffer, offset, bytemuck::bytes_of(&cols));
+        }
+    }
+
+    // 6. Shadow passes — one depth-only pass per shadowcaster,
+    //    each rendering the entire draw list into the caster's own
+    //    shadow map. Re-traversing the draw list here is cheap at
+    //    indoor scale; instancing or bulk submission lands when
+    //    profiling demands it.
+    if !shadowcaster_vps.is_empty() {
+        puffin::profile_scope!("shadow_pass");
+        let Some(shadow) = world.resource::<ShadowPipeline>() else {
+            warn!("render_frame: ShadowPipeline missing");
+            return;
+        };
+        let Some(maps) = world.resource::<ShadowMaps>() else {
+            warn!("render_frame: ShadowMaps missing");
+            return;
+        };
+        let Some(meshes) = world.resource::<MeshRegistry>() else {
+            warn!("render_frame: MeshRegistry missing");
+            return;
+        };
+
+        let caster_count = shadowcaster_vps.len().min(maps.active_count());
+        for i in 0..caster_count {
+            let Some(map_view) = maps.layer_view(i) else {
+                continue;
+            };
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("shadow-pass"),
+                // Depth-only: no color attachments, the shadow
+                // shader has no fragment.
+                color_attachments: &[],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: map_view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(1.0),
+                        store: StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            pass.set_pipeline(&shadow.pipeline);
+            let vp_offset = (i as u32) * (SHADOW_VP_UNIFORM_STRIDE as u32);
+            pass.set_bind_group(0, &shadow.vp_bind_group, &[vp_offset]);
+
+            for (di, (_, handle, _)) in draws.iter().enumerate() {
+                let Some(mesh) = meshes.get(*handle) else {
+                    continue;
+                };
+                let model_offset = (di as u32) * (MODEL_UNIFORM_STRIDE as u32);
+                pass.set_bind_group(1, &shadow.model_bind_group, &[model_offset]);
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
+        }
+    }
+
+    // 7. Forward pass.
+    {
+        puffin::profile_scope!("forward_pass");
+        let Some(pipeline) = world.resource::<ForwardPipeline>() else {
+            warn!("render_frame: ForwardPipeline missing");
+            return;
+        };
+        let Some(meshes) = world.resource::<MeshRegistry>() else {
+            warn!("render_frame: MeshRegistry missing");
+            return;
+        };
+        let Some(shadow_maps) = world.resource::<ShadowMaps>() else {
+            warn!("render_frame: ShadowMaps missing");
+            return;
+        };
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("forward-pass"),
@@ -305,6 +480,7 @@ pub fn render_frame(world: &mut World) {
         pass.set_pipeline(&pipeline.pipeline);
         pass.set_bind_group(0, &pipeline.camera_bind_group, &[]);
         pass.set_bind_group(1, &pipeline.lights_bind_group, &[]);
+        pass.set_bind_group(3, shadow_maps.bind_group(), &[]);
 
         for (i, (_, handle, _)) in draws.iter().enumerate() {
             let Some(mesh) = meshes.get(*handle) else {
@@ -319,7 +495,7 @@ pub fn render_frame(world: &mut World) {
         }
     }
 
-    // 5. Egui overlay pass — load (don't clear) the forward result.
+    // 8. Egui overlay pass — load (don't clear) the forward result.
     //
     //    We always run the egui frame (even when hidden) so its
     //    input queue stays drained; we only skip the encoded pass
@@ -416,7 +592,7 @@ pub fn render_frame(world: &mut World) {
         }
     }
 
-    // 6. Submit + present.
+    // 9. Submit + present.
     {
         puffin::profile_scope!("submit_present");
         queue.submit(Some(encoder.finish()));
