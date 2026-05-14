@@ -1,7 +1,7 @@
 # Part 1 — Mood
 
 **Kind:** Tech buildout (renderer & atmosphere)
-**Status:** Phases 1.A + 1.B complete (2026-05-14) — Phase 1.C not started
+**Status:** Phases 1.A + 1.B + 1.C complete (2026-05-14) — Phase 1.D not started
 **Depends on:** Game 0 (complete)
 
 ---
@@ -65,11 +65,11 @@ Replace G0's single-directional-light shader with a small dynamic light array th
 Add per-spot-light shadow maps. Single shadow map per casting light, indoor-scoped (small frustum, modest resolution). This is the phase that makes spotlights actually *carve* the room.
 
 **Steps:**
-- [ ] **1.C.1** Depth-only shadow render pass infrastructure. A `Shadowcaster` marker component on lights that should cast shadows (so not every light pays the cost).
-- [ ] **1.C.2** Per-light shadow map allocation: one 1024×1024 depth texture per shadowcasting spot light, recreated when the set of casters changes.
-- [ ] **1.C.3** Per-light view-projection matrix from the spot's position + direction + cone.
-- [ ] **1.C.4** Main pass reads shadow maps with PCF (3×3 or 5×5) for soft edges.
-- [ ] **1.C.5** Smoke test: a single spot light with shadowcaster on, a few cubes in the cone. Shadows fall correctly. Toggle PCF kernel size with a debug key to compare.
+- [x] **1.C.1** Depth-only shadow render pass infrastructure. A `Shadowcaster` marker component on lights that should cast shadows (so not every light pays the cost).
+- [x] **1.C.2** Per-light shadow map allocation: one 1024×1024 depth texture per shadowcasting spot light, recreated when the set of casters changes. *(Landed as a single 2D-array depth texture with `MAX_SHADOW_CASTERS = 4` layers — `binding_array<texture_depth_2d>` needed `Features::TEXTURE_BINDING_ARRAY`, which narrows adapter compatibility; `texture_depth_2d_array` is core wgpu.)*
+- [x] **1.C.3** Per-light view-projection matrix from the spot's position + direction + cone.
+- [x] **1.C.4** Main pass reads shadow maps with PCF (3×3 or 5×5) for soft edges.
+- [x] **1.C.5** Smoke test: a single spot light with shadowcaster on, a few cubes in the cone. Shadows fall correctly. Toggle PCF kernel size with a debug key to compare. *(Spot orbits the cube grid via game-side `OrbitingSpot` so shadows sweep at all angles in one run; P cycles Single / Soft3x3 / Wide5x5.)*
 
 ### Phase 1.D — Post-process v0
 
@@ -137,7 +137,7 @@ A single sealed indoor space using everything Parts 1.A–1.G produced. This is 
 The Part is complete when all of the following are true in the playground binary:
 
 - [ ] Three iron states are visibly distinct on the same geometry.
-- [ ] At least one shadow-casting spot light carves the room with PCF-soft shadows.
+- [x] At least one shadow-casting spot light carves the room with PCF-soft shadows. *(Confirmed 2026-05-14 with an orbiting spot in the Game-0 smoke scene; sun dialled down to 0.15 to keep the floor unsaturated until 1.D's tonemap lands.)*
 - [x] At least one point light contributes localized warm/red illumination.
 - [ ] Fog is enabled; the spot light cone reads as a visible god-ray; fog density adjustable at runtime.
 - [ ] At least three `ColorGrade` zones (chamber-white, cage-warm, service-red) are switchable, with visibly different moods on the same geometry.

@@ -131,6 +131,30 @@ When a choice isn't obvious to someone new to game engines, explain it in one or
 
 Avoid explanations that a 10-year Rust dev doesn't need. Calibrate to "new to game dev, fluent in Rust."
 
+**Graphics programming is the growth area — go deeper there.** The developer's GPU/renderer knowledge is theoretical; they are learning hands-on through this engine. When the topic is graphics (a binding-array vs. texture-array trade-off, what a comparison sampler does, why std140 padding matters, what PCF actually averages over, how a stencil-shadow pass differs from a shadow-map pass), treat it as a chance to teach the underlying concept, not just justify the path we picked. Specifically:
+
+- **Name techniques by their industry terms** so the developer can google further. "Slope-scaled depth bias," "windowed inverse-square attenuation," "WGSL std140 layout rules," "comparison sampler" — these are searchable phrases that open doors to papers, talks, and other codebases.
+- **Sketch the alternatives we are not picking** when they teach something useful. Even a paragraph on what cube-map omnidirectional shadows would look like — when we're not building them — gives the developer a map of the space.
+- **Point at canonical references** when you know them (Real-Time Rendering, learnopengl.com, the WebGPU spec, UE/Frostbite/Crytek talks, NVIDIA GPU Gems chapters). One named source beats a hand-wavy summary.
+- **Show the math when it pays rent.** A short derivation of a perspective frustum or the std140 alignment for a struct teaches more than "trust me, this layout works."
+
+A paragraph of context that lets the developer follow a citation chain is worth more than a sentence of justification.
+
+### Pause to play with new capabilities
+
+When a Step produces something the developer can *feel* — a new verb, a new visual, a new system the player or developer can poke at — propose a small experiment before moving to the next Step. Not a refactor, not a polish pass: a throwaway tweak to the scene or the new system that exercises the capability in a way the next Step alone wouldn't.
+
+Examples:
+- "We just got telekinesis working — want to drop a stack of crates in the playground and see how the impulse feels before we add the next verb?"
+- "Shadows work. The smoke scene has one fixed spot; want to make it orbit before we move to post-process so we can see shadows from multiple angles in one run?"
+- "The fog density resource exists. Want to bind it to a debug slider before we touch atmospherics, so we can dial it live during the next phase?"
+
+The point is pillar 4 — *organism, not castle*. Each capability layered on the engine should be **felt** before the next one stacks on top. Experiments are short (minutes, not hours), reversible (no API churn, no plan revision), and almost always inform the next Step in some small way — sometimes by revealing the next Step's assumption is wrong while it's still cheap to change.
+
+When to **skip** the proposal: pure plumbing changes, refactors, infrastructure-only Steps, or anything the developer cannot interact with on screen or via a key press. Save the prompt for moments where there is a new toy worth playing with.
+
+When to **always** raise it: anything visually new, anything gameplay-new, anything the developer would otherwise only see through a test or a log line.
+
 ---
 
 ## Tool constraints
