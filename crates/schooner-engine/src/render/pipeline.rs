@@ -31,7 +31,7 @@ use wgpu::{
 
 use crate::render::context::DEPTH_FORMAT;
 use crate::render::mesh::Vertex;
-use crate::render::uniforms::{CameraUniformData, LightUniformData, ModelUniformData};
+use crate::render::uniforms::{CameraUniformData, LightsUniformData, ModelUniformData};
 
 /// Maximum number of draws the per-frame model buffer can serve
 /// without reallocation. Game 0 scenes are far below this; growing
@@ -56,8 +56,8 @@ pub struct ForwardPipeline {
     pub camera_buffer: Buffer,
     pub camera_bind_group: BindGroup,
 
-    pub light_buffer: Buffer,
-    pub light_bind_group: BindGroup,
+    pub lights_buffer: Buffer,
+    pub lights_bind_group: BindGroup,
 
     pub model_buffer: Buffer,
     pub model_bind_group: BindGroup,
@@ -69,14 +69,14 @@ impl ForwardPipeline {
     /// must match `RenderContext::surface_format()`.
     pub fn new(device: &Device, surface_format: TextureFormat) -> Self {
         let camera_layout = create_camera_layout(device);
-        let light_layout = create_light_layout(device);
+        let lights_layout = create_lights_layout(device);
         let model_layout = create_model_layout(device);
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("forward-pipeline-layout"),
             bind_group_layouts: &[
                 Some(&camera_layout),
-                Some(&light_layout),
+                Some(&lights_layout),
                 Some(&model_layout),
             ],
             // wgpu 29 renamed push-constant capacity to "immediate
@@ -152,18 +152,18 @@ impl ForwardPipeline {
             }],
         });
 
-        let light_buffer = create_uniform_buffer(
+        let lights_buffer = create_uniform_buffer(
             device,
-            "light-uniform",
-            std::mem::size_of::<LightUniformData>() as u64,
-            bytemuck::bytes_of(&LightUniformData::placeholder()),
+            "lights-uniform",
+            std::mem::size_of::<LightsUniformData>() as u64,
+            bytemuck::bytes_of(&LightsUniformData::placeholder()),
         );
-        let light_bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("light-bind-group"),
-            layout: &light_layout,
+        let lights_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("lights-bind-group"),
+            layout: &lights_layout,
             entries: &[BindGroupEntry {
                 binding: 0,
-                resource: light_buffer.as_entire_binding(),
+                resource: lights_buffer.as_entire_binding(),
             }],
         });
 
@@ -193,8 +193,8 @@ impl ForwardPipeline {
             pipeline,
             camera_buffer,
             camera_bind_group,
-            light_buffer,
-            light_bind_group,
+            lights_buffer,
+            lights_bind_group,
             model_buffer,
             model_bind_group,
         }
@@ -234,17 +234,17 @@ fn create_camera_layout(device: &Device) -> BindGroupLayout {
     })
 }
 
-fn create_light_layout(device: &Device) -> BindGroupLayout {
+fn create_lights_layout(device: &Device) -> BindGroupLayout {
     device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("light-bgl"),
+        label: Some("lights-bgl"),
         entries: &[BindGroupLayoutEntry {
             binding: 0,
-            // Fragment-only — the light is consumed in shading.
+            // Fragment-only — lights are consumed in shading.
             visibility: ShaderStages::FRAGMENT,
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Uniform,
                 has_dynamic_offset: false,
-                min_binding_size: NonZeroU64::new(std::mem::size_of::<LightUniformData>() as u64),
+                min_binding_size: NonZeroU64::new(std::mem::size_of::<LightsUniformData>() as u64),
             },
             count: None,
         }],

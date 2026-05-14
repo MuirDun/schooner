@@ -29,6 +29,7 @@ pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
 pub use render::{
     render_frame, DebugOverlay, DirectionalLight, ForwardPipeline, MeshHandle, MeshRegistry,
+    PointLight, SpotLight,
 };
 pub use time::{Time, DEFAULT_FIXED_HZ, MAX_FIXED_STEPS_PER_FRAME};
 pub use transform::Transform;

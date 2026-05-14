@@ -29,9 +29,12 @@ pub mod uniforms;
 
 pub use context::{RenderContext, RenderContextError, DEPTH_FORMAT};
 pub use forward::render_frame;
-pub use light::DirectionalLight;
+pub use light::{DirectionalLight, PointLight, SpotLight};
 pub use mesh::{cube_mesh, plane_mesh, MeshData, MeshGpu, MeshHandle, Vertex};
 pub use overlay::DebugOverlay;
 pub use pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 pub use registry::MeshRegistry;
-pub use uniforms::{CameraUniformData, LightUniformData, ModelUniformData};
+pub use uniforms::{
+    CameraUniformData, DirectionalLightUniformData, LightsUniformData, ModelUniformData,
+    PointLightUniformData, SpotLightUniformData, MAX_POINT_LIGHTS, MAX_SPOT_LIGHTS,
+};

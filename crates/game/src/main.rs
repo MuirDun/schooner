@@ -2,7 +2,8 @@ use glam::{Quat, Vec3};
 use schooner_engine::logging::{self, LogConfig};
 use schooner_engine::{
     fps_cursor_toggle, fps_look, fps_move, ActiveCamera, App, Camera, DirectionalLight,
-    FpsController, Material, MeshHandle, Stage, Transform, WindowConfig, World,
+    FpsController, Material, MeshHandle, PointLight, SpotLight, Stage, Transform, WindowConfig,
+    World,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -95,6 +96,38 @@ fn spawn_scene(world: &mut World) {
     // cubes don't read as flat black.
     let sun = world.spawn();
     world.insert(sun, DirectionalLight::default());
+
+    // Phase 1.B.4 smoke test — overhead white spot + dim red corner
+    // point. Both should visibly contribute on top of the sun. With
+    // no shadows yet (Phase 1.C), back faces of objects stay bright
+    // from the sun + ambient; that's expected and intentional.
+    let spot = world.spawn();
+    world.insert(
+        spot,
+        Transform {
+            translation: Vec3::new(0.0, 5.0, 0.0),
+            // `Quat::from_rotation_arc(from, to)` is the explicit
+            // way to say "rotate the default forward (-Z) onto -Y"
+            // — i.e. aim the spot straight down. Reads cleaner than
+            // a raw axis-angle.
+            rotation: Quat::from_rotation_arc(Vec3::NEG_Z, Vec3::NEG_Y),
+            scale: Vec3::ONE,
+        },
+    );
+    // Intensity 15.0 compensates the windowed inverse-square at the
+    // 5 m drop to the floor — gives a clearly visible pool under
+    // the lamp without saturating to white.
+    world.insert(spot, SpotLight::new(Vec3::ONE, 15.0, 8.0, 20.0, 30.0));
+
+    let red_lamp = world.spawn();
+    world.insert(
+        red_lamp,
+        Transform::from_translation(Vec3::new(-4.0, 1.5, 2.0)),
+    );
+    world.insert(
+        red_lamp,
+        PointLight::new(Vec3::new(1.0, 0.1, 0.05), 5.0, 4.0),
+    );
 
     // Player camera: standard FPS eye height (1.7 m), 8 m back from
     // the cube grid, facing -Z (yaw=0, pitch=0). FpsController

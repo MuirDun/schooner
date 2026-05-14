@@ -82,7 +82,7 @@ graph TD
 
 *Renderer + atmosphere extensions (pulled in from G2A because Kinesis cannot ship without them):*
 - [ ] Per-instance material parameters — albedo, roughness, emissive; enables same-geometry material variants (iron polished / default / pitted)
-- [ ] Spot + point light components with per-light parameters
+- [x] Spot + point light components with per-light parameters
 - [ ] Per-light shadow maps for spot lights (single map per light, indoor-scoped — cascaded shadow maps stay deferred to Game 3 for outdoor sun)
 - [ ] Post-process pipeline v0 — tonemap, color grade, vignette, fullscreen overlay slot
 - [ ] Atmospheric fog with analytic in-scattering through spot cones (god-rays)

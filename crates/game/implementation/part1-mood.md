@@ -1,7 +1,7 @@
 # Part 1 — Mood
 
 **Kind:** Tech buildout (renderer & atmosphere)
-**Status:** Not started
+**Status:** Phases 1.A + 1.B complete (2026-05-14) — Phase 1.C not started
 **Depends on:** Game 0 (complete)
 
 ---
@@ -45,90 +45,90 @@ If the answer is no — if rusted iron looks plastic, if spotlights don't carve 
 Extend Game 0's single-albedo Blinn-Phong to per-instance material parameters so the same iron geometry can present three visual states (polished / default / pitted), and so emissive surfaces (red lamps, food gel) are first-class.
 
 **Steps:**
-- **1.A.1** Define `Material` component at engine root (alongside `Transform`). Fields: `albedo: Vec3`, `roughness: f32`, `emissive: Vec3`, `emissive_intensity: f32`, `blend: BlendMode` (`Opaque` for now; `AlphaBlend` lands in 1.G).
-- **1.A.2** Extend the per-draw uniform (currently model matrix only) to carry material params alongside the transform. Reuse the existing dynamic-offset uniform pattern.
-- **1.A.3** Update the WGSL shader to read material params per-instance; apply albedo + roughness modulation to Blinn–Phong; add emissive contribution outside the lighting equation.
-- **1.A.4** Smoke test: three cubes in the existing G0 scene, each with a different `Material` (one warm-tinted polished, one neutral, one cool-tinted dim) — visibly distinct under the existing directional light.
+- [x] **1.A.1** Define `Material` component at engine root (alongside `Transform`). Fields: `albedo: Vec3`, `roughness: f32`, `emissive: Vec3`, `emissive_intensity: f32`, `blend: BlendMode` (`Opaque` for now; `AlphaBlend` lands in 1.G).
+- [x] **1.A.2** Extend the per-draw uniform (currently model matrix only) to carry material params alongside the transform. Reuse the existing dynamic-offset uniform pattern.
+- [x] **1.A.3** Update the WGSL shader to read material params per-instance; apply albedo + roughness modulation to Blinn–Phong; add emissive contribution outside the lighting equation.
+- [x] **1.A.4** Smoke test: three cubes in the existing G0 scene, each with a different `Material` (one warm-tinted polished, one neutral, one cool-tinted dim) — visibly distinct under the existing directional light.
 
 ### Phase 1.B — Multi-light shading
 
 Replace G0's single-directional-light shader with a small dynamic light array that supports spot and point lights. No shadows yet — that's the next phase, kept separate because shadows are the fiddly part.
 
 **Steps:**
-- **1.B.1** Define `DirectionalLight`, `SpotLight`, `PointLight` components. Fields per architecture/rendering vision: spot has position + direction + color + intensity + inner/outer cone; point has position + color + intensity + range; directional has direction + color + intensity.
-- **1.B.2** Per-frame light-collection system: gather lights into a fixed-size uniform buffer (e.g. up to 1 directional + 8 spot + 16 point) with an active count.
-- **1.B.3** WGSL: iterate active lights, accumulate Blinn–Phong contribution per light. Range attenuation for point; cone + range attenuation for spot.
-- **1.B.4** Smoke test in playground precursor: a white spot light from above + a dim red point light in the corner. Both visibly contribute. No shadows yet — surfaces are still bright on the back side of objects, expected.
+- [x] **1.B.1** Define `DirectionalLight`, `SpotLight`, `PointLight` components. Fields per architecture/rendering vision: spot has position + direction + color + intensity + inner/outer cone; point has position + color + intensity + range; directional has direction + color + intensity.
+- [x] **1.B.2** Per-frame light-collection system: gather lights into a fixed-size uniform buffer (e.g. up to 1 directional + 8 spot + 16 point) with an active count.
+- [x] **1.B.3** WGSL: iterate active lights, accumulate Blinn–Phong contribution per light. Range attenuation for point; cone + range attenuation for spot.
+- [x] **1.B.4** Smoke test in playground precursor: a white spot light from above + a dim red point light in the corner. Both visibly contribute. No shadows yet — surfaces are still bright on the back side of objects, expected.
 
 ### Phase 1.C — Shadow maps for spot lights
 
 Add per-spot-light shadow maps. Single shadow map per casting light, indoor-scoped (small frustum, modest resolution). This is the phase that makes spotlights actually *carve* the room.
 
 **Steps:**
-- **1.C.1** Depth-only shadow render pass infrastructure. A `Shadowcaster` marker component on lights that should cast shadows (so not every light pays the cost).
-- **1.C.2** Per-light shadow map allocation: one 1024×1024 depth texture per shadowcasting spot light, recreated when the set of casters changes.
-- **1.C.3** Per-light view-projection matrix from the spot's position + direction + cone.
-- **1.C.4** Main pass reads shadow maps with PCF (3×3 or 5×5) for soft edges.
-- **1.C.5** Smoke test: a single spot light with shadowcaster on, a few cubes in the cone. Shadows fall correctly. Toggle PCF kernel size with a debug key to compare.
+- [ ] **1.C.1** Depth-only shadow render pass infrastructure. A `Shadowcaster` marker component on lights that should cast shadows (so not every light pays the cost).
+- [ ] **1.C.2** Per-light shadow map allocation: one 1024×1024 depth texture per shadowcasting spot light, recreated when the set of casters changes.
+- [ ] **1.C.3** Per-light view-projection matrix from the spot's position + direction + cone.
+- [ ] **1.C.4** Main pass reads shadow maps with PCF (3×3 or 5×5) for soft edges.
+- [ ] **1.C.5** Smoke test: a single spot light with shadowcaster on, a few cubes in the cone. Shadows fall correctly. Toggle PCF kernel size with a debug key to compare.
 
 ### Phase 1.D — Post-process v0
 
 Introduce an offscreen HDR render target and a post-process chain. This is the phase that gives us tonemap, color grade, vignette, and — most importantly — a **fullscreen overlay slot** that Parts 3 and 4 will drive (death red-noise, cold-open, hunger tint).
 
 **Steps:**
-- **1.D.1** Render the main scene into an HDR offscreen color target (Rgba16Float) instead of directly into the swap chain.
-- **1.D.2** Fullscreen post-process pass: ACES-ish tonemap to LDR.
-- **1.D.3** Color grade: a per-scene `ColorGrade` resource with lift / gamma / gain (or a simple LUT pointer for later). Drives the chamber/cage/service-space distinct looks.
-- **1.D.4** Vignette: radial darkening with color tint (intensity + tint as `ColorGrade` fields).
-- **1.D.5** Fullscreen overlay slot: a `PostOverlay` resource exposing an overlay texture + intensity + blend mode. Wired through the post-process pass; default-off. Consumers (death, hunger) come in later Parts.
-- **1.D.6** Smoke test: playground precursor with three `ColorGrade` presets (chamber-white, cage-warm, service-red), switchable by debug key. Visibly different moods on the same geometry.
+- [ ] **1.D.1** Render the main scene into an HDR offscreen color target (Rgba16Float) instead of directly into the swap chain.
+- [ ] **1.D.2** Fullscreen post-process pass: ACES-ish tonemap to LDR.
+- [ ] **1.D.3** Color grade: a per-scene `ColorGrade` resource with lift / gamma / gain (or a simple LUT pointer for later). Drives the chamber/cage/service-space distinct looks.
+- [ ] **1.D.4** Vignette: radial darkening with color tint (intensity + tint as `ColorGrade` fields).
+- [ ] **1.D.5** Fullscreen overlay slot: a `PostOverlay` resource exposing an overlay texture + intensity + blend mode. Wired through the post-process pass; default-off. Consumers (death, hunger) come in later Parts.
+- [ ] **1.D.6** Smoke test: playground precursor with three `ColorGrade` presets (chamber-white, cage-warm, service-red), switchable by debug key. Visibly different moods on the same geometry.
 
 ### Phase 1.E — Atmospheric fog & god-rays
 
 Make spotlight cones visible by scattering in the lighting model + a light-shaft contribution. This is the single biggest aesthetic win of Part 1.
 
 **Steps:**
-- **1.E.1** `Fog` resource: per-scene height-fog params (color, base height, density, falloff). Applied in the main shader as in-scattering on the lit color (exponential height fog).
-- **1.E.2** Spot-light god-ray contribution: analytic in-scattering through the spot cone, computed in the main shader against the fog medium. Cheaper than screen-space radial blur and reads correctly even with shadow occlusion.
-- **1.E.3** Per-scene fog presets matching the `ColorGrade` zones (chamber, cage, service-red, labyrinth).
-- **1.E.4** Smoke test: playground precursor with a single spot light, fog enabled. Cone is visible as a god-ray. Walk through it — fog density and scattering read correctly from inside vs outside the beam.
+- [ ] **1.E.1** `Fog` resource: per-scene height-fog params (color, base height, density, falloff). Applied in the main shader as in-scattering on the lit color (exponential height fog).
+- [ ] **1.E.2** Spot-light god-ray contribution: analytic in-scattering through the spot cone, computed in the main shader against the fog medium. Cheaper than screen-space radial blur and reads correctly even with shadow occlusion.
+- [ ] **1.E.3** Per-scene fog presets matching the `ColorGrade` zones (chamber, cage, service-red, labyrinth).
+- [ ] **1.E.4** Smoke test: playground precursor with a single spot light, fog enabled. Cone is visible as a god-ray. Walk through it — fog density and scattering read correctly from inside vs outside the beam.
 
 ### Phase 1.F — Asset pipeline v0
 
 Replace G0's hardcoded cube/plane workflow with on-disk glTF meshes and textures, plus a manual-reload key. No file watcher — Game 2A's job.
 
 **Steps:**
-- **1.F.1** glTF mesh loader: parse a `.gltf` / `.glb` file into vertex + index buffers, register into a `MeshRegistry` keyed by `MeshHandle`. Built-in cube/plane stay registered eagerly for debug.
-- **1.F.2** Texture loader: load PNG/KTX → wgpu texture; register into a `TextureRegistry` keyed by `TextureHandle`.
-- **1.F.3** `Material` extended: `albedo_texture: Option<TextureHandle>` slot (multiplied with `Material.albedo` if present).
-- **1.F.4** Manual reload: a debug key (F5) re-reads tracked asset files from disk and updates registry entries in place. Failures are non-fatal — previous version keeps running, error logged.
-- **1.F.5** Smoke test: author a single rusted-iron wall panel (mesh + albedo texture) in Blender, export glTF + PNG, load it, swap a playground wall to use it. Tweak the PNG, hit F5, see the change.
+- [ ] **1.F.1** glTF mesh loader: parse a `.gltf` / `.glb` file into vertex + index buffers, register into a `MeshRegistry` keyed by `MeshHandle`. Built-in cube/plane stay registered eagerly for debug.
+- [ ] **1.F.2** Texture loader: load PNG/KTX → wgpu texture; register into a `TextureRegistry` keyed by `TextureHandle`.
+- [ ] **1.F.3** `Material` extended: `albedo_texture: Option<TextureHandle>` slot (multiplied with `Material.albedo` if present).
+- [ ] **1.F.4** Manual reload: a debug key (F5) re-reads tracked asset files from disk and updates registry entries in place. Failures are non-fatal — previous version keeps running, error logged.
+- [ ] **1.F.5** Smoke test: author a single rusted-iron wall panel (mesh + albedo texture) in Blender, export glTF + PNG, load it, swap a playground wall to use it. Tweak the PNG, hit F5, see the change.
 
 ### Phase 1.G — Decals & transparency
 
 Alpha-blended materials for wall art decals and frosted glass. Textured-quad decals (not projected) — depth-biased to avoid z-fighting against the wall they sit on.
 
 **Steps:**
-- **1.G.1** `Material.blend` honored: `Opaque` (default) renders in the opaque pass; `AlphaBlend` is collected into a transparent pass.
-- **1.G.2** Transparent pass: rendered after opaque, sorted back-to-front by camera distance.
-- **1.G.3** Depth-bias control on `Material` (`f32` polygon offset) so decal quads sit cleanly on host surfaces.
-- **1.G.4** First decal asset: one scratched-stick-figure wall drawing (texture with alpha) on a quad mesh. Authored in Blender / Krita.
-- **1.G.5** Glass material: an alpha-blended iron-frame-around-frosted-pane composite. Frost is a simple tint + high-Fresnel specular — not real refraction.
-- **1.G.6** Smoke test: place a wall-art decal on the playground's iron wall (visibly flush); install the eye-window with its frosted-glass material; place a placeholder eye geometry behind it that's dimly visible.
+- [ ] **1.G.1** `Material.blend` honored: `Opaque` (default) renders in the opaque pass; `AlphaBlend` is collected into a transparent pass.
+- [ ] **1.G.2** Transparent pass: rendered after opaque, sorted back-to-front by camera distance.
+- [ ] **1.G.3** Depth-bias control on `Material` (`f32` polygon offset) so decal quads sit cleanly on host surfaces.
+- [ ] **1.G.4** First decal asset: one scratched-stick-figure wall drawing (texture with alpha) on a quad mesh. Authored in Blender / Krita.
+- [ ] **1.G.5** Glass material: an alpha-blended iron-frame-around-frosted-pane composite. Frost is a simple tint + high-Fresnel specular — not real refraction.
+- [ ] **1.G.6** Smoke test: place a wall-art decal on the playground's iron wall (visibly flush); install the eye-window with its frosted-glass material; place a placeholder eye geometry behind it that's dimly visible.
 
 ### Phase 1.H — The playground
 
 A single sealed indoor space using everything Parts 1.A–1.G produced. This is the artifact every subsequent Part returns to.
 
 **Steps:**
-- **1.H.1** New binary target: `crates/game/src/bin/playground.rs`. Default `main.rs` becomes the game stub (will be Kinesis proper later). Playground launched via `cargo run -p game --bin playground`.
-- **1.H.2** Playground room: a ~6×6×4m sealed iron chamber, one wall with a frosted-glass window, one doorway opening into a short service corridor lit by a red point light.
-- **1.H.3** Lighting setup: one directional fill (very dim), one shadow-casting white spot from above the chamber, one red point in the service corridor, one dim spot inside the cavity behind the window.
-- **1.H.4** Materials: chamber walls use the rusted-iron material; the wall flagged for state-cycling carries all three variants accessible via debug keys (1 = polished, 2 = default, 3 = pitted).
-- **1.H.5** Dressing: a handful of static sulfur-block meshes (no physics yet — purely visual), a placeholder gel-brick with emissive material, the eye placeholder behind the glass.
-- **1.H.6** Debug controls (dev keys, not gameplay): cycle iron state; cycle scene `ColorGrade` between chamber / cage / service / labyrinth; dim player-side lights to test the eye-reveal trick; toggle fog density.
-- **1.H.7** FPS controller from G0 carries over unchanged. Mouse capture, WASD, look. Existing F1 debug overlay still works.
-- **1.H.8** One wall-art decal scratched on the iron, to validate decals in the live scene.
+- [ ] **1.H.1** New binary target: `crates/game/src/bin/playground.rs`. Default `main.rs` becomes the game stub (will be Kinesis proper later). Playground launched via `cargo run -p game --bin playground`.
+- [ ] **1.H.2** Playground room: a ~6×6×4m sealed iron chamber, one wall with a frosted-glass window, one doorway opening into a short service corridor lit by a red point light.
+- [ ] **1.H.3** Lighting setup: one directional fill (very dim), one shadow-casting white spot from above the chamber, one red point in the service corridor, one dim spot inside the cavity behind the window.
+- [ ] **1.H.4** Materials: chamber walls use the rusted-iron material; the wall flagged for state-cycling carries all three variants accessible via debug keys (1 = polished, 2 = default, 3 = pitted).
+- [ ] **1.H.5** Dressing: a handful of static sulfur-block meshes (no physics yet — purely visual), a placeholder gel-brick with emissive material, the eye placeholder behind the glass.
+- [ ] **1.H.6** Debug controls (dev keys, not gameplay): cycle iron state; cycle scene `ColorGrade` between chamber / cage / service / labyrinth; dim player-side lights to test the eye-reveal trick; toggle fog density.
+- [ ] **1.H.7** FPS controller from G0 carries over unchanged. Mouse capture, WASD, look. Existing F1 debug overlay still works.
+- [ ] **1.H.8** One wall-art decal scratched on the iron, to validate decals in the live scene.
 
 ---
 
@@ -138,7 +138,7 @@ The Part is complete when all of the following are true in the playground binary
 
 - [ ] Three iron states are visibly distinct on the same geometry.
 - [ ] At least one shadow-casting spot light carves the room with PCF-soft shadows.
-- [ ] At least one point light contributes localized warm/red illumination.
+- [x] At least one point light contributes localized warm/red illumination.
 - [ ] Fog is enabled; the spot light cone reads as a visible god-ray; fog density adjustable at runtime.
 - [ ] At least three `ColorGrade` zones (chamber-white, cage-warm, service-red) are switchable, with visibly different moods on the same geometry.
 - [ ] Vignette is in the pipeline; the overlay slot exists and can be driven by a debug key with a test texture.

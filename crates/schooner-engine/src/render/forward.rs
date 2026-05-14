@@ -31,18 +31,19 @@ use wgpu::{
 };
 
 use crate::camera::{ActiveCamera, Camera};
-use crate::debug::{
-    build_overlay_ui, DebugState, OverlayInteract, OverlayMetrics, ProfilerView,
-};
+use crate::debug::{DebugState, OverlayInteract, OverlayMetrics, ProfilerView, build_overlay_ui};
 use crate::ecs::World;
 use crate::material::Material;
 use crate::render::context::RenderContext;
-use crate::render::light::DirectionalLight;
+use crate::render::light::{DirectionalLight, PointLight, SpotLight};
 use crate::render::mesh::MeshHandle;
 use crate::render::overlay::DebugOverlay;
 use crate::render::pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 use crate::render::registry::MeshRegistry;
-use crate::render::uniforms::{CameraUniformData, LightUniformData, ModelUniformData};
+use crate::render::uniforms::{
+    CameraUniformData, DirectionalLightUniformData, LightsUniformData, MAX_POINT_LIGHTS,
+    MAX_SPOT_LIGHTS, ModelUniformData, PointLightUniformData, SpotLightUniformData,
+};
 use crate::time::Time;
 use crate::transform::Transform;
 
@@ -56,13 +57,116 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// Collect all light components in the world and pack them into a
+/// single `LightsUniformData`. Spot and point lights pair with a
+/// sibling `Transform` (translation = position, rotation = aim);
+/// directional is positionless. Overflow past the fixed caps is
+/// warned and dropped.
+fn build_lights_uniform(world: &mut World) -> LightsUniformData {
+    let mut data = LightsUniformData::zeroed();
+
+    // Directional: first one wins. Fall back to the placeholder's
+    // ambient-grey when no DirectionalLight exists.
+    match world.query::<&DirectionalLight>().into_iter().next() {
+        Some(dir) => {
+            data.directional = DirectionalLightUniformData::new(
+                dir.direction,
+                dir.color,
+                dir.intensity,
+                dir.ambient,
+            );
+            data.counts[0] = 1;
+        }
+        None => {
+            data.directional = DirectionalLightUniformData::new(
+                Vec3::new(0.0, -1.0, 0.0),
+                Vec3::ZERO,
+                0.0,
+                Vec3::splat(0.3),
+            );
+            // counts[0] stays 0 — the shader skips directional
+            // contribution but still reads ambient from this slot.
+        }
+    }
+
+    // Spots: iter the components, resolve sibling Transform per
+    // entity (same iter-then-get pattern as the mesh draw path).
+    let spot_entities: Vec<crate::ecs::EntityId> =
+        world.iter::<SpotLight>().map(|(e, _)| e).collect();
+    let mut spot_count = 0usize;
+    let total_spots = spot_entities.len();
+    for entity in spot_entities {
+        if spot_count == MAX_SPOT_LIGHTS {
+            break;
+        }
+        let Some(transform) = world.get::<Transform>(entity).copied() else {
+            continue;
+        };
+        let Some(spot) = world.get::<SpotLight>(entity).copied() else {
+            continue;
+        };
+        // Default spot-forward is local -Z (camera-forward convention).
+        let direction = (transform.rotation * Vec3::NEG_Z).normalize_or_zero();
+        data.spots[spot_count] = SpotLightUniformData::new(
+            transform.translation,
+            direction,
+            spot.color,
+            spot.intensity,
+            spot.range,
+            spot.inner_cone_cos,
+            spot.outer_cone_cos,
+        );
+        spot_count += 1;
+    }
+    if total_spots > MAX_SPOT_LIGHTS {
+        warn!(
+            "render_frame: {} SpotLights exceeds MAX_SPOT_LIGHTS ({}); dropping overflow",
+            total_spots, MAX_SPOT_LIGHTS
+        );
+    }
+    data.counts[1] = spot_count as u32;
+
+    // Points: same pattern.
+    let point_entities: Vec<crate::ecs::EntityId> =
+        world.iter::<PointLight>().map(|(e, _)| e).collect();
+    let mut point_count = 0usize;
+    let total_points = point_entities.len();
+    for entity in point_entities {
+        if point_count == MAX_POINT_LIGHTS {
+            break;
+        }
+        let Some(transform) = world.get::<Transform>(entity).copied() else {
+            continue;
+        };
+        let Some(point) = world.get::<PointLight>(entity).copied() else {
+            continue;
+        };
+        data.points[point_count] = PointLightUniformData::new(
+            transform.translation,
+            point.color,
+            point.intensity,
+            point.range,
+        );
+        point_count += 1;
+    }
+    if total_points > MAX_POINT_LIGHTS {
+        warn!(
+            "render_frame: {} PointLights exceeds MAX_POINT_LIGHTS ({}); dropping overflow",
+            total_points, MAX_POINT_LIGHTS
+        );
+    }
+    data.counts[2] = point_count as u32;
+
+    data
+}
+
 pub fn render_frame(world: &mut World) {
     puffin::profile_scope!("render_frame");
 
     // 1. Snapshot scene data through queries. Block-scoped puffin
     //    spans nest correctly under `render_frame` and let the
     //    profiler attribute time to the right phase.
-    let (cam_matrix, camera, cam_pos, light_uniform, draws) = {
+    let (cam_matrix, camera, cam_pos, lights_uniform, draws) = {
         puffin::profile_scope!("snapshot");
 
         let camera_data = world
@@ -75,14 +179,7 @@ pub fn render_frame(world: &mut World) {
             return;
         };
 
-        let light_uniform = world
-            .query::<&DirectionalLight>()
-            .into_iter()
-            .next()
-            .map(|l| LightUniformData::new(l.direction, l.color, l.ambient))
-            .unwrap_or_else(|| {
-                LightUniformData::new(Vec3::new(0.0, -1.0, 0.0), Vec3::ZERO, Vec3::splat(0.3))
-            });
+        let lights_uniform = build_lights_uniform(world);
 
         // Two-pass collection: gather entity ids that have a mesh,
         // then resolve `Transform` and the *optional* `Material` per
@@ -114,7 +211,7 @@ pub fn render_frame(world: &mut World) {
             draws.truncate(MAX_DRAWS_PER_FRAME as usize);
         }
 
-        (cam_matrix, camera, cam_pos, light_uniform, draws)
+        (cam_matrix, camera, cam_pos, lights_uniform, draws)
     };
 
     // 2. Acquire the swap-chain frame and clone device/queue handles.
@@ -168,9 +265,9 @@ pub fn render_frame(world: &mut World) {
             bytemuck::bytes_of(&camera_uniform),
         );
         queue.write_buffer(
-            &pipeline.light_buffer,
+            &pipeline.lights_buffer,
             0,
-            bytemuck::bytes_of(&light_uniform),
+            bytemuck::bytes_of(&lights_uniform),
         );
         for (i, (model, _, material)) in draws.iter().enumerate() {
             let offset = (i as u64) * MODEL_UNIFORM_STRIDE;
@@ -207,7 +304,7 @@ pub fn render_frame(world: &mut World) {
 
         pass.set_pipeline(&pipeline.pipeline);
         pass.set_bind_group(0, &pipeline.camera_bind_group, &[]);
-        pass.set_bind_group(1, &pipeline.light_bind_group, &[]);
+        pass.set_bind_group(1, &pipeline.lights_bind_group, &[]);
 
         for (i, (_, handle, _)) in draws.iter().enumerate() {
             let Some(mesh) = meshes.get(*handle) else {
@@ -234,7 +331,10 @@ pub fn render_frame(world: &mut World) {
         // Update FPS / frame-ms ring buffer from the latest delta.
         // The Update-stage system already ran this frame, so
         // delta_secs reflects the variable-tick delta.
-        let delta_secs = world.resource::<Time>().map(|t| t.delta_secs).unwrap_or(0.0);
+        let delta_secs = world
+            .resource::<Time>()
+            .map(|t| t.delta_secs)
+            .unwrap_or(0.0);
         if let Some(debug) = world.resource_mut::<DebugState>() {
             debug.frame_stats.push(delta_secs);
         }
@@ -292,12 +392,7 @@ pub fn render_frame(world: &mut World) {
             {
                 puffin::profile_scope!("overlay_build");
                 overlay.run(|ctx| {
-                    build_overlay_ui(
-                        ctx,
-                        &mut interact,
-                        metrics,
-                        profiler_snapshot.as_deref(),
-                    );
+                    build_overlay_ui(ctx, &mut interact, metrics, profiler_snapshot.as_deref());
                 });
             }
 

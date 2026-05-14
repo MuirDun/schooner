@@ -16,6 +16,19 @@ use glam::{Mat4, Vec3};
 
 use crate::material::Material;
 
+/// Maximum spot lights packed into [`LightsUniformData`] per frame.
+///
+/// Mirrored in `shaders/forward.wgsl` as the size of `lights.spots`.
+/// Indoor Kinesis chambers use 1–3 spots typically; 8 is generous
+/// headroom without growing the uniform meaningfully (8 × 64 B =
+/// 512 B).
+pub const MAX_SPOT_LIGHTS: usize = 8;
+
+/// Maximum point lights packed into [`LightsUniformData`] per frame.
+///
+/// Mirrored in `shaders/forward.wgsl` as the size of `lights.points`.
+pub const MAX_POINT_LIGHTS: usize = 16;
+
 /// Camera uniform — `view`, `proj`, `view_proj`, `position`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -50,33 +63,135 @@ impl CameraUniformData {
     }
 }
 
-/// Directional light uniform.
+/// Directional light layout inside [`LightsUniformData`].
 ///
-/// Direction is stored as the direction the light **travels** (the
-/// shader negates it on the way in). All three vectors are stored
-/// as `vec4` so the std140 layout is identical to the WGSL struct
-/// without manual padding.
+/// `direction.xyz` is the direction the light **travels** (sun →
+/// surface); the shader negates it. `color_intensity.xyz` is the
+/// unit-magnitude tint and `.w` is the scalar multiplier — the
+/// shader multiplies them to get final radiance. `ambient.xyz` is
+/// the flat ambient term carried along with the directional for
+/// convenience; the shader reads it unconditionally regardless of
+/// `counts.x`, so scenes without a sun can still surface ambient
+/// via the placeholder fallback.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct LightUniformData {
+pub struct DirectionalLightUniformData {
     pub direction: [f32; 4],
-    pub color: [f32; 4],
+    pub color_intensity: [f32; 4],
     pub ambient: [f32; 4],
 }
 
-impl LightUniformData {
-    pub fn new(direction: Vec3, color: Vec3, ambient: Vec3) -> Self {
+impl DirectionalLightUniformData {
+    pub fn new(direction: Vec3, color: Vec3, intensity: f32, ambient: Vec3) -> Self {
         Self {
             direction: [direction.x, direction.y, direction.z, 0.0],
-            color: [color.x, color.y, color.z, 0.0],
+            color_intensity: [color.x, color.y, color.z, intensity],
             ambient: [ambient.x, ambient.y, ambient.z, 0.0],
         }
     }
+}
 
-    /// Fallback when no `DirectionalLight` exists in the world.
-    /// Pure ambient grey so geometry stays visible without a sun.
+/// Spot light layout inside [`LightsUniformData`].
+///
+/// Cone falloff is stored as cosines (matching `SpotLight` on the
+/// CPU side) so the fragment shader's `smoothstep` doesn't need a
+/// per-fragment `cos()`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct SpotLightUniformData {
+    /// `xyz` = world position, `w` = intensity.
+    pub position_intensity: [f32; 4],
+    /// `xyz` = world-space direction (unit), `w` = range.
+    pub direction_range: [f32; 4],
+    /// `xyz` = color (unit tint), `w` = inner cone cosine.
+    pub color_inner_cos: [f32; 4],
+    /// `x` = outer cone cosine, `yzw` padding.
+    pub outer_cos_pad: [f32; 4],
+}
+
+impl SpotLightUniformData {
+    pub fn new(
+        position: Vec3,
+        direction: Vec3,
+        color: Vec3,
+        intensity: f32,
+        range: f32,
+        inner_cone_cos: f32,
+        outer_cone_cos: f32,
+    ) -> Self {
+        Self {
+            position_intensity: [position.x, position.y, position.z, intensity],
+            direction_range: [direction.x, direction.y, direction.z, range],
+            color_inner_cos: [color.x, color.y, color.z, inner_cone_cos],
+            outer_cos_pad: [outer_cone_cos, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// Point light layout inside [`LightsUniformData`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct PointLightUniformData {
+    /// `xyz` = world position, `w` = range.
+    pub position_range: [f32; 4],
+    /// `xyz` = color (unit tint), `w` = intensity.
+    pub color_intensity: [f32; 4],
+}
+
+impl PointLightUniformData {
+    pub fn new(position: Vec3, color: Vec3, intensity: f32, range: f32) -> Self {
+        Self {
+            position_range: [position.x, position.y, position.z, range],
+            color_intensity: [color.x, color.y, color.z, intensity],
+        }
+    }
+}
+
+/// Combined lighting uniform — one directional, fixed-cap spot and
+/// point arrays, and per-type active counts.
+///
+/// `counts.x` = directional count (0 or 1), `.y` = spot count,
+/// `.z` = point count, `.w` = pad. The shader iterates each array
+/// `..counts.[y|z]`; trailing slots are stale data and never read.
+///
+/// At 1 + 8 + 16 lights this struct is 1088 B — comfortably below
+/// any uniform-buffer size limit (typically 64 KB on desktop GPUs).
+/// If indoor scenes ever push past this scale we'd move to a
+/// storage buffer; uniform is the right call for now.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct LightsUniformData {
+    pub directional: DirectionalLightUniformData,
+    pub spots: [SpotLightUniformData; MAX_SPOT_LIGHTS],
+    pub points: [PointLightUniformData; MAX_POINT_LIGHTS],
+    pub counts: [u32; 4],
+}
+
+impl LightsUniformData {
+    /// All-zero buffer. Used both for the GPU buffer's initial
+    /// contents and as the base the per-frame packing fills into.
+    pub fn zeroed() -> Self {
+        <Self as Zeroable>::zeroed()
+    }
+
+    /// Fallback for the "no DirectionalLight in world" case.
+    /// Surfaces a flat grey ambient so geometry is visible without
+    /// authoring effort; no directional contribution, no spots, no
+    /// points. Mirrors Game 0's `LightUniformData::placeholder`
+    /// behaviour: the *value* lived on the directional even when
+    /// no directional existed, simply because the ambient slot has
+    /// to live somewhere.
     pub fn placeholder() -> Self {
-        Self::new(Vec3::new(0.0, -1.0, 0.0), Vec3::ZERO, Vec3::splat(0.3))
+        let mut data = Self::zeroed();
+        data.directional = DirectionalLightUniformData::new(
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::ZERO,
+            0.0,
+            Vec3::splat(0.3),
+        );
+        // counts.x = 0 — the shader's directional-contribution
+        // branch stays off; only ambient lights the scene.
+        data
     }
 }
 
