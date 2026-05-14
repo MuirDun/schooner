@@ -79,8 +79,20 @@ mod tests {
         let mut alloc = EntityAllocator::new();
         let a = alloc.allocate();
         let b = alloc.allocate();
-        assert_eq!(a, EntityId { index: 0, generation: 0 });
-        assert_eq!(b, EntityId { index: 1, generation: 0 });
+        assert_eq!(
+            a,
+            EntityId {
+                index: 0,
+                generation: 0
+            }
+        );
+        assert_eq!(
+            b,
+            EntityId {
+                index: 1,
+                generation: 0
+            }
+        );
     }
 
     #[test]
@@ -92,7 +104,13 @@ mod tests {
         let c = alloc.allocate();
         assert_eq!(b.index, a.index);
         assert_eq!(b.generation, a.generation + 1);
-        assert_eq!(c, EntityId { index: 1, generation: 0 });
+        assert_eq!(
+            c,
+            EntityId {
+                index: 1,
+                generation: 0
+            }
+        );
     }
 
     #[test]
@@ -117,7 +135,10 @@ mod tests {
     #[test]
     fn fabricated_entity_id_is_not_alive() {
         let alloc = EntityAllocator::new();
-        assert!(!alloc.is_alive(EntityId { index: 42, generation: 0 }));
+        assert!(!alloc.is_alive(EntityId {
+            index: 42,
+            generation: 0
+        }));
     }
 
     #[test]

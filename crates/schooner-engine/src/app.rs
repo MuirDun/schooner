@@ -10,12 +10,12 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::debug::{debug_input_system, DebugState, ProfilerView};
-use crate::ecs::{exclusive, IntoSystem, Schedule, Stage, World};
+use crate::debug::{DebugState, ProfilerView, debug_input_system};
+use crate::ecs::{IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::Input;
 use crate::render::{
-    render_frame, DebugOverlay, ForwardPipeline, MeshRegistry, RenderContext, ShadowMaps,
-    ShadowPipeline,
+    DebugOverlay, ForwardPipeline, MeshRegistry, RenderContext, ShadowMaps, ShadowPipeline,
+    render_frame,
 };
 use crate::time::Time;
 use crate::window::WindowConfig;
@@ -294,10 +294,12 @@ impl ApplicationHandler for App {
                 // constructs the forward-side @group(3) bind group
                 // against the pipeline's shadow BGL + comparison
                 // sampler. Per-frame work is just `set_active_count`.
-                let shadow_maps =
-                    ShadowMaps::new(ctx.device(), &pipeline.shadow_bgl, &pipeline.comparison_sampler);
-                let overlay =
-                    DebugOverlay::new(window.clone(), ctx.device(), ctx.surface_format());
+                let shadow_maps = ShadowMaps::new(
+                    ctx.device(),
+                    &pipeline.shadow_bgl,
+                    &pipeline.comparison_sampler,
+                );
+                let overlay = DebugOverlay::new(window.clone(), ctx.device(), ctx.surface_format());
                 self.world.insert_resource(ctx);
                 self.world.insert_resource(registry);
                 self.world.insert_resource(pipeline);

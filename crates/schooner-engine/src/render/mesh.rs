@@ -270,10 +270,26 @@ pub fn cube_mesh() -> MeshData {
 pub fn plane_mesh() -> MeshData {
     let normal = [0.0, 1.0, 0.0];
     let vertices = vec![
-        Vertex { position: [-0.5, 0.0, 0.5], normal, uv: [0.0, 1.0] },
-        Vertex { position: [0.5, 0.0, 0.5], normal, uv: [1.0, 1.0] },
-        Vertex { position: [0.5, 0.0, -0.5], normal, uv: [1.0, 0.0] },
-        Vertex { position: [-0.5, 0.0, -0.5], normal, uv: [0.0, 0.0] },
+        Vertex {
+            position: [-0.5, 0.0, 0.5],
+            normal,
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, 0.0, 0.5],
+            normal,
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, 0.0, -0.5],
+            normal,
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [-0.5, 0.0, -0.5],
+            normal,
+            uv: [0.0, 0.0],
+        },
     ];
     let indices = vec![0, 1, 2, 0, 2, 3];
     MeshData { vertices, indices }
@@ -325,11 +341,7 @@ mod tests {
         let mut counts = std::collections::HashMap::<[i32; 3], u32>::new();
         for v in &m.vertices {
             // Round to integers — flat normals are exactly ±1.
-            let key = [
-                v.normal[0] as i32,
-                v.normal[1] as i32,
-                v.normal[2] as i32,
-            ];
+            let key = [v.normal[0] as i32, v.normal[1] as i32, v.normal[2] as i32];
             *counts.entry(key).or_default() += 1;
         }
         assert_eq!(counts.len(), 6, "expected six distinct face normals");
@@ -396,7 +408,10 @@ mod tests {
             let geom = triangle_geometric_normal(a.position, b.position, c.position);
             let authored = a.normal;
             let dot = geom[0] * authored[0] + geom[1] * authored[1] + geom[2] * authored[2];
-            assert!(dot > 0.99, "plane wound inside-out: {geom:?} vs {authored:?}");
+            assert!(
+                dot > 0.99,
+                "plane wound inside-out: {geom:?} vs {authored:?}"
+            );
         }
     }
 }

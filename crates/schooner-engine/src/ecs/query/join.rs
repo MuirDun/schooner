@@ -162,7 +162,10 @@ mod tests {
         let b_id = world.component_id::<B>().unwrap();
         // Driver is A's set (1 entity). Output is A's entities — the
         // typed fetch in D::fetch does the per-entity probe of B.
-        assert_eq!(collect_sorted(Join::new(&world, &[a_id, b_id])), vec![rare.index]);
+        assert_eq!(
+            collect_sorted(Join::new(&world, &[a_id, b_id])),
+            vec![rare.index]
+        );
     }
 
     #[test]
@@ -173,6 +176,9 @@ mod tests {
         world.insert(e, B(1));
         let b_id = world.component_id::<B>().unwrap();
         // A's storage was never created.
-        assert_eq!(collect_sorted(Join::new(&world, &[a_id, b_id])), Vec::<u32>::new());
+        assert_eq!(
+            collect_sorted(Join::new(&world, &[a_id, b_id])),
+            Vec::<u32>::new()
+        );
     }
 }

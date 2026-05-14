@@ -349,4 +349,3 @@ fn create_shadow_layout(device: &Device) -> BindGroupLayout {
         ],
     })
 }
-

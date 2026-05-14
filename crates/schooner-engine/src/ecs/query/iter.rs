@@ -29,11 +29,11 @@
 
 use smallvec::SmallVec;
 
-use crate::ecs::query::data::{build_fetch_with_filter, QueryData, ACCESS_INLINE};
-use crate::ecs::query::filter::QueryFilter;
-use crate::ecs::query::join::Join;
 use crate::ecs::ComponentId;
 use crate::ecs::World;
+use crate::ecs::query::data::{ACCESS_INLINE, QueryData, build_fetch_with_filter};
+use crate::ecs::query::filter::QueryFilter;
+use crate::ecs::query::join::Join;
 
 /// Iterator returned by
 /// [`World::query_filtered`](crate::ecs::World::query_filtered).
@@ -50,8 +50,11 @@ pub struct QueryIter<'w, D: QueryData, F: QueryFilter = ()> {
 impl<'w, D: QueryData, F: QueryFilter> QueryIter<'w, D, F> {
     pub(crate) fn new(world: &'w mut World, state: D::State, filter_state: F::State) -> Self {
         let data_access = D::access(&state);
-        let required: SmallVec<[ComponentId; ACCESS_INLINE]> =
-            data_access.components.iter().map(|c| c.component_id).collect();
+        let required: SmallVec<[ComponentId; ACCESS_INLINE]> = data_access
+            .components
+            .iter()
+            .map(|c| c.component_id)
+            .collect();
         let driver = Join::new(world, &required);
         let fetch = build_fetch_with_filter::<D, F>(&state, &filter_state, world);
         Self { fetch, driver }

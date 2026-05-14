@@ -38,7 +38,7 @@ use wgpu::{
 
 use crate::camera::{ActiveCamera, Camera};
 use crate::debug::{
-    build_overlay_ui, DebugState, OverlayInteract, OverlayMetrics, PcfKernel, ProfilerView,
+    DebugState, OverlayInteract, OverlayMetrics, PcfKernel, ProfilerView, build_overlay_ui,
 };
 use crate::ecs::World;
 use crate::material::Material;
@@ -49,7 +49,7 @@ use crate::render::overlay::DebugOverlay;
 use crate::render::pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 use crate::render::registry::MeshRegistry;
 use crate::render::shadow::{
-    compute_shadow_vp, ShadowMaps, ShadowPipeline, MAX_SHADOW_CASTERS, SHADOW_VP_UNIFORM_STRIDE,
+    MAX_SHADOW_CASTERS, SHADOW_VP_UNIFORM_STRIDE, ShadowMaps, ShadowPipeline, compute_shadow_vp,
 };
 use crate::render::uniforms::{
     CameraUniformData, DirectionalLightUniformData, LightsUniformData, MAX_POINT_LIGHTS,

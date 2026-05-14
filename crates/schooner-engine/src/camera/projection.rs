@@ -122,6 +122,9 @@ mod tests {
             far: 100.0,
         };
         let aspect = 16.0 / 9.0;
-        assert_eq!(proj.matrix(aspect), Mat4::perspective_rh(1.0, aspect, 0.1, 100.0));
+        assert_eq!(
+            proj.matrix(aspect),
+            Mat4::perspective_rh(1.0, aspect, 0.1, 100.0)
+        );
     }
 }

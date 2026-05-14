@@ -95,13 +95,7 @@ impl SpotLight {
     /// `inner_deg` is the angle within which the light is at full
     /// strength; between `inner_deg` and `outer_deg` it falls off
     /// smoothly; beyond `outer_deg` it contributes nothing.
-    pub fn new(
-        color: Vec3,
-        intensity: f32,
-        range: f32,
-        inner_deg: f32,
-        outer_deg: f32,
-    ) -> Self {
+    pub fn new(color: Vec3, intensity: f32, range: f32, inner_deg: f32, outer_deg: f32) -> Self {
         Self {
             color,
             intensity,

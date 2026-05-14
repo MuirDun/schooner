@@ -18,9 +18,7 @@
 //! components that haven't been built yet (the real `Transform`,
 //! `MeshHandle`, etc. land in Phase F/G).
 
-use schooner_engine::ecs::{
-    Query, Res, ResMut, Schedule, Stage, Without, World, WriteOnly,
-};
+use schooner_engine::ecs::{Query, Res, ResMut, Schedule, Stage, Without, World, WriteOnly};
 
 // --- stand-in components that mirror the upcoming engine surface ----
 
@@ -122,8 +120,7 @@ fn renderer_shaped_query_with_hidden_filter_excludes_marked_entities() {
     sched.add_system(
         &mut world,
         Stage::Update,
-        |mut list: ResMut<DrawList>,
-         q: Query<(&Transform, &MeshHandle), Without<Hidden>>| {
+        |mut list: ResMut<DrawList>, q: Query<(&Transform, &MeshHandle), Without<Hidden>>| {
             for (t, m) in q {
                 list.items.push((*t, *m));
             }
@@ -132,7 +129,10 @@ fn renderer_shaped_query_with_hidden_filter_excludes_marked_entities() {
     sched.run(&mut world);
 
     let list = world.resource::<DrawList>().unwrap();
-    assert_eq!(list.items, vec![(Transform::at(1.0, 0.0, 0.0), MeshHandle(7))]);
+    assert_eq!(
+        list.items,
+        vec![(Transform::at(1.0, 0.0, 0.0), MeshHandle(7))]
+    );
 }
 
 #[test]
@@ -149,9 +149,7 @@ fn controller_shaped_query_writes_transform_from_input_and_time() {
     sched.add_system(
         &mut world,
         Stage::Update,
-        |input: Res<Input>,
-         time: Res<Time>,
-         q: Query<(WriteOnly<Transform>, &FpsController)>| {
+        |input: Res<Input>, time: Res<Time>, q: Query<(WriteOnly<Transform>, &FpsController)>| {
             for (mut t, ctrl) in q {
                 // forward * speed * delta — mirrors the eventual
                 // `fps_move` system shape.
@@ -225,8 +223,7 @@ fn multi_system_pipeline_composes_through_world_state() {
         .add_system(
             &mut world,
             Stage::Update,
-            |mut list: ResMut<DrawList>,
-             q: Query<(&Transform, &MeshHandle)>| {
+            |mut list: ResMut<DrawList>, q: Query<(&Transform, &MeshHandle)>| {
                 list.items.clear();
                 for (t, m) in q {
                     list.items.push((*t, *m));
@@ -236,5 +233,8 @@ fn multi_system_pipeline_composes_through_world_state() {
     sched.run(&mut world);
 
     let list = world.resource::<DrawList>().unwrap();
-    assert_eq!(list.items, vec![(Transform::at(0.0, 0.0, 2.0), MeshHandle(42))]);
+    assert_eq!(
+        list.items,
+        vec![(Transform::at(0.0, 0.0, 2.0), MeshHandle(42))]
+    );
 }

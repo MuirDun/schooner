@@ -13,5 +13,5 @@
 pub mod controller;
 pub mod projection;
 
-pub use controller::{fps_cursor_toggle, fps_look, fps_move, FpsController};
+pub use controller::{FpsController, fps_cursor_toggle, fps_look, fps_move};
 pub use projection::{ActiveCamera, Camera, Projection};

@@ -19,11 +19,9 @@
 //! Each parameterised over 1k / 10k / 100k entities. Run via
 //! `cargo bench -p bench-ecs`.
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
-use bench_ecs::{schooner_v1::SchoonerV1, BenchEcs, Bulk, Pos, Tag, Vel};
+use bench_ecs::{BenchEcs, Bulk, Pos, Tag, Vel, schooner_v1::SchoonerV1};
 
 const SIZES: &[usize] = &[1_000, 10_000, 100_000];
 

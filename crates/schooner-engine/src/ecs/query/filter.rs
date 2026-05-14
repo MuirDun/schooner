@@ -30,7 +30,7 @@
 use std::marker::PhantomData;
 
 use crate::ecs::query::data::{ComponentAccess, QueryAccess};
-use crate::ecs::query::fetch::{handle_as_read, StorageHandle};
+use crate::ecs::query::fetch::{StorageHandle, handle_as_read};
 use crate::ecs::{Component, ComponentId, EntityId, SparseSet};
 
 /// Skip-or-include predicate over query iteration.

@@ -62,7 +62,6 @@ impl Resources {
     pub fn contains<R: Any + Send + Sync>(&self) -> bool {
         self.map.contains_key(&TypeId::of::<R>())
     }
-
 }
 
 #[cfg(test)]

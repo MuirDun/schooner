@@ -110,7 +110,11 @@ fn rotation_from_yaw_pitch(yaw: f32, pitch: f32) -> Quat {
 /// camera. This mirrors the convention every shipping FPS follows.
 pub fn fps_look(
     input: Res<Input>,
-    cameras: Query<(WriteOnly<Transform>, WriteOnly<FpsController>, &ActiveCamera)>,
+    cameras: Query<(
+        WriteOnly<Transform>,
+        WriteOnly<FpsController>,
+        &ActiveCamera,
+    )>,
 ) {
     if !input.cursor_grabbed() {
         return;
@@ -123,8 +127,8 @@ pub fn fps_look(
 
     for (mut transform, mut controller, _) in cameras {
         controller.yaw -= delta.x * controller.mouse_sensitivity;
-        controller.pitch =
-            (controller.pitch - delta.y * controller.mouse_sensitivity).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        controller.pitch = (controller.pitch - delta.y * controller.mouse_sensitivity)
+            .clamp(-PITCH_LIMIT, PITCH_LIMIT);
         transform.rotation = rotation_from_yaw_pitch(controller.yaw, controller.pitch);
     }
 }
@@ -284,7 +288,10 @@ mod tests {
         // +90° yaw: camera forward goes from -Z to -X (turns left).
         let q = rotation_from_yaw_pitch(FRAC_PI_2, 0.0);
         let forward = q * Vec3::NEG_Z;
-        assert!(forward.abs_diff_eq(Vec3::NEG_X, 1e-5), "forward was {forward:?}");
+        assert!(
+            forward.abs_diff_eq(Vec3::NEG_X, 1e-5),
+            "forward was {forward:?}"
+        );
     }
 
     #[test]
@@ -292,7 +299,10 @@ mod tests {
         // +90° pitch: camera forward goes from -Z to +Y (looks up).
         let q = rotation_from_yaw_pitch(0.0, FRAC_PI_2);
         let forward = q * Vec3::NEG_Z;
-        assert!(forward.abs_diff_eq(Vec3::Y, 1e-5), "forward was {forward:?}");
+        assert!(
+            forward.abs_diff_eq(Vec3::Y, 1e-5),
+            "forward was {forward:?}"
+        );
     }
 
     #[test]
@@ -364,7 +374,10 @@ mod tests {
         // re-normalized, so flying forward-and-up doesn't slow
         // your forward speed.
         let v = move_velocity(0.0, 1.0, 0.0, 1.0);
-        assert!(v.abs_diff_eq(Vec3::new(0.0, 1.0, -1.0), 1e-5), "velocity was {v:?}");
+        assert!(
+            v.abs_diff_eq(Vec3::new(0.0, 1.0, -1.0), 1e-5),
+            "velocity was {v:?}"
+        );
     }
 
     #[test]

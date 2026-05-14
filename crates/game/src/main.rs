@@ -2,9 +2,9 @@ use glam::{Quat, Vec3};
 use schooner_engine::ecs::{Query, Res, WriteOnly};
 use schooner_engine::logging::{self, LogConfig};
 use schooner_engine::{
-    fps_cursor_toggle, fps_look, fps_move, ActiveCamera, App, Camera, DirectionalLight,
-    FpsController, Material, MeshHandle, PointLight, Shadowcaster, SpotLight, Stage, Time,
-    Transform, WindowConfig, World,
+    ActiveCamera, App, Camera, DirectionalLight, FpsController, Material, MeshHandle, PointLight,
+    Shadowcaster, SpotLight, Stage, Time, Transform, WindowConfig, World, fps_cursor_toggle,
+    fps_look, fps_move,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -56,7 +56,11 @@ fn orbit_spot(time: Res<Time>, spots: Query<(WriteOnly<Transform>, &OrbitingSpot
     for (mut transform, spot) in spots {
         let angle = elapsed * spot.rate;
         let position = spot.target
-            + Vec3::new(spot.radius * angle.cos(), spot.height, spot.radius * angle.sin());
+            + Vec3::new(
+                spot.radius * angle.cos(),
+                spot.height,
+                spot.radius * angle.sin(),
+            );
         let direction = (spot.target - position).normalize_or_zero();
         transform.translation = position;
         transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, direction);

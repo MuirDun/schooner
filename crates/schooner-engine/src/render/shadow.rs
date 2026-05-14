@@ -592,7 +592,10 @@ mod tests {
         // Floor point directly below the spot — must be inside the
         // unit cube after the perspective divide.
         let clip = vp * glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
-        assert!(clip.w > 0.0, "floor below spot should be in front of the light");
+        assert!(
+            clip.w > 0.0,
+            "floor below spot should be in front of the light"
+        );
         let ndc = clip.truncate() / clip.w;
         assert!(
             ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0 && (0.0..=1.0).contains(&ndc.z),
@@ -643,7 +646,10 @@ mod tests {
         let spot = SpotLight::default();
         let vp = compute_shadow_vp(&transform, &spot);
         for col in vp.to_cols_array().iter() {
-            assert!(col.is_finite(), "shadow VP contains non-finite entry: {col}");
+            assert!(
+                col.is_finite(),
+                "shadow VP contains non-finite entry: {col}"
+            );
         }
     }
 

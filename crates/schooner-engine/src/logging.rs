@@ -41,9 +41,7 @@ impl Default for LogConfig {
     fn default() -> Self {
         Self {
             default_level: LevelFilter::Info,
-            fallback_filter: Some(
-                "wgpu_core=warn,wgpu_hal=warn,naga=warn,winit=warn".into(),
-            ),
+            fallback_filter: Some("wgpu_core=warn,wgpu_hal=warn,naga=warn,winit=warn".into()),
         }
     }
 }

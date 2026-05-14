@@ -36,8 +36,8 @@
 use smallvec::SmallVec;
 
 use crate::ecs::query::fetch::{
-    check_no_alias, handle_as_read, handle_as_write, name_of_component, split_storages,
-    StorageHandle,
+    StorageHandle, check_no_alias, handle_as_read, handle_as_write, name_of_component,
+    split_storages,
 };
 use crate::ecs::world::Mut;
 use crate::ecs::{Component, ComponentId, EntityId, SparseSet, World};
@@ -366,7 +366,10 @@ where
 
     let mut filter_iter = filter_handles.into_iter();
     let filter_fetch = F::init_fetch(filter_state, &mut filter_iter);
-    debug_assert!(filter_iter.next().is_none(), "filter init_fetch left handles");
+    debug_assert!(
+        filter_iter.next().is_none(),
+        "filter init_fetch left handles"
+    );
 
     Some((data_fetch, filter_fetch))
 }
@@ -532,7 +535,10 @@ mod tests {
         }
         let rare = commons[7];
         world.insert(rare, Pos(777));
-        let out: Vec<(i32, i32)> = world.query::<(&Pos, &Vel)>().map(|(p, v)| (p.0, v.0)).collect();
+        let out: Vec<(i32, i32)> = world
+            .query::<(&Pos, &Vel)>()
+            .map(|(p, v)| (p.0, v.0))
+            .collect();
         assert_eq!(out, vec![(777, 7)]);
     }
 
@@ -609,10 +615,7 @@ mod tests {
             p.0 = 42; // bumps to tick 1
         }
 
-        let changed: Vec<_> = world
-            .changed_since::<Pos>(0)
-            .map(|(id, _)| id)
-            .collect();
+        let changed: Vec<_> = world.changed_since::<Pos>(0).map(|(id, _)| id).collect();
         assert_eq!(changed, vec![e]);
         assert!(world.changed_since::<Pos>(1).next().is_none());
     }
@@ -670,8 +673,10 @@ mod tests {
         let e = world.spawn();
         world.insert(e, Pos(7));
         // Two `&Pos` slots are a redundancy, not an alias violation.
-        let out: Vec<_> = world.query::<(&Pos, &Pos)>().map(|(a, b)| (a.0, b.0)).collect();
+        let out: Vec<_> = world
+            .query::<(&Pos, &Pos)>()
+            .map(|(a, b)| (a.0, b.0))
+            .collect();
         assert_eq!(out, vec![(7, 7)]);
     }
 }
-

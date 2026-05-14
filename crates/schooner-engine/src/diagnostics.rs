@@ -107,7 +107,10 @@ mod tests {
         }
         let (fps, frame_ms) = readout.expect("should have published once");
         assert!((fps - 60.0).abs() < 0.5, "fps was {fps}");
-        assert!((frame_ms - 1000.0 / 60.0).abs() < 0.05, "frame_ms was {frame_ms}");
+        assert!(
+            (frame_ms - 1000.0 / 60.0).abs() < 0.05,
+            "frame_ms was {frame_ms}"
+        );
     }
 
     #[test]

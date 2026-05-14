@@ -148,9 +148,7 @@ impl DebugOverlay {
         let Some(output) = self.pending.take() else {
             return;
         };
-        let paint_jobs = self
-            .ctx
-            .tessellate(output.shapes, output.pixels_per_point);
+        let paint_jobs = self.ctx.tessellate(output.shapes, output.pixels_per_point);
         let screen = ScreenDescriptor {
             size_in_pixels,
             pixels_per_point,
@@ -160,7 +158,8 @@ impl DebugOverlay {
         // *before* update_buffers so any new IDs the paint jobs
         // reference are bound when the pass dispatches.
         for (id, image_delta) in &output.textures_delta.set {
-            self.renderer.update_texture(device, queue, *id, image_delta);
+            self.renderer
+                .update_texture(device, queue, *id, image_delta);
         }
         self.renderer
             .update_buffers(device, queue, encoder, &paint_jobs, &screen);

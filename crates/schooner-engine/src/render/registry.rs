@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use wgpu::Device;
 
-use crate::render::mesh::{cube_mesh, plane_mesh, MeshGpu, MeshHandle};
+use crate::render::mesh::{MeshGpu, MeshHandle, cube_mesh, plane_mesh};
 
 /// Handle → GPU mesh.
 ///

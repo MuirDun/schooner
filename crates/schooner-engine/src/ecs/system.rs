@@ -34,8 +34,8 @@ use std::any::{Any, TypeId, type_name};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-use crate::ecs::query::data::{ComponentAccess, QueryAccess};
 use crate::ecs::World;
+use crate::ecs::query::data::{ComponentAccess, QueryAccess};
 use crate::error::EngineError;
 
 // --- resource smart pointers ---------------------------------------------
@@ -153,16 +153,20 @@ impl<T: Any + Send + Sync> SystemParam for Res<'_, T> {
     }
 
     unsafe fn fetch<'w>(world: &'w mut World) -> Self::Item<'w> {
-        let value = world
-            .resource::<T>()
-            .unwrap_or_else(|| panic!("{}", EngineError::MissingResource { name: type_name::<T>() }));
+        let value = world.resource::<T>().unwrap_or_else(|| {
+            panic!(
+                "{}",
+                EngineError::MissingResource {
+                    name: type_name::<T>()
+                }
+            )
+        });
         // SAFETY: `value: &'_ T` reborrowed from `&world`. The
         // caller has guaranteed no conflicting param is live, so
         // extending the borrow lifetime to `'w` (the world borrow's
         // lifetime) is sound — nothing else will mutate this
         // resource for the duration of `'w`.
-        let value: &'w T =
-            unsafe { std::mem::transmute::<&T, &'w T>(value) };
+        let value: &'w T = unsafe { std::mem::transmute::<&T, &'w T>(value) };
         Res {
             value,
             _marker: PhantomData,
@@ -184,13 +188,17 @@ impl<T: Any + Send + Sync> SystemParam for ResMut<'_, T> {
     }
 
     unsafe fn fetch<'w>(world: &'w mut World) -> Self::Item<'w> {
-        let value = world
-            .resource_mut::<T>()
-            .unwrap_or_else(|| panic!("{}", EngineError::MissingResource { name: type_name::<T>() }));
+        let value = world.resource_mut::<T>().unwrap_or_else(|| {
+            panic!(
+                "{}",
+                EngineError::MissingResource {
+                    name: type_name::<T>()
+                }
+            )
+        });
         // SAFETY: see `Res::fetch` — caller has validated no
         // concurrent access to this resource.
-        let value: &'w mut T =
-            unsafe { std::mem::transmute::<&mut T, &'w mut T>(value) };
+        let value: &'w mut T = unsafe { std::mem::transmute::<&mut T, &'w mut T>(value) };
         ResMut {
             value,
             _marker: PhantomData,
@@ -581,14 +589,8 @@ where
     E: SystemParam + 'static,
     G: SystemParam + 'static,
     F: FnMut(A, B, C, D, E, G)
-        + for<'w> FnMut(
-            A::Item<'w>,
-            B::Item<'w>,
-            C::Item<'w>,
-            D::Item<'w>,
-            E::Item<'w>,
-            G::Item<'w>,
-        ) + 'static,
+        + for<'w> FnMut(A::Item<'w>, B::Item<'w>, C::Item<'w>, D::Item<'w>, E::Item<'w>, G::Item<'w>)
+        + 'static,
 {
     fn run(&mut self, world: &mut World) {
         // SAFETY: see arity-2 above; access check covers all 6.
@@ -625,14 +627,8 @@ where
     E: SystemParam + 'static,
     G: SystemParam + 'static,
     F: FnMut(A, B, C, D, E, G)
-        + for<'w> FnMut(
-            A::Item<'w>,
-            B::Item<'w>,
-            C::Item<'w>,
-            D::Item<'w>,
-            E::Item<'w>,
-            G::Item<'w>,
-        ) + 'static,
+        + for<'w> FnMut(A::Item<'w>, B::Item<'w>, C::Item<'w>, D::Item<'w>, E::Item<'w>, G::Item<'w>)
+        + 'static,
 {
     type System = FunctionSystem<F, (A, B, C, D, E, G)>;
     fn into_system(self) -> Self::System {
@@ -665,7 +661,9 @@ mod tests {
         // what `Schedule::add_system` does at registration.
         let accesses = s.param_access(world);
         if let Err(err) = check_param_conflicts(&accesses, |c| {
-            world.component_name(c.component_id).unwrap_or("<unregistered>")
+            world
+                .component_name(c.component_id)
+                .unwrap_or("<unregistered>")
         }) {
             panic!("{err}");
         }
@@ -778,12 +776,9 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(Counter(0));
         world.insert_resource(Gravity(2.0));
-        run_once(
-            &mut world,
-            |mut c: ResMut<Counter>, g: Res<Gravity>| {
-                c.0 = (g.0 * 10.0) as u32;
-            },
-        );
+        run_once(&mut world, |mut c: ResMut<Counter>, g: Res<Gravity>| {
+            c.0 = (g.0 * 10.0) as u32;
+        });
         assert_eq!(world.resource::<Counter>(), Some(&Counter(20)));
     }
 
@@ -829,10 +824,7 @@ mod tests {
         world.insert_resource(Paused(false));
         run_once(
             &mut world,
-            |mut c: ResMut<Counter>,
-             mut l: ResMut<Label>,
-             g: Res<Gravity>,
-             p: Res<Paused>| {
+            |mut c: ResMut<Counter>, mut l: ResMut<Label>, g: Res<Gravity>, p: Res<Paused>| {
                 if !p.0 {
                     c.0 = 9;
                     l.0 = format!("g={}", g.0);

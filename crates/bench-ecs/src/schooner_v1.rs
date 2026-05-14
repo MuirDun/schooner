@@ -10,7 +10,7 @@
 //! through any internal sparse-set shortcut — so the benchmarks
 //! measure the *real* path system code uses.
 
-use schooner_engine::ecs::{EntityId, World, Without, WriteOnly};
+use schooner_engine::ecs::{EntityId, Without, World, WriteOnly};
 
 use crate::{BenchEcs, Bulk, Pos, Tag, Vel};
 

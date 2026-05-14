@@ -36,7 +36,7 @@
 //! - Systems return `()`; a panicking system aborts the stage.
 //!   Fallible systems are out of scope for Game 0.
 
-use crate::ecs::system::{check_param_conflicts, IntoSystem, System};
+use crate::ecs::system::{IntoSystem, System, check_param_conflicts};
 use crate::ecs::world::World;
 
 /// Closed set of stages the engine runs systems in.
@@ -122,7 +122,9 @@ impl Schedule {
         let system = system.into_system();
         let accesses = system.param_access(world);
         if let Err(err) = check_param_conflicts(&accesses, |c| {
-            world.component_name(c.component_id).unwrap_or("<unregistered>")
+            world
+                .component_name(c.component_id)
+                .unwrap_or("<unregistered>")
         }) {
             panic!("{err}");
         }
@@ -237,9 +239,15 @@ mod tests {
         world.insert_resource(Log(Vec::new()));
         let mut sched = Schedule::new();
         sched
-            .add_system(&mut world, Stage::Update, |mut l: ResMut<Log>| l.0.push("a"))
-            .add_system(&mut world, Stage::Update, |mut l: ResMut<Log>| l.0.push("b"))
-            .add_system(&mut world, Stage::Update, |mut l: ResMut<Log>| l.0.push("c"));
+            .add_system(&mut world, Stage::Update, |mut l: ResMut<Log>| {
+                l.0.push("a")
+            })
+            .add_system(&mut world, Stage::Update, |mut l: ResMut<Log>| {
+                l.0.push("b")
+            })
+            .add_system(&mut world, Stage::Update, |mut l: ResMut<Log>| {
+                l.0.push("c")
+            });
         sched.run(&mut world);
         assert_eq!(world.resource::<Log>().unwrap().0, vec!["a", "b", "c"]);
     }
@@ -250,8 +258,12 @@ mod tests {
         world.insert_resource(Log(Vec::new()));
         let mut sched = Schedule::new();
         sched
-            .add_system(&mut world, Stage::Update, |mut l: ResMut<Log>| l.0.push("upd"))
-            .add_system(&mut world, Stage::FixedUpdate, |mut l: ResMut<Log>| l.0.push("fix"));
+            .add_system(&mut world, Stage::Update, |mut l: ResMut<Log>| {
+                l.0.push("upd")
+            })
+            .add_system(&mut world, Stage::FixedUpdate, |mut l: ResMut<Log>| {
+                l.0.push("fix")
+            });
         sched.run(&mut world);
         assert_eq!(world.resource::<Log>().unwrap().0, vec!["upd"]);
         sched.run_fixed(&mut world);
@@ -265,7 +277,9 @@ mod tests {
         let mut sched = Schedule::new();
         sched
             .add_system(&mut world, Stage::Update, |mut c: ResMut<Counter>| c.0 += 1)
-            .add_system(&mut world, Stage::Update, |c: Res<Counter>| assert_eq!(c.0, 1));
+            .add_system(&mut world, Stage::Update, |c: Res<Counter>| {
+                assert_eq!(c.0, 1)
+            });
         sched.run(&mut world);
     }
 
@@ -298,7 +312,9 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(Counter(0));
         let mut sched = Schedule::new();
-        sched.add_system(&mut world, Stage::FixedUpdate, |mut c: ResMut<Counter>| c.0 += 10);
+        sched.add_system(&mut world, Stage::FixedUpdate, |mut c: ResMut<Counter>| {
+            c.0 += 10
+        });
         sched.run_fixed(&mut world);
         sched.run_fixed(&mut world);
         assert_eq!(world.resource::<Counter>(), Some(&Counter(20)));
@@ -306,7 +322,7 @@ mod tests {
 
     #[test]
     fn changed_since_sees_entity_mutated_by_scheduled_system() {
-        use crate::ecs::{exclusive};
+        use crate::ecs::exclusive;
 
         #[derive(Debug, PartialEq)]
         struct Health(i32);
@@ -385,15 +401,11 @@ mod tests {
         world.insert(b, Pos(2));
 
         let mut sched = Schedule::new();
-        sched.add_system(
-            &mut world,
-            Stage::Update,
-            |q: Query<WriteOnly<Pos>>| {
-                for mut p in q {
-                    p.0 *= 10;
-                }
-            },
-        );
+        sched.add_system(&mut world, Stage::Update, |q: Query<WriteOnly<Pos>>| {
+            for mut p in q {
+                p.0 *= 10;
+            }
+        });
         sched.run(&mut world);
         assert_eq!(world.get::<Pos>(a), Some(&Pos(10)));
         assert_eq!(world.get::<Pos>(b), Some(&Pos(20)));

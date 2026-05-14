@@ -18,11 +18,11 @@
 //! engines — keeping it next to them avoids a circular module
 //! relationship.
 
+use crate::ecs::World;
 use crate::ecs::query::data::QueryData;
 use crate::ecs::query::filter::QueryFilter;
 use crate::ecs::query::iter::QueryIter;
 use crate::ecs::system::{ParamAccess, SystemParam};
-use crate::ecs::World;
 
 /// User-facing wrapper around [`QueryIter`].
 ///

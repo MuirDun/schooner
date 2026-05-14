@@ -30,7 +30,7 @@ use std::any::TypeId;
 
 use smallvec::SmallVec;
 
-use crate::ecs::query::data::{ComponentAccess, QueryAccess, ACCESS_INLINE};
+use crate::ecs::query::data::{ACCESS_INLINE, ComponentAccess, QueryAccess};
 use crate::ecs::{Component, ComponentStorage, SparseSet, World};
 use crate::error::EngineError;
 
@@ -165,9 +165,7 @@ pub fn handle_as_read<'w, T: Component>(handle: StorageHandle<'w>) -> &'w Sparse
             // SAFETY: downgrade `&'w mut` to `&'w` over the same
             // memory. The wrapper has been consumed; the original
             // mutable reference is no longer reachable.
-            unsafe {
-                std::mem::transmute::<&dyn ComponentStorage, &'w dyn ComponentStorage>(&*s)
-            }
+            unsafe { std::mem::transmute::<&dyn ComponentStorage, &'w dyn ComponentStorage>(&*s) }
         }
     };
     let typed = dyn_ref

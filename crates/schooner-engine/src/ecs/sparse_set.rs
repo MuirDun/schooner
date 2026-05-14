@@ -141,10 +141,7 @@ impl<T> SparseSet<T> {
     /// Paired mutable access to the value and its change-detection
     /// record. Primary primitive for `Mut<T>` in `World`: the caller
     /// chooses when (or whether) to bump the tick.
-    pub fn get_mut_with_ticks(
-        &mut self,
-        entity: EntityId,
-    ) -> Option<(&mut T, &mut ChangeTicks)> {
+    pub fn get_mut_with_ticks(&mut self, entity: EntityId) -> Option<(&mut T, &mut ChangeTicks)> {
         let slot = entity.index as usize;
         let dense_idx = self.dense_index(slot)? as usize;
         if self.dense[dense_idx].0 != entity {

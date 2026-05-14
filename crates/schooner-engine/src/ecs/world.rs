@@ -788,5 +788,4 @@ mod tests {
         assert_eq!(sum, 42);
         assert_eq!(collect_changed::<i32>(&world, 0), vec![]);
     }
-
 }
