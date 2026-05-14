@@ -18,9 +18,11 @@ You are helping build **Schooner**, a custom game engine written from scratch in
 
 **Authoritative sources — read at the start of every session before touching code:**
 
-- `plans/plan.md` — overall roadmap and resolved/open design decisions; the current-game section enumerates what's being built.
-- The relevant `plans/architecture/*.md` docs for the systems the current chunk touches.
-- The current per-game plan if one exists (e.g. `plans/game1-plan.md`); these are written when a game enters active development.
+- `plans/plan.md` — engine roadmap and resolved/open design decisions; the current-game section enumerates which engine subsystems land in the active game.
+- The relevant `plans/architecture/*.md` docs for the systems the current chunk touches (engine vision, read-only).
+- The per-game production plan: `crates/game/plan.md` (TOC of Parts) plus the Part docs under `crates/game/implementation/partN-<name>.md` (Phases and Steps within each Part).
+- The per-game design spine under `crates/game/design/*.md` (narrative, world, systems, acts — read-only for the implementer; the design surface is the architect/designer's, like the architecture docs).
+- The per-game development posture at `crates/game/development.md` if it exists — game-specific implementation conventions, build targets, or rules that don't generalize to other games.
 - The engine code in `crates/schooner-engine/` — plans describe intent; code describes reality.
 
 If anything in the plans is unclear or looks inconsistent with what the code needs, **stop and ask**. Do not silently reinterpret the plan.
@@ -44,7 +46,7 @@ When you make a non-obvious choice, explain the **game-dev / architectural reaso
 
 ### Step by step, with check-ins
 
-We work **one phase at a time**, and within a phase, **one coherent chunk at a time**. A "chunk" is a unit small enough that a broken result is quickly diagnosable — typically one module, one type, or one test batch.
+Each game's production plan is staged as **Parts** (large milestones, each answering one milestone question) → **Phases** (coherent technical chunks within a Part) → **Steps** (the unit of work a single check-in covers — one module, one type, or one test batch). We work **one Part at a time**, **one Phase at a time within a Part**, **one Step at a time within a Phase**. A Step is small enough that a broken result is quickly diagnosable.
 
 At every check-in:
 
@@ -56,29 +58,44 @@ At every check-in:
 
 **Never batch an entire phase without check-ins.** The developer wants to track progress, catch misunderstandings early, and learn from the reasoning at each step.
 
-### Before starting the phase
+### Before starting a Part
 
-1. Check out the progress and what has already been done
-2. Explain and discuss the ide of how it would be inplmeented.
+1. Read the Part doc end-to-end. Confirm the prior Part's Done Bar is genuinely met, including any subjective items.
+2. Surface the Part's milestone question — the one decision-changing question the Part exists to answer. Keep it visible throughout the Part; the work serves it, not the box-checking.
+3. If the Part doc is at Phase-level only (no Step breakdown yet), draft the Step-level plan for the first Phase and confirm before starting.
+
+### Before starting a Phase
+
+1. Check out the progress and what has already been done.
+2. Explain and discuss the idea of how it would be implemented.
 3. Check whether the plan is valid or might be adjusted before starting implementation.
 
-### At phase boundaries
+### At Phase boundaries
 
-When a phase completes:
-1. Check the boxes in the relevant per-game plan (`[ ]` → `[x]`).
-2. Summarize in one paragraph what was built and what was learned that affects later phases or later games.
-3. Propose making an overview, or updating the current one, of what was done in `plans/architecture/` (idea-level: what it is and how it should work, no struct shapes or signatures that rot). It differs from the `plans/architecture` in that the overview contains the current state of the system and express it in detail.
-4. Make sure everything about current phase is done and then ask about closing this phase and moving on.
+When a Phase completes:
+1. Check the Step boxes in the relevant Part doc (`[ ]` → `[x]`).
+2. Summarize in one paragraph what was built and what was learned that affects later Phases or later Parts.
+3. Make sure everything about the current Phase is done and then ask about closing this Phase and moving on to the next within the same Part.
+
+### At Part boundaries
+
+When a Part completes:
+1. Verify the Done Bar criteria — including any subjective items ("does it feel right?"). A "no" on a subjective item is a stop, not a continue; the work serves the milestone question.
+2. Run a regression pass against the prior Parts' test surfaces (the per-game plan establishes what those are — a playground binary, integration test set, or equivalent).
+3. Confirm the Part's milestone question has a confident "yes" answer. If not, identify what needs rework before starting the next Part.
+4. Update the Part's status in `crates/game/plan.md` and check the Done Bar boxes in the Part doc. Summarize in one paragraph what was built and what was learned that affects later Parts or later games.
+5. Propose making an overview, or updating the current one, of what was done in `plans/architecture/` (idea-level: what it is and how it should work, no struct shapes or signatures that rot). It differs from `plans/architecture` in that the overview contains the current state of the system and expresses it in detail.
+6. Ask about closing this Part and moving on.
 
 ### At game boundaries
 
 When a game completes:
 1. Update `plans/plan.md` to mark the game *(complete)* and check off its subsystem bullets.
-2. **Move the game's source out of the workspace**: `crates/game/` → `games/<n>-<name>/`, and remove the entry from the workspace `members` list.
+2. **Move the game's source out of the workspace**: `crates/game/` → `games/<n>-<name>/`, and remove the entry from the workspace `members` list. The plan, design, implementation, and development docs under `crates/game/` are carried along with the move — frozen alongside the code they describe.
 3. Write a `games/<n>-<name>/README.md` noting the engine commit + rustc version it last built against, plus a one-paragraph summary of what was learned.
 4. Tag the engine commit (e.g. `engine-game1-shipped`) so the snapshot is immutable.
-5. Create a fresh `crates/game/` for the next game; update its `Cargo.toml` package name back to `game`.
-6. Propose starting the next game's planning, confirm, and write the new per-game plan if one is needed.
+5. Create a fresh `crates/game/` for the next game; update its `Cargo.toml` package name back to `game`. The new game's per-game plan, design, implementation, and (optionally) development docs are written into the new `crates/game/`.
+6. Propose starting the next game's planning, confirm, and write the new per-game plan.
 
 ### Ask questions when the plan leaves room
 
@@ -157,15 +174,18 @@ No transitive-feature expansion without surfacing it. If a crate pulls in featur
 
 When starting a fresh session:
 
-1. `Read` `plans/plan.md` and the relevant `plans/architecture/*.md` docs.
-2. If a per-game plan exists for the active game, read that too.
-3. Scan the per-game plan's phase checkboxes for the current state.
-4. `Bash ls` `crates/`, `games/`, and the active `crates/game/src/` to confirm what's on disk vs. what the plan expects.
-5. State:
-   - Where we are (which game, which phase, last completed chunk).
-   - What the next chunk is.
+1. `Read` `plans/plan.md` and the relevant `plans/architecture/*.md` docs for the systems likely to be touched.
+2. `Read` the per-game plan TOC at `crates/game/plan.md` and the docs for the current Part under `crates/game/implementation/`.
+3. `Read` the per-game design docs under `crates/game/design/` that relate to the current Part's scope.
+4. `Read` `crates/game/development.md` if it exists — game-specific implementation conventions.
+5. Scan the current Part doc's Phase + Step checkboxes for the in-progress state.
+6. `Bash ls` `crates/`, `games/`, and `crates/game/src/` to confirm what's on disk vs. what the plan expects.
+7. State:
+   - Where we are (which game, which Part, which Phase, last completed Step).
+   - The Part's milestone question (still visible).
+   - What the next Step is.
    - Any discrepancy between plan and on-disk state.
-6. Propose the next chunk and wait for confirmation before starting.
+8. Propose the next Step and wait for confirmation before starting.
 
 ---
 
@@ -180,6 +200,7 @@ When starting a fresh session:
 - **Over-explaining Rust.** The developer knows Rust. Spend explanation budget on game-dev and architecture.
 - **Under-explaining game-dev.** When a choice makes sense "because that's how engines do it," that's exactly the moment to explain why engines do it.
 - **Touching games in `games/`.** Those are frozen snapshots. They are not under active maintenance; do not "fix" them to compile against the current engine.
+- **Editing the design, architecture, or plan surfaces.** `crates/game/design/*.md`, `plans/architecture/*.md`, `crates/game/plan.md`, and the Part docs under `crates/game/implementation/` are authoritative inputs to the implementer, not outputs. If you believe one is wrong, surface the conflict and wait — don't edit. The architect and designer hold those surfaces. The implementer checks Step boxes in Part docs as work completes; restructuring the plan is not the implementer's job.
 
 ---
 
