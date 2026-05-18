@@ -14,8 +14,8 @@ use crate::debug::{DebugState, ProfilerView, debug_input_system};
 use crate::ecs::{IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::Input;
 use crate::render::{
-    DebugOverlay, ForwardPipeline, HDR_FORMAT, MeshRegistry, PostPipeline, RenderContext,
-    ShadowMaps, ShadowPipeline, render_frame,
+    ColorGrade, DebugOverlay, ForwardPipeline, HDR_FORMAT, MeshRegistry, PostPipeline,
+    RenderContext, ShadowMaps, ShadowPipeline, Vignette, render_frame,
 };
 use crate::time::Time;
 use crate::window::WindowConfig;
@@ -315,6 +315,11 @@ impl ApplicationHandler for App {
                 self.world.insert_resource(shadow_pipeline);
                 self.world.insert_resource(shadow_maps);
                 self.world.insert_resource(post_pipeline);
+                // Default ColorGrade = identity (no-op) and default
+                // Vignette = off. Games swap the resource values to
+                // drive per-scene mood.
+                self.world.insert_resource(ColorGrade::CAGE_WARM);
+                self.world.insert_resource(Vignette::CINEMATIC);
                 self.world.insert_resource(overlay);
             }
             Err(err) => {

@@ -14,6 +14,8 @@
 // Bind groups:
 //   @group(0) — HDR texture + linear-clamp sampler (the forward
 //               pass's output, sampled at the fragment's screen UV).
+//   @group(1) — post-process params uniform (grade now; vignette and
+//               overlay fields appended in later 1.D Steps).
 //
 // Drawn as a single fullscreen triangle: three vertices outside the
 // screen so the bounding rect covers the viewport. UVs are derived
@@ -22,6 +24,21 @@
 
 @group(0) @binding(0) var hdr: texture_2d<f32>;
 @group(0) @binding(1) var hdr_sampler: sampler;
+
+// Post-params struct mirrors `PostParamsUniform` in
+// `src/render/uniforms.rs`. Most vec3s sit in a vec4 for std140
+// alignment with `.w` as padding; vignette packs `intensity` into
+// `vignette_tint.w` (always read together) and packs both radii
+// into `vignette_radii.xy`.
+struct PostParams {
+    lift: vec4<f32>,
+    gamma: vec4<f32>,
+    gain: vec4<f32>,
+    vignette_tint: vec4<f32>,   // xyz = tint, w = intensity
+    vignette_radii: vec4<f32>,  // x = inner, y = outer
+};
+
+@group(1) @binding(0) var<uniform> post_params: PostParams;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -80,6 +97,53 @@ fn tonemap_aces(x: vec3<f32>) -> vec3<f32> {
                  vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// √2 — used to normalize centre-to-corner distance into [0, 1].
+// `length(uv - 0.5)` maxes at length((0.5, 0.5)) ≈ 0.7071 at the
+// corners; multiplying by √2 maps that to exactly 1.0 so the
+// `inner` / `outer` radii authored on the CPU side read in the
+// same unit space.
+const SQRT_2: f32 = 1.4142135;
+
+// ASC CDL primary grade applied post-tonemap. Formula:
+//
+//     graded = (color * gain + lift) ^ (1 / gamma)
+//
+// `gain` scales highlights, `lift` shifts shadows, `gamma` reshapes
+// the mids. Post-tonemap so the artist's numbers map to what they
+// see on screen rather than to HDR scene-linear values that change
+// shape under the tonemap curve. See `src/render/grade.rs` for the
+// resource-side commentary and the alternatives we're not using
+// (pre-tonemap grade, 3D LUTs).
+//
+// The `max(0)` before `pow` is a defence against drivers that hand
+// back NaN for `pow(small_negative, *)`; tonemap output is already
+// clamped to [0, 1] so the clamp is a no-op in practice.
+fn apply_color_grade(color: vec3<f32>) -> vec3<f32> {
+    let lifted = color * post_params.gain.rgb + post_params.lift.rgb;
+    let safe = max(lifted, vec3<f32>(0.0));
+    return pow(safe, vec3<f32>(1.0) / post_params.gamma.rgb);
+}
+
+// Radial vignette in UV space — elliptical (tracks viewport aspect),
+// applied after color grade so the colorist's shadow lift doesn't
+// fight the corner darkening. See `src/render/vignette.rs` for the
+// resource-side commentary and the `cos⁴` alternative we're not using.
+//
+// Disabled state (`intensity = 0`) is a no-op blend — `mix(color, _, 0)
+// = color` — so the default resource value costs only the ALU, not a
+// branch. Keeping the branch out of the shader avoids GPU divergence
+// at the edge between enabled / disabled regions (irrelevant here
+// since intensity is uniform, but it's the right reflex).
+fn apply_vignette(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let centered = uv - vec2<f32>(0.5);
+    let dist = length(centered) * SQRT_2;
+    let v = smoothstep(post_params.vignette_radii.x,
+                       post_params.vignette_radii.y,
+                       dist);
+    return mix(color, post_params.vignette_tint.rgb,
+               v * post_params.vignette_tint.w);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let hdr_color = textureSample(hdr, hdr_sampler, in.uv).rgb;
@@ -90,7 +154,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // — luminance-only tonemapping — desaturates highlights so hard
     // the world starts looking washed out. Game 2A+ may revisit if
     // the chroma shift hurts.
-    let ldr = tonemap_aces(hdr_color);
+    let tonemapped = tonemap_aces(hdr_color);
+    let graded = apply_color_grade(tonemapped);
+    let vignetted = apply_vignette(graded, in.uv);
+
+    // Final clamp — grade can push past [0, 1] when gain + lift sum
+    // exceeds one, and later stages (overlay) need a clean LDR
+    // baseline. The swap chain stores 8-bit sRGB; values > 1 clip
+    // anyway, the clamp just makes the clip explicit.
+    let ldr = clamp(vignetted, vec3<f32>(0.0), vec3<f32>(1.0));
 
     return vec4<f32>(ldr, 1.0);
 }

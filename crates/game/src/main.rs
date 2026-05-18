@@ -11,7 +11,7 @@ fn main() -> anyhow::Result<()> {
     logging::init(LogConfig::default())?;
 
     let mut app = App::new()
-        .with_window_config(WindowConfig::new("Schooner — The Void", 1280, 720))
+        .with_window_config(WindowConfig::new("Schooner", 1280, 720))
         // Order matters: cursor toggle runs first so the same frame's
         // look/move see the new grab state. render_frame is appended
         // last by App::resumed.
@@ -137,14 +137,6 @@ fn spawn_scene(world: &mut World) {
     // Sun. Default direction points down-and-forward; default
     // ambient gives the shadow-side surfaces a baseline so the
     // cubes don't read as flat black.
-    //
-    // Phase 1.C.5 diagnostic: intensity dialled way down so the
-    // spot can dominate the floor. Without this, sun + ambient
-    // saturate the white floor to display-white before any spot
-    // contribution lands — and the per-spot shadow attenuation
-    // becomes invisible. Restore to `DirectionalLight::default()`
-    // (intensity 1.0) once Phase 1.D's tonemap compresses the
-    // headroom properly.
     let sun = world.spawn();
     world.insert(
         sun,

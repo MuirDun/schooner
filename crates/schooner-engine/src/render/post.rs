@@ -1,12 +1,12 @@
 //! Post-process pipeline — the single fixed pass that turns the
 //! forward shader's HDR linear output into the final swap-chain image.
 //!
-//! Game 1.D delivers this in stages: 1.D.1 (this Step) lands the
-//! plumbing — HDR target sampling, fullscreen triangle, swap-chain
-//! write — with a passthrough fragment shader that clamps HDR to
-//! [0, 1]. 1.D.2 replaces the clamp with Narkowicz ACES; 1.D.3
-//! adds color grade; 1.D.4 vignette; 1.D.5 overlay. The pipeline,
-//! bind groups, and resource shape stay constant across those Steps.
+//! Game 1.D builds this up in stages. 1.D.1 + 1.D.2 (shipped
+//! together) landed the plumbing — HDR target sampling, fullscreen
+//! triangle, swap-chain write — plus the Narkowicz ACES tonemap in
+//! the fragment shader. 1.D.3 adds color grade; 1.D.4 vignette;
+//! 1.D.5 overlay. The pipeline, bind groups, and resource shape
+//! stay constant across those Steps.
 //!
 //! ## Why a cached, generation-tracked bind group
 //!
@@ -19,15 +19,21 @@
 //! generation counter on the context. `ensure_bind_group` lazily
 //! rebuilds when the cached generation no longer matches.
 
+use std::num::NonZeroU64;
+
+use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
     AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState,
-    ColorTargetState, ColorWrites, Device, FilterMode, FragmentState, FrontFace,
-    MipmapFilterMode, MultisampleState, PipelineLayoutDescriptor, PolygonMode, PrimitiveState,
-    PrimitiveTopology, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType,
-    SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, TextureFormat,
-    TextureSampleType, TextureView, TextureViewDimension, VertexState,
+    Buffer, BufferBindingType, BufferUsages, ColorTargetState, ColorWrites, Device, FilterMode,
+    FragmentState, FrontFace, MipmapFilterMode, MultisampleState, PipelineLayoutDescriptor,
+    PolygonMode, PrimitiveState, PrimitiveTopology, RenderPipeline, RenderPipelineDescriptor,
+    Sampler, SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource,
+    ShaderStages, TextureFormat, TextureSampleType, TextureView, TextureViewDimension,
+    VertexState,
 };
+
+use crate::render::uniforms::PostParamsUniform;
 
 /// All persistent GPU state for the post-process pass.
 ///
@@ -38,6 +44,18 @@ pub struct PostPipeline {
     pub pipeline: RenderPipeline,
     /// BGL for `@group(0)` — HDR sampled texture + linear sampler.
     pub bgl: BindGroupLayout,
+    /// BGL for `@group(1)` — post-params uniform (grade now, vignette
+    /// and overlay later). Stable across 1.D Steps; the struct
+    /// behind the binding is what grows.
+    pub params_bgl: BindGroupLayout,
+    /// GPU-side params buffer. Written from the [`ColorGrade`]
+    /// resource (and later vignette / overlay state) each frame.
+    ///
+    /// [`ColorGrade`]: crate::render::grade::ColorGrade
+    pub params_buffer: Buffer,
+    /// Bind group for the params buffer. Built once at construction
+    /// — the buffer view is stable, so no rebuild on resize.
+    pub params_bind_group: BindGroup,
     /// Linear-clamp sampler used to fetch the HDR target. Linear
     /// filtering is harmless at 1:1 viewport size (every fragment
     /// hits a texel centre); kept linear so a later supersampling
@@ -56,10 +74,31 @@ impl PostPipeline {
     /// `RenderContext::surface_format()`.
     pub fn new(device: &Device, surface_format: TextureFormat) -> Self {
         let bgl = create_bgl(device);
+        let params_bgl = create_params_bgl(device);
+
+        // Seed the params buffer with the identity grade so the first
+        // frame — which runs *before* the per-frame write in
+        // `render_frame` — doesn't render through a zero-gamma `pow`
+        // (which would produce NaN/black). Subsequent frames overwrite
+        // this from the `ColorGrade` resource.
+        let params_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("post-params-buffer"),
+            contents: bytemuck::bytes_of(&PostParamsUniform::identity()),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+
+        let params_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("post-params-bind-group"),
+            layout: &params_bgl,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: params_buffer.as_entire_binding(),
+            }],
+        });
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("post-pipeline-layout"),
-            bind_group_layouts: &[Some(&bgl)],
+            bind_group_layouts: &[Some(&bgl), Some(&params_bgl)],
             immediate_size: 0,
         });
 
@@ -135,6 +174,9 @@ impl PostPipeline {
         Self {
             pipeline,
             bgl,
+            params_bgl,
+            params_buffer,
+            params_bind_group,
             sampler,
             cached_bind_group: None,
             // u64::MAX so the first `ensure_bind_group` call always
@@ -199,5 +241,26 @@ fn create_bgl(device: &Device) -> BindGroupLayout {
                 count: None,
             },
         ],
+    })
+}
+
+fn create_params_bgl(device: &Device) -> BindGroupLayout {
+    device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("post-params-bgl"),
+        entries: &[BindGroupLayoutEntry {
+            binding: 0,
+            // Fragment-only — the post chain reads grade/vignette/
+            // overlay parameters at shading time; the vertex stage is
+            // a parameterless fullscreen triangle.
+            visibility: ShaderStages::FRAGMENT,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(
+                    std::mem::size_of::<PostParamsUniform>() as u64
+                ),
+            },
+            count: None,
+        }],
     })
 }

@@ -53,6 +53,7 @@ use crate::render::context::RenderContext;
 use crate::render::light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
 use crate::render::mesh::MeshHandle;
 use crate::render::overlay::DebugOverlay;
+use crate::render::grade::ColorGrade;
 use crate::render::pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 use crate::render::post::PostPipeline;
 use crate::render::registry::MeshRegistry;
@@ -61,8 +62,10 @@ use crate::render::shadow::{
 };
 use crate::render::uniforms::{
     CameraUniformData, DirectionalLightUniformData, LightsUniformData, MAX_POINT_LIGHTS,
-    MAX_SPOT_LIGHTS, ModelUniformData, PointLightUniformData, SpotLightUniformData,
+    MAX_SPOT_LIGHTS, ModelUniformData, PointLightUniformData, PostParamsUniform,
+    SpotLightUniformData,
 };
+use crate::render::vignette::Vignette;
 use crate::time::Time;
 use crate::transform::Transform;
 
@@ -510,11 +513,25 @@ pub fn render_frame(world: &mut World) {
     }
 
     // Post-process pass — single fullscreen triangle samples the
-    // HDR target and writes the swap chain. 1.D.1 is a passthrough
-    // clamp; later 1.D Steps stack tonemap, grade, vignette, and
-    // overlay inside the same shader.
+    // HDR target and writes the swap chain. ACES tonemap + color
+    // grade live in the fragment shader; vignette and overlay stack
+    // in later 1.D Steps without changing the bind-group story.
     {
         puffin::profile_scope!("post_pass");
+
+        // Pack per-scene grade + vignette. Missing either resource
+        // falls back to its identity (no-op) — the renderer should
+        // never wedge on an unconfigured world.
+        let grade = world
+            .resource::<ColorGrade>()
+            .copied()
+            .unwrap_or(ColorGrade::DEFAULT);
+        let vignette = world
+            .resource::<Vignette>()
+            .copied()
+            .unwrap_or(Vignette::DEFAULT);
+        let params = PostParamsUniform::pack(&grade, &vignette);
+
         let Some(post) = world.resource_mut::<PostPipeline>() else {
             warn!("render_frame: PostPipeline missing");
             return;
@@ -524,6 +541,7 @@ pub fn render_frame(world: &mut World) {
         let bind_group = post
             .ensure_bind_group(&device, &hdr_view, hdr_generation)
             .clone();
+        queue.write_buffer(&post.params_buffer, 0, bytemuck::bytes_of(&params));
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("post-pass"),
@@ -547,6 +565,7 @@ pub fn render_frame(world: &mut World) {
 
         pass.set_pipeline(&post.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(1, &post.params_bind_group, &[]);
         // Three verts, one instance — fullscreen triangle covers the
         // whole viewport; positions and UVs come from `vertex_index`.
         pass.draw(0..3, 0..1);

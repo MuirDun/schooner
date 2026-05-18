@@ -20,6 +20,7 @@
 
 pub mod context;
 pub mod forward;
+pub mod grade;
 pub mod light;
 pub mod mesh;
 pub mod overlay;
@@ -28,9 +29,12 @@ pub mod post;
 pub mod registry;
 pub mod shadow;
 pub mod uniforms;
+pub mod vignette;
 
 pub use context::{DEPTH_FORMAT, HDR_FORMAT, RenderContext, RenderContextError};
 pub use forward::render_frame;
+pub use grade::ColorGrade;
+pub use vignette::Vignette;
 pub use light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
 pub use mesh::{MeshData, MeshGpu, MeshHandle, Vertex, cube_mesh, plane_mesh};
 pub use overlay::DebugOverlay;
@@ -43,5 +47,6 @@ pub use shadow::{
 };
 pub use uniforms::{
     CameraUniformData, DirectionalLightUniformData, LightsUniformData, MAX_POINT_LIGHTS,
-    MAX_SPOT_LIGHTS, ModelUniformData, PointLightUniformData, SpotLightUniformData,
+    MAX_SPOT_LIGHTS, ModelUniformData, PointLightUniformData, PostParamsUniform,
+    SpotLightUniformData,
 };
