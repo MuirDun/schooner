@@ -173,14 +173,37 @@ fn sample_shadow_pcf(layer: i32, uv: vec2<f32>, depth: f32) -> f32 {
 }
 
 // Project a world-space position into a spot light's shadow-map
-// UV + depth. Returns the layer to sample (caller checks it
-// against -1 before sampling).
-fn spot_shadow_factor(spot: SpotLight, world_position: vec3<f32>) -> f32 {
+// UV + depth, with normal-offset bias applied to suppress self-
+// shadow acne. Returns the comparison factor in [0, 1].
+//
+// Normal-offset bias (Sylvan 2008, Holbert 2010): rather than
+// shifting the comparison *depth*, shift the *sample position*
+// along the surface normal before projection. The shift is
+// scaled by (1 - n·l) so:
+//   - perpendicular surfaces (n·l → 1) get zero offset — they
+//     don't need bias and we don't want to peter-pan their
+//     contact points.
+//   - grazing surfaces (n·l → 0) get the full offset, which
+//     pushes the sampling position off the surface toward the
+//     light just enough that its `proj.z` lands cleanly inside
+//     the lit half of the comparison.
+// The offset is in world units; tune via `NORMAL_OFFSET_SCALE`
+// if a future scene's typical occluder-to-receiver distance
+// changes. Combined with the rasterizer-level slope-scaled bias
+// (defense at the far plane), this is the modern shadow-mapping
+// recipe.
+fn spot_shadow_factor(spot: SpotLight, world_position: vec3<f32>, n: vec3<f32>) -> f32 {
     let shadow_idx = i32(spot.outer_cos_shadow.y);
     if (shadow_idx < 0) {
         return 1.0;
     }
-    let light_space = spot.view_proj * vec4<f32>(world_position, 1.0);
+
+    let to_light = normalize(spot.position_intensity.xyz - world_position);
+    let n_dot_l = clamp(dot(n, to_light), 0.0, 1.0);
+    let NORMAL_OFFSET_SCALE = 0.02;
+    let sample_pos = world_position + n * (NORMAL_OFFSET_SCALE * (1.0 - n_dot_l));
+
+    let light_space = spot.view_proj * vec4<f32>(sample_pos, 1.0);
     if (light_space.w <= 0.0) {
         // Behind the light's near plane — outside the frustum,
         // treat as fully lit (the surface contributes via the
@@ -254,7 +277,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // and range falloff still apply at the silhouette of the
         // shadow — a fragment in shadow but inside the cone is
         // dimmer-but-still-tinted, not pitch black.
-        let shadow_factor = spot_shadow_factor(spot, in.world_position);
+        let shadow_factor = spot_shadow_factor(spot, in.world_position, n);
         let radiance = spot.color_inner_cos.xyz
                      * spot.position_intensity.w
                      * cone_factor

@@ -78,10 +78,12 @@ pub struct ForwardPipeline {
 }
 
 impl ForwardPipeline {
-    /// Build the pipeline and all uniform buffers. `surface_format`
-    /// is the swap-chain format the fragment shader writes into;
-    /// must match `RenderContext::surface_format()`.
-    pub fn new(device: &Device, surface_format: TextureFormat) -> Self {
+    /// Build the pipeline and all uniform buffers.
+    /// `color_target_format` is the format of the color attachment
+    /// the fragment shader writes into — `HDR_FORMAT` since 1.D.1,
+    /// because forward writes into the HDR offscreen target rather
+    /// than directly into the swap chain.
+    pub fn new(device: &Device, color_target_format: TextureFormat) -> Self {
         let camera_layout = create_camera_layout(device);
         let lights_layout = create_lights_layout(device);
         let model_layout = create_model_layout(device);
@@ -120,7 +122,7 @@ impl ForwardPipeline {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(ColorTargetState {
-                    format: surface_format,
+                    format: color_target_format,
                     blend: Some(BlendState::REPLACE),
                     write_mask: ColorWrites::ALL,
                 })],

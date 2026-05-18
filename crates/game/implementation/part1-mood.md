@@ -76,7 +76,7 @@ Add per-spot-light shadow maps. Single shadow map per casting light, indoor-scop
 Introduce an offscreen HDR render target and a post-process chain. This is the phase that gives us tonemap, color grade, vignette, and — most importantly — a **fullscreen overlay slot** that Parts 3 and 4 will drive (death red-noise, cold-open, hunger tint).
 
 **Steps:**
-- [ ] **1.D.1** Render the main scene into an HDR offscreen color target (Rgba16Float) instead of directly into the swap chain.
+- [x] **1.D.1** Render the main scene into an HDR offscreen color target (Rgba16Float) instead of directly into the swap chain. *(Landed with a passthrough post pass that clamps HDR to [0, 1] — broken-intermediate avoided. Forward target switched to `RenderContext::hdr_view()`; new `PostPipeline` resource owns the fullscreen-triangle shader, BGL, sampler, and a generation-tracked cached bind group rebuilt on surface resize. Egui draws after post so debug UI is never graded. `post_pass` profiler scope ~0.004 ms.)*
 - [ ] **1.D.2** Fullscreen post-process pass: ACES-ish tonemap to LDR.
 - [ ] **1.D.3** Color grade: a per-scene `ColorGrade` resource with lift / gamma / gain (or a simple LUT pointer for later). Drives the chamber/cage/service-space distinct looks.
 - [ ] **1.D.4** Vignette: radial darkening with color tint (intensity + tint as `ColorGrade` fields).

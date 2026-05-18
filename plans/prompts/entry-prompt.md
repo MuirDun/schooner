@@ -1,6 +1,9 @@
 @plans/prompts/game0-dev-prompt.md
 
-We are starting implementing Phase _ of the current game. Review what was done before and get acquainted with the project.
+We are starting implementing Phase _ of the current game. Go step by step right now:
+
+1. Review what was done before and get acquainted with the project. Tell when you have enough context for implementing the phase and ask permission for going to next step.
+2. Discuss the idea of how it would be implemented. Check whether the plan is valid or might be adjusted before starting implementation. After confirming, begin implementation
 
 First, let's discuss the idea of how it would be implemented. Check whether the plan is valid or might be adjusted before starting implementation. After we have a solid idea of how it would work — make an overview of it in `plans/architecture/` (idea-level: what it is and how it should work, no struct shapes or signatures that rot).
 

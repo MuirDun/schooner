@@ -31,11 +31,15 @@
 //!   depth-only output; the rasterizer writes only `gl_Position`-
 //!   derived depth into the bound depth attachment.
 //! - No color targets.
-//! - Culling is disabled. Front-face culling is the canonical
-//!   "shadow acne" recipe but fails on thin geometry (the floor
-//!   plane has no back side to render into the shadow map). Slope-
-//!   scaled depth bias handles acne instead; if it turns out
-//!   not to be enough in 1.C.4 we revisit.
+//! - Culling is disabled. Front-face culling cleanly kills self-
+//!   shadow acne on solid occluders but light-leaks under them
+//!   (back-face depth is too far; receivers between front and back
+//!   of the occluder silhouette test as lit). The modern recipe is
+//!   no-cull (depth test keeps the closer fragment) plus a
+//!   normal-offset bias applied fragment-side in
+//!   `spot_shadow_factor`; see Real-Time Rendering 4th ed. §7.5,
+//!   Holbert 2010, Sylvan 2008. A small slope-scaled bias is kept
+//!   on the rasterizer as defense at the very-far-plane.
 
 use std::num::NonZeroU64;
 
@@ -190,9 +194,17 @@ impl ShadowPipeline {
                 topology: PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: FrontFace::Ccw,
-                // No culling — see the module-level note on why
-                // front-face culling fails on thin geometry. Bias
-                // handles acne.
+                // No culling. Front-face culling cleanly suppresses
+                // self-shadow acne on solid occluders, but records
+                // back-face depth in the shadow map — so receivers
+                // beyond the occluder (e.g. the floor under a cube)
+                // light-leak because the recorded depth is too far.
+                // The modern recipe is back-face cull (or no cull —
+                // equivalent here since the depth test keeps the
+                // closer fragment) plus normal-offset bias on the
+                // fragment-side lookup; see `spot_shadow_factor` in
+                // `forward.wgsl`. Reference: Holbert 2010 /
+                // Sylvan 2008 / Real-Time Rendering 4th ed. §7.5.
                 cull_mode: None,
                 unclipped_depth: false,
                 polygon_mode: PolygonMode::Fill,
@@ -203,13 +215,12 @@ impl ShadowPipeline {
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: StencilState::default(),
-                // Slope-scaled bias. Values are the standard
-                // "good enough for soft PCF" starting point —
-                // tuned in 1.C.4 if acne survives the comparison
-                // sample. `constant: 2` ≈ a couple of depth-buffer
-                // ULPs; `slope_scale: 2.0` lifts grazing-angle
-                // surfaces further so steep walls don't self-
-                // shadow into stripes.
+                // Small slope-scaled bias as a defense at the very-
+                // far-plane case. The primary acne suppressant is
+                // the normal-offset bias in `spot_shadow_factor`;
+                // this constant covers the case where stored depth
+                // is the clear value (1.0) and a lit fragment lands
+                // very close to it due to perspective compression.
                 bias: DepthBiasState {
                     constant: 2,
                     slope_scale: 2.0,

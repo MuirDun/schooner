@@ -38,6 +38,18 @@ use winit::window::Window;
 /// the cheapest universal format wins.
 pub const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 
+/// Format of the HDR offscreen color target the forward pass writes
+/// into.
+///
+/// `Rgba16Float` gives a wide enough linear range that the forward
+/// shader can hand out values > 1.0 (sun + emissive overlap, future
+/// bloom seed) without clipping, while staying half the bandwidth of
+/// `Rgba32Float`. The post-process pass samples this target, applies
+/// the fixed pipeline (tonemap → grade → vignette → overlay), and
+/// writes the result into the sRGB swap-chain texture — hardware
+/// encodes linear → sRGB on present.
+pub const HDR_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
+
 /// Errors produced while standing up a `RenderContext`.
 ///
 /// Anything that fails here is fatal — we cannot draw without a
@@ -72,6 +84,14 @@ pub struct RenderContext {
     surface: Surface<'static>,
     config: SurfaceConfiguration,
     depth_view: TextureView,
+    /// HDR offscreen target the forward pass writes into. Recreated
+    /// alongside the depth attachment on resize.
+    hdr_view: TextureView,
+    /// Monotonically bumped each time `hdr_view` is recreated. The
+    /// post pipeline reads this to decide whether its cached
+    /// HDR-sampling bind group is still valid; a mismatch triggers
+    /// a rebuild on the next frame.
+    hdr_generation: u64,
 }
 
 impl RenderContext {
@@ -133,6 +153,7 @@ impl RenderContext {
         surface.configure(&device, &config);
 
         let depth_view = create_depth_attachment(&device, config.width, config.height);
+        let hdr_view = create_hdr_attachment(&device, config.width, config.height);
 
         info!(
             "render context ready: {}x{} {:?}",
@@ -149,6 +170,8 @@ impl RenderContext {
             surface,
             config,
             depth_view,
+            hdr_view,
+            hdr_generation: 0,
         })
     }
 
@@ -170,6 +193,20 @@ impl RenderContext {
 
     pub fn depth_view(&self) -> &TextureView {
         &self.depth_view
+    }
+
+    /// The HDR offscreen view the forward pass writes into and the
+    /// post pass samples from. See [`HDR_FORMAT`] for format choice.
+    pub fn hdr_view(&self) -> &TextureView {
+        &self.hdr_view
+    }
+
+    /// Generation counter on the HDR view; bumped each time the view
+    /// is recreated (currently: surface resize). Bind groups that
+    /// reference the HDR view should compare against this and rebuild
+    /// when they observe a mismatch.
+    pub fn hdr_generation(&self) -> u64 {
+        self.hdr_generation
     }
 
     pub fn aspect_ratio(&self) -> f32 {
@@ -202,6 +239,8 @@ impl RenderContext {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_attachment(&self.device, width, height);
+        self.hdr_view = create_hdr_attachment(&self.device, width, height);
+        self.hdr_generation = self.hdr_generation.wrapping_add(1);
         info!("surface reconfigured: {width}x{height}");
     }
 
@@ -294,6 +333,28 @@ fn create_depth_attachment(device: &Device, width: u32, height: u32) -> TextureV
         dimension: TextureDimension::D2,
         format: DEPTH_FORMAT,
         usage: TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&TextureViewDescriptor::default())
+}
+
+fn create_hdr_attachment(device: &Device, width: u32, height: u32) -> TextureView {
+    // `RENDER_ATTACHMENT` — forward pass writes; `TEXTURE_BINDING` —
+    // post pass samples. The underlying Texture is owned by the
+    // returned View (same pattern as the depth attachment), so the
+    // GPU allocation lives exactly as long as we keep `hdr_view`.
+    let texture = device.create_texture(&TextureDescriptor {
+        label: Some("schooner-hdr"),
+        size: Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: HDR_FORMAT,
+        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     texture.create_view(&TextureViewDescriptor::default())

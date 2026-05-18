@@ -2,21 +2,28 @@
 //!
 //! Frame flow (also documented in `architecture/render.md`):
 //!
-//! 1. Resolve the active camera. If none exists, skip the frame.
-//! 2. Snapshot the draw list, lights, and shadowcaster view-proj
-//!    matrices through ECS queries.
-//! 3. Acquire a swap-chain texture; on `Lost`/`Outdated` reconfigure
-//!    and skip.
-//! 4. Reallocate the shadow-map set if the caster count changed.
-//! 5. Write camera, lights, model, and shadow-VP uniforms before any
-//!    pass begins — the shadow and forward passes share the model
-//!    buffer through separate bind groups, so a single write feeds
-//!    both.
-//! 6. For each shadowcaster: depth-only render pass into its shadow
-//!    map, rendering the entire draw list from that light's POV.
-//! 7. Forward pass — same draw list, lit + (in 1.C.4) shadow-sampled.
-//! 8. Build the egui frame and encode the overlay pass on top.
-//! 9. Submit + present.
+//! - Resolve the active camera. If none exists, skip the frame.
+//! - Snapshot the draw list, lights, and shadowcaster view-proj
+//!   matrices through ECS queries.
+//! - Acquire a swap-chain texture; on `Lost`/`Outdated` reconfigure
+//!   and skip.
+//! - Reallocate the shadow-map set if the caster count changed.
+//! - Write camera, lights, model, and shadow-VP uniforms before any
+//!   pass begins — the shadow and forward passes share the model
+//!   buffer through separate bind groups, so a single write feeds
+//!   both.
+//! - For each shadowcaster: depth-only render pass into its shadow
+//!   map, rendering the entire draw list from that light's POV.
+//! - Forward pass — same draw list, lit + shadow-sampled. Output is
+//!   linear HDR written into the `RenderContext` HDR target.
+//! - Post pass — fullscreen triangle that samples the HDR target
+//!   and writes the swap-chain texture. 1.D.1 is a passthrough
+//!   clamp; later 1.D Steps stack tonemap, grade, vignette, overlay
+//!   inside the same shader.
+//! - Egui overlay pass on top of the swap-chain texture. Drawing
+//!   egui *after* post keeps the debug UI uncoloured by the
+//!   gameplay grade.
+//! - Submit + present.
 //!
 //! ## Why exclusive
 //!
@@ -47,6 +54,7 @@ use crate::render::light::{DirectionalLight, PointLight, Shadowcaster, SpotLight
 use crate::render::mesh::MeshHandle;
 use crate::render::overlay::DebugOverlay;
 use crate::render::pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
+use crate::render::post::PostPipeline;
 use crate::render::registry::MeshRegistry;
 use crate::render::shadow::{
     MAX_SHADOW_CASTERS, SHADOW_VP_UNIFORM_STRIDE, ShadowMaps, ShadowPipeline, compute_shadow_vp,
@@ -219,7 +227,7 @@ fn build_lights_uniform(world: &mut World) -> (LightsUniformData, Vec<Mat4>) {
 pub fn render_frame(world: &mut World) {
     puffin::profile_scope!("render_frame");
 
-    // 1. Snapshot scene data through queries. Block-scoped puffin
+    // Snapshot scene data through queries. Block-scoped puffin
     //    spans nest correctly under `render_frame` and let the
     //    profiler attribute time to the right phase.
     let (cam_matrix, camera, cam_pos, lights_uniform, draws, shadowcaster_vps) = {
@@ -287,11 +295,13 @@ pub fn render_frame(world: &mut World) {
         )
     };
 
-    // 2. Acquire the swap-chain frame and clone device/queue handles.
+    // Acquire the swap-chain frame and clone device/queue handles.
     //    Device and Queue are refcounted in wgpu 29 — clone is cheap
     //    and lets the rest of the function operate without holding a
-    //    `Res`-style borrow on the World.
-    let (frame, device, queue, surface_size, depth_view, aspect) = {
+    //    `Res`-style borrow on the World. The HDR view is cloned the
+    //    same way; the post pipeline's bind group is rebuilt against
+    //    it when `hdr_generation` differs from the cached value.
+    let (frame, device, queue, surface_size, depth_view, hdr_view, hdr_generation, aspect) = {
         puffin::profile_scope!("acquire");
         let Some(ctx) = world.resource_mut::<RenderContext>() else {
             warn!("render_frame: RenderContext missing");
@@ -306,17 +316,19 @@ pub fn render_frame(world: &mut World) {
             ctx.queue().clone(),
             ctx.surface_size(),
             ctx.depth_view().clone(),
+            ctx.hdr_view().clone(),
+            ctx.hdr_generation(),
             ctx.aspect_ratio(),
         )
     };
     let view_target = frame.texture.create_view(&TextureViewDescriptor::default());
 
-    // 3. Camera uniform — rebuilt every frame from the snapshot.
+    // Camera uniform — rebuilt every frame from the snapshot.
     let view = cam_matrix.inverse();
     let proj = camera.projection.matrix(aspect);
     let camera_uniform = CameraUniformData::new(view, proj, cam_pos);
 
-    // 4. Record how many shadow-map layers are in active use this
+    // Record how many shadow-map layers are in active use this
     //    frame. No GPU allocation — the texture is permanent;
     //    `set_active_count` only updates the bookkeeping the
     //    shadow-pass loop reads.
@@ -332,7 +344,7 @@ pub fn render_frame(world: &mut World) {
         label: Some("frame-encoder"),
     });
 
-    // 5. Pre-pass writes. All per-frame uniform buffers are written
+    // Pre-pass writes. All per-frame uniform buffers are written
     //    here, before any render pass begins, so the shadow pass
     //    and the forward pass both observe the same up-to-date
     //    contents. `queue.write_buffer` is queue-scheduled — order
@@ -377,7 +389,7 @@ pub fn render_frame(world: &mut World) {
         }
     }
 
-    // 6. Shadow passes — one depth-only pass per shadowcaster,
+    // Shadow passes — one depth-only pass per shadowcaster,
     //    each rendering the entire draw list into the caster's own
     //    shadow map. Re-traversing the draw list here is cheap at
     //    indoor scale; instancing or bulk submission lands when
@@ -437,7 +449,7 @@ pub fn render_frame(world: &mut World) {
         }
     }
 
-    // 7. Forward pass.
+    // Forward pass.
     {
         puffin::profile_scope!("forward_pass");
         let Some(pipeline) = world.resource::<ForwardPipeline>() else {
@@ -455,8 +467,10 @@ pub fn render_frame(world: &mut World) {
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("forward-pass"),
+            // Forward writes into the HDR offscreen target; post will
+            // sample it and write the swap chain.
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: &view_target,
+                view: &hdr_view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: Operations {
@@ -495,12 +509,58 @@ pub fn render_frame(world: &mut World) {
         }
     }
 
-    // 8. Egui overlay pass — load (don't clear) the forward result.
+    // Post-process pass — single fullscreen triangle samples the
+    // HDR target and writes the swap chain. 1.D.1 is a passthrough
+    // clamp; later 1.D Steps stack tonemap, grade, vignette, and
+    // overlay inside the same shader.
+    {
+        puffin::profile_scope!("post_pass");
+        let Some(post) = world.resource_mut::<PostPipeline>() else {
+            warn!("render_frame: PostPipeline missing");
+            return;
+        };
+        // Rebuilds only on first frame and after each resize; pointer
+        // compare otherwise. See PostPipeline::ensure_bind_group.
+        let bind_group = post
+            .ensure_bind_group(&device, &hdr_view, hdr_generation)
+            .clone();
+
+        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("post-pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: &view_target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    // Post writes every pixel — Clear is cheaper than
+                    // Load on tiled GPUs (the load wouldn't read
+                    // anything useful) and behaviorally identical.
+                    load: LoadOp::Clear(wgpu::Color::BLACK),
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_pipeline(&post.pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        // Three verts, one instance — fullscreen triangle covers the
+        // whole viewport; positions and UVs come from `vertex_index`.
+        pass.draw(0..3, 0..1);
+    }
+
+    // Egui overlay pass — load (don't clear) the post result.
+    // Drawing egui *after* post keeps the debug UI uncoloured by
+    // the gameplay grade: the overlay is a tool, not part of the
+    // look.
     //
-    //    We always run the egui frame (even when hidden) so its
-    //    input queue stays drained; we only skip the encoded pass
-    //    when the overlay is hidden, so the GPU work disappears
-    //    without orphaning input state.
+    // We always run the egui frame (even when hidden) so its
+    // input queue stays drained; we only skip the encoded pass
+    // when the overlay is hidden, so the GPU work disappears
+    // without orphaning input state.
     {
         puffin::profile_scope!("overlay");
 
@@ -592,7 +652,7 @@ pub fn render_frame(world: &mut World) {
         }
     }
 
-    // 9. Submit + present.
+    // Submit + present.
     {
         puffin::profile_scope!("submit_present");
         queue.submit(Some(encoder.finish()));

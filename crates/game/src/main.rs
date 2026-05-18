@@ -149,7 +149,7 @@ fn spawn_scene(world: &mut World) {
     world.insert(
         sun,
         DirectionalLight {
-            intensity: 0.15,
+            intensity: 0.08,
             ..DirectionalLight::default()
         },
     );
@@ -180,17 +180,17 @@ fn spawn_scene(world: &mut World) {
     // so the lit pool sweeps rather than illuminating everything
     // at once. Intensity 18 keeps the pool bright after the larger
     // range stretches the inverse-square falloff.
-    world.insert(spot, SpotLight::new(Vec3::ONE, 18.0, 10.0, 20.0, 30.0));
+    world.insert(spot, SpotLight::new(Vec3::ONE, 50.0, 120.0, 25.0, 40.0));
     world.insert(spot, Shadowcaster);
     world.insert(
         spot,
         OrbitingSpot {
             target: Vec3::ZERO,
-            // Radius 3 m clears the cube grid (cubes extend to
+            // Radius 6 m clears the cube grid (cubes extend to
             // ±2 in x and z). Height 3 m gives a ~45° down-angle
             // from spot to target — shadows trail at a readable
             // length without smearing into infinity.
-            radius: 3.0,
+            radius: 6.0,
             height: 3.0,
             // ~28°/sec, full revolution in ~12 s. Slow enough to
             // track a single shadow's sweep without motion

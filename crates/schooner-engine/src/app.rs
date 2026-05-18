@@ -14,8 +14,8 @@ use crate::debug::{DebugState, ProfilerView, debug_input_system};
 use crate::ecs::{IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::Input;
 use crate::render::{
-    DebugOverlay, ForwardPipeline, MeshRegistry, RenderContext, ShadowMaps, ShadowPipeline,
-    render_frame,
+    DebugOverlay, ForwardPipeline, HDR_FORMAT, MeshRegistry, PostPipeline, RenderContext,
+    ShadowMaps, ShadowPipeline, render_frame,
 };
 use crate::time::Time;
 use crate::window::WindowConfig;
@@ -283,7 +283,11 @@ impl ApplicationHandler for App {
                 // creation is sync — the device handle is a
                 // ref-counted, share-safe view.
                 let registry = MeshRegistry::with_builtins(ctx.device());
-                let pipeline = ForwardPipeline::new(ctx.device(), ctx.surface_format());
+                // Forward writes into the HDR offscreen target since
+                // 1.D.1, so the pipeline's color target format must
+                // be HDR_FORMAT — not the swap-chain format the post
+                // pipeline targets.
+                let pipeline = ForwardPipeline::new(ctx.device(), HDR_FORMAT);
                 // The shadow pipeline reuses the forward pipeline's
                 // per-draw model buffer through a refcounted bind
                 // group, so one queue write of model uniforms feeds
@@ -300,11 +304,17 @@ impl ApplicationHandler for App {
                     &pipeline.comparison_sampler,
                 );
                 let overlay = DebugOverlay::new(window.clone(), ctx.device(), ctx.surface_format());
+                // PostPipeline reads the HDR target from RenderContext
+                // and writes the swap chain. Its HDR-sampling bind
+                // group is built lazily in render_frame the first
+                // time it's needed (and rebuilt after every resize).
+                let post_pipeline = PostPipeline::new(ctx.device(), ctx.surface_format());
                 self.world.insert_resource(ctx);
                 self.world.insert_resource(registry);
                 self.world.insert_resource(pipeline);
                 self.world.insert_resource(shadow_pipeline);
                 self.world.insert_resource(shadow_maps);
+                self.world.insert_resource(post_pipeline);
                 self.world.insert_resource(overlay);
             }
             Err(err) => {
