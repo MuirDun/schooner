@@ -30,6 +30,8 @@ use puffin::{FrameSinkId, FrameView, GlobalProfiler, MergeScope, ScopeCollection
 
 use crate::ecs::{Res, ResMut};
 use crate::input::{Input, KeyCode};
+use crate::render::grade::ColorGrade;
+use crate::render::vignette::Vignette;
 
 /// Number of frames the FPS / ms readout averages over.
 ///
@@ -94,16 +96,25 @@ impl Default for FrameStats {
 /// Resource: what the debug overlay shows and how.
 #[derive(Debug)]
 pub struct DebugState {
-    /// Master visibility — F1 toggles. When false, the overlay
+    /// Master visibility — F12 toggles. When false, the overlay
     /// processes events to keep its egui state coherent but the
     /// renderer skips the encoded pass.
     pub overlay_visible: bool,
     /// Profiler panel visibility. Toggled by a button inside the
     /// overlay. The panel itself populates in chunk 6 with puffin.
     pub show_profiler: bool,
-    /// Shadow-map PCF kernel size. P cycles. Shipping default is
+    /// Shadow-map PCF kernel size. F1 cycles. Shipping default is
     /// [`PcfKernel::Soft3x3`].
     pub pcf_kernel: PcfKernel,
+    /// Active color-grade preset for the F2 debug cycle. The
+    /// `ColorGrade` resource is overwritten from
+    /// `grade_preset.value()` on each press; tracking the preset
+    /// enum separately keeps the cycle order owned by debug state
+    /// instead of by the production resource.
+    pub grade_preset: GradePreset,
+    /// Active vignette preset for the F3 debug cycle. Same shape
+    /// as `grade_preset`.
+    pub vignette_preset: VignettePreset,
     pub frame_stats: FrameStats,
 }
 
@@ -113,6 +124,8 @@ impl Default for DebugState {
             overlay_visible: true,
             show_profiler: false,
             pcf_kernel: PcfKernel::Soft3x3,
+            grade_preset: GradePreset::Default,
+            vignette_preset: VignettePreset::Default,
             frame_stats: FrameStats::new(),
         }
     }
@@ -122,7 +135,7 @@ impl Default for DebugState {
 ///
 /// The shader reads the half-kernel value (0 / 1 / 2) from
 /// `LightsUniformData::counts[3]` and runs a `(2k+1)×(2k+1)` tap
-/// loop. Cycled at runtime with `P` so the developer can A/B
+/// loop. Cycled at runtime with F1 so the developer can A/B
 /// shadow softness against geometry. The default `Soft3x3` is the
 /// shipping setting — the wider option exists to validate that
 /// fewer taps don't visibly help the indoor shadow scale.
@@ -161,18 +174,115 @@ impl PcfKernel {
     }
 }
 
-/// System: read debug-key presses and update [`DebugState`].
+/// Active color-grade preset for the F2 debug cycle.
+///
+/// Lives next to `DebugState` (not on `ColorGrade`) so the cycle
+/// order is a debug concern, not part of the production resource's
+/// API. `debug_input_system` advances this on key-press, then writes
+/// `preset.value()` into the `ColorGrade` resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GradePreset {
+    /// Identity grade — no visible change.
+    Default,
+    /// Cool clinical white-room — chamber zone.
+    ChamberWhite,
+    /// Warm comfortable amber — cage zone.
+    CageWarm,
+    /// Strong red bias — service-corridor zone.
+    ServiceRed,
+}
+
+impl GradePreset {
+    /// Cycle Default → ChamberWhite → CageWarm → ServiceRed → Default.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Default => Self::ChamberWhite,
+            Self::ChamberWhite => Self::CageWarm,
+            Self::CageWarm => Self::ServiceRed,
+            Self::ServiceRed => Self::Default,
+        }
+    }
+
+    /// Resolve to the corresponding `ColorGrade` value to write into
+    /// the resource.
+    pub fn value(self) -> ColorGrade {
+        match self {
+            Self::Default => ColorGrade::DEFAULT,
+            Self::ChamberWhite => ColorGrade::CHAMBER_WHITE,
+            Self::CageWarm => ColorGrade::CAGE_WARM,
+            Self::ServiceRed => ColorGrade::SERVICE_RED,
+        }
+    }
+}
+
+/// Active vignette preset for the F3 debug cycle. Same shape as
+/// [`GradePreset`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VignettePreset {
+    /// Off — `intensity = 0`.
+    Default,
+    /// Subtle corner darkening; reads as "photographed."
+    Cinematic,
+    /// Heavy, tight; reads as tension / tunnel-vision.
+    Oppressive,
+}
+
+impl VignettePreset {
+    /// Cycle Default → Cinematic → Oppressive → Default.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Default => Self::Cinematic,
+            Self::Cinematic => Self::Oppressive,
+            Self::Oppressive => Self::Default,
+        }
+    }
+
+    /// Resolve to the corresponding `Vignette` value to write into
+    /// the resource.
+    pub fn value(self) -> Vignette {
+        match self {
+            Self::Default => Vignette::DEFAULT,
+            Self::Cinematic => Vignette::CINEMATIC,
+            Self::Oppressive => Vignette::OPPRESSIVE,
+        }
+    }
+}
+
+/// System: read debug-key presses and update [`DebugState`] +
+/// downstream render resources.
 ///
 /// Lives on `Stage::Update` so flips are visible to `render_frame`
 /// in the same frame the key was pressed. Runs even when the
 /// overlay is hidden so the player can re-summon it.
-pub fn debug_input_system(input: Res<Input>, mut debug: ResMut<DebugState>) {
-    if input.just_pressed(KeyCode::F1) {
+///
+/// Key map (all on the F-row so the mental model is "render-debug
+/// effects on F1–F3, overlay UI on F12"):
+/// - **F1**  cycle PCF kernel (shadow softness)
+/// - **F2**  cycle `ColorGrade` preset
+/// - **F3**  cycle `Vignette` preset
+/// - **F12** toggle the debug overlay
+pub fn debug_input_system(
+    input: Res<Input>,
+    mut debug: ResMut<DebugState>,
+    mut grade: ResMut<ColorGrade>,
+    mut vignette: ResMut<Vignette>,
+) {
+    if input.just_pressed(KeyCode::F12) {
         debug.overlay_visible = !debug.overlay_visible;
     }
-    if input.just_pressed(KeyCode::KeyP) {
+    if input.just_pressed(KeyCode::F1) {
         debug.pcf_kernel = debug.pcf_kernel.cycle();
         log::info!("debug: PCF kernel → {:?}", debug.pcf_kernel);
+    }
+    if input.just_pressed(KeyCode::F2) {
+        debug.grade_preset = debug.grade_preset.cycle();
+        *grade = debug.grade_preset.value();
+        log::info!("debug: ColorGrade → {:?}", debug.grade_preset);
+    }
+    if input.just_pressed(KeyCode::F3) {
+        debug.vignette_preset = debug.vignette_preset.cycle();
+        *vignette = debug.vignette_preset.value();
+        log::info!("debug: Vignette → {:?}", debug.vignette_preset);
     }
 }
 
@@ -223,7 +333,7 @@ pub fn build_overlay_ui(
                     }
                 }
             }
-            ui.label("F1 hides this overlay");
+            ui.label("F12 hides this overlay");
         });
 }
 

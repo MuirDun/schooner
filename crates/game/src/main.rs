@@ -152,10 +152,6 @@ fn spawn_scene(world: &mut World) {
     // other from the light at oblique angles. Initial transform
     // is overwritten every frame by `orbit_spot`, so the values
     // here are only visible on the first sub-frame.
-    //
-    // Debug controls:
-    // - P cycles PCF kernel: Soft3x3 → Wide5x5 → Single → Soft3x3.
-    // - F1 toggles the debug overlay.
     let spot = world.spawn();
     world.insert(
         spot,
