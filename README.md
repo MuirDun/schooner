@@ -31,3 +31,18 @@ cargo check -p schooner-engine
 ## Platforms
 
 Windows, Linux, macOS. wgpu selects the native graphics backend (DX12, Vulkan, Metal).
+
+## License
+
+Copyright 2026 Maksim Iakovlev
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this project except in compliance with the License. You may obtain a copy of
+the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+See the [LICENSE](LICENSE) file for the full text. Unless required by applicable
+law or agreed to in writing, software distributed under the License is
+distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+either express or implied.
