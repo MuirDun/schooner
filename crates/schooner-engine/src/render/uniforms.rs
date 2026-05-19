@@ -15,6 +15,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
 use crate::material::Material;
+use crate::render::fog::Fog;
 use crate::render::grade::ColorGrade;
 use crate::render::vignette::Vignette;
 
@@ -104,7 +105,9 @@ impl DirectionalLightUniformData {
 /// of using `i32` to keep the slot in a `vec4<f32>` neighbourhood
 /// and avoid a `bitcast` or a separate `vec4<i32>` member. A
 /// negative value means "no shadow" — non-shadowcasting spots
-/// pass `-1.0` and the shadow-sampling branch skips them.
+/// pass `-1.0` and the shadow-sampling branch skips them. The `.z`
+/// slot carries `god_ray_intensity` (1.E.2) — multiplier on the
+/// medium's scattering coefficient for this spot's god-ray.
 ///
 /// `view_proj` is the light-space matrix the forward shader uses
 /// to project world position into the spot's shadow map (the same
@@ -122,7 +125,7 @@ pub struct SpotLightUniformData {
     /// `xyz` = color (unit tint), `w` = inner cone cosine.
     pub color_inner_cos: [f32; 4],
     /// `x` = outer cone cosine, `y` = shadow_index as f32
-    /// (`-1.0` ⇒ no shadow), `zw` padding.
+    /// (`-1.0` ⇒ no shadow), `z` = god_ray_intensity, `w` padding.
     pub outer_cos_shadow: [f32; 4],
     /// Light-space view-projection matrix. Zero matrix when
     /// `shadow_index < 0` (never read in that case).
@@ -139,13 +142,16 @@ impl SpotLightUniformData {
         inner_cone_cos: f32,
         outer_cone_cos: f32,
         shadow_index: i32,
+        god_ray_intensity: f32,
         view_proj: [[f32; 4]; 4],
     ) -> Self {
         Self {
             position_intensity: [position.x, position.y, position.z, intensity],
             direction_range: [direction.x, direction.y, direction.z, range],
             color_inner_cos: [color.x, color.y, color.z, inner_cone_cos],
-            outer_cos_shadow: [outer_cone_cos, shadow_index as f32, 0.0, 0.0],
+            // `outer_cos_shadow.z` was reserved padding pre-1.E.2;
+            // god_ray_intensity now occupies it.
+            outer_cos_shadow: [outer_cone_cos, shadow_index as f32, god_ray_intensity, 0.0],
             view_proj,
         }
     }
@@ -170,8 +176,9 @@ impl PointLightUniformData {
     }
 }
 
-/// Combined lighting uniform — one directional, fixed-cap spot and
-/// point arrays, and per-type active counts.
+/// Combined lighting + atmosphere uniform — one directional, fixed-
+/// cap spot and point arrays, per-type active counts, and the per-
+/// scene fog medium.
 ///
 /// `counts.x` = directional count (0 or 1), `.y` = spot count,
 /// `.z` = point count, `.w` = shadow PCF half-kernel (0 / 1 / 2,
@@ -179,11 +186,17 @@ impl PointLightUniformData {
 /// light array `..counts.[y|z]`; trailing slots are stale data
 /// and never read.
 ///
-/// Spot lights grew to 128 B (each carries its own shadow VP);
-/// totals are 48 + 8 × 128 + 16 × 32 + 16 = 1600 B. Still
-/// comfortably below the 64 KB uniform-buffer limit. If indoor
-/// scenes ever push past this scale we'd move to a storage
-/// buffer; uniform is the right call for now.
+/// Fog is folded into this uniform (rather than its own bind group)
+/// because 1.E.2's god-ray loop reads both fog and spot fields
+/// together — a single uniform saves a bind-group write and keeps
+/// the pipeline layout at four bind groups (the wgpu default
+/// `max_bind_groups` cap). The name keeps `Lights` for continuity;
+/// the broader scope is recorded here.
+///
+/// Sizes: directional 48 B, spots 8 × 128 = 1024 B, points 16 ×
+/// 32 = 512 B, counts 16 B, fog 32 B → 1632 B total. Well under
+/// the 64 KB uniform-buffer limit; revisit storage buffers if
+/// outdoor scales push past this.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct LightsUniformData {
@@ -191,6 +204,14 @@ pub struct LightsUniformData {
     pub spots: [SpotLightUniformData; MAX_SPOT_LIGHTS],
     pub points: [PointLightUniformData; MAX_POINT_LIGHTS],
     pub counts: [u32; 4],
+    /// `xyz` = fog color (linear), `w` = density coefficient at
+    /// `fog_base_falloff.x`. `density = 0` disables fog (shader
+    /// short-circuits to transmittance = 1).
+    pub fog_color_density: [f32; 4],
+    /// `x` = base_height (world y), `y` = falloff (1/units),
+    /// `z` = scattering coefficient (analytic god-ray strength,
+    /// 1.E.2), `w` reserved.
+    pub fog_base_falloff: [f32; 4],
 }
 
 impl LightsUniformData {
@@ -218,6 +239,13 @@ impl LightsUniformData {
         // counts.x = 0 — the shader's directional-contribution
         // branch stays off; only ambient lights the scene.
         data
+    }
+
+    /// Pack a [`Fog`] into the uniform's fog slots. Called from
+    /// `build_lights_uniform` after the light arrays are filled.
+    pub fn set_fog(&mut self, fog: &Fog) {
+        self.fog_color_density = [fog.color.x, fog.color.y, fog.color.z, fog.density];
+        self.fog_base_falloff = [fog.base_height, fog.falloff, fog.scattering, 0.0];
     }
 }
 

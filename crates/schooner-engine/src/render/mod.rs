@@ -19,6 +19,7 @@
 //! Phase F chunks.
 
 pub mod context;
+pub mod fog;
 pub mod forward;
 pub mod grade;
 pub mod light;
@@ -32,6 +33,7 @@ pub mod uniforms;
 pub mod vignette;
 
 pub use context::{DEPTH_FORMAT, HDR_FORMAT, RenderContext, RenderContextError};
+pub use fog::Fog;
 pub use forward::render_frame;
 pub use grade::ColorGrade;
 pub use vignette::Vignette;

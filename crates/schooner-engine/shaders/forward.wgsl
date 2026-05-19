@@ -37,7 +37,8 @@ struct SpotLight {
     // .xyz = color (unit tint), .w = inner cone cosine.
     color_inner_cos: vec4<f32>,
     // .x = outer cone cosine, .y = shadow_index (negative ⇒ no
-    // shadow), .zw padding.
+    // shadow), .z = god_ray_intensity (per-spot multiplier on the
+    // medium's scattering coefficient, 1.E.2), .w padding.
     outer_cos_shadow: vec4<f32>,
     // Light-space view-projection matrix. Read only when
     // shadow_index >= 0; zero matrix for non-shadowcasters.
@@ -53,14 +54,24 @@ struct PointLight {
 
 // Array sizes must match MAX_SPOT_LIGHTS / MAX_POINT_LIGHTS in
 // `render/uniforms.rs`. If you change one, change both.
+//
+// Fog is folded into this uniform (rather than a separate bind group)
+// because 1.E.2's god-ray loop reads both fog and spot fields inside
+// the spot iteration — co-location keeps the bind-group count at four
+// (wgpu's default `max_bind_groups`).
 struct LightsUniform {
     directional: DirectionalLight,
     spots: array<SpotLight, 8>,
     points: array<PointLight, 16>,
     // .x = directional count (0 or 1), .y = spot count, .z = point
     // count, .w = shadow PCF half-kernel (0 → 1×1, 1 → 3×3,
-    // 2 → 5×5). Driven by the P debug key via `DebugState`.
+    // 2 → 5×5). Driven by the F1 debug key via `DebugState`.
     counts: vec4<u32>,
+    // .xyz = fog color (linear), .w = density. density=0 disables fog.
+    fog_color_density: vec4<f32>,
+    // .x = base_height (world y), .y = falloff (1/units),
+    // .z = scattering coefficient (god-ray strength), .w reserved.
+    fog_base_falloff: vec4<f32>,
 };
 
 struct ModelUniform {
@@ -219,6 +230,161 @@ fn spot_shadow_factor(spot: SpotLight, world_position: vec3<f32>, n: vec3<f32>) 
     return sample_shadow_pcf(shadow_idx, uv, proj.z);
 }
 
+// Optical depth of an exponential-height fog medium along the view
+// ray from camera to fragment. Closed-form integral derived in
+// `src/render/fog.rs` (Wenzel 2007, GPU Gems 2 §16):
+//
+//     ρ(y) = density · exp(-falloff · (y − base_height))
+//     ρ_C  = density · exp(-falloff · (Cy − base_height))
+//     τ    = ρ_C · (1 − exp(-falloff · Δy)) / (falloff · Δy) · length
+//
+// `density = 0` is the common path (no scene has authored fog) and
+// short-circuits to zero. The `(falloff · Δy)` divisor degenerates
+// at horizontal rays — the guard substitutes the Taylor limit
+// `(1 − e^x)/x → 1` as x → 0. An `if` rather than `select()` because
+// WGSL `select` evaluates both branches, and the divide would
+// produce NaN for the unused branch at exactly horizontal rays.
+fn fog_optical_depth(world_position: vec3<f32>, camera_position: vec3<f32>) -> f32 {
+    let density = lights.fog_color_density.w;
+    if (density <= 0.0) {
+        return 0.0;
+    }
+    let base = lights.fog_base_falloff.x;
+    let falloff = lights.fog_base_falloff.y;
+
+    let segment = world_position - camera_position;
+    let dist = length(segment);
+    if (dist <= 0.0) {
+        return 0.0;
+    }
+
+    let density_at_camera = density * exp(-falloff * (camera_position.y - base));
+    let kdy = falloff * segment.y;
+    var attenuation: f32;
+    if (abs(kdy) < 1e-4) {
+        attenuation = 1.0;
+    } else {
+        attenuation = (1.0 - exp(-kdy)) / kdy;
+    }
+    return density_at_camera * attenuation * dist;
+}
+
+// Analytic ray-cone segment intersection. Returns (t0, t1) such that
+// `origin + t·dir` is inside the spot cone for `t ∈ [t0, t1]`,
+// clipped to `[0, t_max]` and the apex-centered `range` sphere.
+// Caller treats `t0 > t1` as "no hit." `dir` and `axis` are assumed
+// unit-length; both invariants hold at the call site below.
+//
+// ## The quadratic
+//
+// A point P is inside an infinite cone with apex A, axis V (unit),
+// half-angle h iff `dot(P − A, V) ≥ cos(h) · |P − A|`. Squaring and
+// substituting `P = origin + t·dir` (so `U = (origin − A) + t·dir`)
+// yields a quadratic in t with coefficients:
+//
+//     a = (D·V)² − cos²h
+//     b = 2·(D·V)·(Q·V) − 2·cos²h·(D·Q)        where Q = origin − A
+//     c = (Q·V)² − cos²h·|Q|²
+//
+// The `a < 0` branch is the common case (cone half-angle < 45° and
+// the view ray not aligned with the axis): inside-cone is `[lo, hi]`.
+// The `a > 0` branch is the wide-cone / near-axial case: inside-cone
+// is `t ≤ lo` or `t ≥ hi`, and we pick the segment in the front cone
+// (the one where `dot(P − A, V) ≥ 0`). The shared squaring step
+// makes the quadratic agnostic to the front/back cone split, so we
+// always reapply the front-half-plane clip downstream.
+//
+// Reference: Eberly, *3D Game Engine Design* 2e §6.2 — the same
+// derivation, written for raytracers.
+fn ray_cone_segment(
+    origin: vec3<f32>,
+    dir: vec3<f32>,
+    t_max: f32,
+    apex: vec3<f32>,
+    axis: vec3<f32>,
+    cos_half_angle: f32,
+    range: f32,
+) -> vec2<f32> {
+    let no_hit = vec2<f32>(1.0, 0.0);
+
+    let q = origin - apex;
+    let dv = dot(dir, axis);
+    let qv = dot(q, axis);
+    let dq = dot(dir, q);
+    let qq = dot(q, q);
+    let cos2 = cos_half_angle * cos_half_angle;
+
+    let a = dv * dv - cos2;
+    let b = 2.0 * (dv * qv - cos2 * dq);
+    let c = qv * qv - cos2 * qq;
+
+    // Degenerate (ray skims cone surface) — rare; skip rather than
+    // wedge on the divide.
+    if (abs(a) < 1e-6) {
+        return no_hit;
+    }
+
+    let disc = b * b - 4.0 * a * c;
+    if (disc < 0.0) {
+        return no_hit;
+    }
+    let sd = sqrt(disc);
+    let inv2a = 0.5 / a;
+    let lo = min((-b - sd) * inv2a, (-b + sd) * inv2a);
+    let hi = max((-b - sd) * inv2a, (-b + sd) * inv2a);
+
+    var t0: f32;
+    var t1: f32;
+    if (a < 0.0) {
+        // Narrow cone — inside region is [lo, hi]. May still
+        // straddle the apex plane; the front-half-plane clip below
+        // trims the back half.
+        t0 = lo;
+        t1 = hi;
+        if (abs(dv) > 1e-6) {
+            let t_split = -qv / dv;
+            if (dv > 0.0) {
+                t0 = max(t0, t_split);
+            } else {
+                t1 = min(t1, t_split);
+            }
+        } else if (qv < 0.0) {
+            return no_hit;
+        }
+    } else {
+        // Wide cone / near-axial view — inside region is the union
+        // of `t ≤ lo` and `t ≥ hi`. Pick whichever falls in the
+        // front cone.
+        let front_hi = qv + hi * dv;
+        let front_lo = qv + lo * dv;
+        if (front_hi >= 0.0) {
+            t0 = hi;
+            t1 = 1e30;
+        } else if (front_lo >= 0.0) {
+            t0 = -1e30;
+            t1 = lo;
+        } else {
+            return no_hit;
+        }
+    }
+
+    // Clip to the visible view-ray segment.
+    t0 = max(t0, 0.0);
+    t1 = min(t1, t_max);
+
+    // Intersect with the apex-centered range sphere
+    // (|q + t·d|² ≤ range²; |d| = 1 makes it a clean quadratic in t).
+    let disc_r = dq * dq - qq + range * range;
+    if (disc_r <= 0.0) {
+        return no_hit;
+    }
+    let sr = sqrt(disc_r);
+    t0 = max(t0, -dq - sr);
+    t1 = min(t1, -dq + sr);
+
+    return vec2<f32>(t0, t1);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
@@ -236,6 +402,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let specular_strength = 0.3;
 
     var lit = vec3<f32>(0.0);
+    // God-ray (analytic in-scattering through spot cones, 1.E.2)
+    // accumulates separately from the surface `lit` term. The two
+    // terms are different parts of the radiative-transfer equation —
+    // `lit` is the surface radiance reaching the camera attenuated
+    // by transmittance; `god_ray_sum` is the integral of in-scattered
+    // light from the medium along the view ray. They sum at the end
+    // alongside the height-fog blend.
+    var god_ray_sum = vec3<f32>(0.0);
+
+    // View ray from camera through this fragment. `view_len` is the
+    // distance to the visible surface — the t_max for the cone-segment
+    // clip so god-rays don't shine through walls. `do_god_rays` is a
+    // uniform branch (fog params are uniform across the workgroup), so
+    // the per-spot block is skipped for free when fog is disabled.
+    let cam_to_surface = in.world_position - camera.position.xyz;
+    let view_len = length(cam_to_surface);
+    let view_dir = select(
+        vec3<f32>(0.0, 0.0, 1.0),
+        cam_to_surface / max(view_len, 1e-6),
+        view_len > 1e-6,
+    );
+    let fog_density = lights.fog_color_density.w;
+    let fog_scattering = lights.fog_base_falloff.z;
+    let do_god_rays = (fog_density > 0.0) && (fog_scattering > 0.0);
 
     // Directional contribution. Skipped when counts.x == 0 so the
     // shader doesn't add a phantom sun from stale placeholder data.
@@ -246,47 +436,120 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         lit += blinn_phong_contribution(n, l, v, albedo, specular_strength, shininess, radiance);
     }
 
-    // Spot lights.
+    // Spot lights — surface lighting AND god-ray in-scattering share
+    // the same loop iteration. Spot data is loaded once and feeds
+    // both contributions; the surface block is gated on the fragment
+    // being inside the spot's range, while the god-ray block runs
+    // whenever any view ray segment intersects the cone (a wall in
+    // front of the cone clips correctly via `view_len` in t_max).
     for (var i = 0u; i < lights.counts.y; i = i + 1u) {
         let spot = lights.spots[i];
         let spot_pos = spot.position_intensity.xyz;
         let spot_range = spot.direction_range.w;
+        let spot_dir = spot.direction_range.xyz;
 
         let to_surface = in.world_position - spot_pos;
         let dist = length(to_surface);
-        // Outside range: contribution is zero by the windowed
-        // attenuation anyway; the early-skip just avoids the
-        // diffuse/specular work for fragments far from the lamp.
-        if (dist >= spot_range) {
-            continue;
+        // Surface contribution: skipped when the surface is outside
+        // the spot's range (range attenuation would zero it anyway,
+        // but the early skip avoids the diffuse/specular work).
+        if (dist < spot_range) {
+            let to_surface_n = to_surface / dist;
+
+            // Cone factor: smoothstep between outer and inner cosines.
+            // dot(to_surface_n, spot_dir) ≈ 1 when the fragment sits
+            // directly in the beam; falls off as the angle widens.
+            let cone_dot = dot(to_surface_n, spot_dir);
+            let cone_factor = smoothstep(
+                spot.outer_cos_shadow.x,
+                spot.color_inner_cos.w,
+                cone_dot,
+            );
+
+            let range_factor = range_attenuation(dist, spot_range);
+            // Shadow factor multiplies the radiance so the cone shape
+            // and range falloff still apply at the silhouette of the
+            // shadow — a fragment in shadow but inside the cone is
+            // dimmer-but-still-tinted, not pitch black.
+            let shadow_factor = spot_shadow_factor(spot, in.world_position, n);
+            let radiance = spot.color_inner_cos.xyz
+                         * spot.position_intensity.w
+                         * cone_factor
+                         * range_factor
+                         * shadow_factor;
+
+            // Surface-to-light is the negation of light-to-surface.
+            let l = -to_surface_n;
+            lit += blinn_phong_contribution(n, l, v, albedo, specular_strength, shininess, radiance);
         }
-        let to_surface_n = to_surface / dist;
 
-        // Cone factor: smoothstep between outer and inner cosines.
-        // dot(to_surface_n, spot_dir) ≈ 1 when the fragment sits
-        // directly in the beam; falls off as the angle widens.
-        let cone_dot = dot(to_surface_n, spot.direction_range.xyz);
-        let cone_factor = smoothstep(
-            spot.outer_cos_shadow.x,
-            spot.color_inner_cos.w,
-            cone_dot,
-        );
+        // God-ray in-scattering — analytic single-scatter through
+        // the cone segment of the view ray. See `ray_cone_segment`
+        // above for the intersection math. The contribution at this
+        // fragment is the segment-midpoint approximation of:
+        //
+        //     ∫ L_spot(P(t)) · σ_s · ρ(P(t).y) · T(camera→P(t)) dt
+        //
+        // where L_spot is the spot's radiance (color × intensity ×
+        // cone × range attenuation), σ_s is `fog.scattering ·
+        // spot.god_ray_intensity`, ρ is the exponential-height fog
+        // density, and T is transmittance camera→midpoint via the
+        // same Beer's-law optical depth the surface fog uses.
+        //
+        // Midpoint sampling is the practical-analytic shortcut: the
+        // true integral with windowed `1/d²` and exponential ρ has
+        // no clean closed form, so we evaluate radiance and density
+        // once at the segment midpoint and scale by the segment
+        // length. Toth 2009 popularised this for real-time light
+        // shafts; the cost is ≈10 instructions per spot per fragment
+        // regardless of segment length, and the read at indoor scale
+        // is right. Volumetric shadow occlusion (the wall carving
+        // the god-ray) wants raymarched shadow taps — deferred to
+        // Game 2A+ if it earns its keep.
+        if (do_god_rays) {
+            let seg = ray_cone_segment(
+                camera.position.xyz, view_dir, view_len,
+                spot_pos, spot_dir,
+                spot.outer_cos_shadow.x, spot_range,
+            );
+            if (seg.y > seg.x) {
+                let t_mid = 0.5 * (seg.x + seg.y);
+                let seg_len = seg.y - seg.x;
+                let p_mid = camera.position.xyz + view_dir * t_mid;
 
-        let range_factor = range_attenuation(dist, spot_range);
-        // Shadow factor multiplies the radiance so the cone shape
-        // and range falloff still apply at the silhouette of the
-        // shadow — a fragment in shadow but inside the cone is
-        // dimmer-but-still-tinted, not pitch black.
-        let shadow_factor = spot_shadow_factor(spot, in.world_position, n);
-        let radiance = spot.color_inner_cos.xyz
-                     * spot.position_intensity.w
-                     * cone_factor
-                     * range_factor
-                     * shadow_factor;
+                let to_mid = p_mid - spot_pos;
+                let dist_to_mid = length(to_mid);
+                let to_mid_n = to_mid / max(dist_to_mid, 1e-6);
+                let cone_dot_mid = dot(to_mid_n, spot_dir);
+                let cone_factor_mid = smoothstep(
+                    spot.outer_cos_shadow.x,
+                    spot.color_inner_cos.w,
+                    cone_dot_mid,
+                );
+                let range_factor_mid = range_attenuation(dist_to_mid, spot_range);
 
-        // Surface-to-light is the negation of light-to-surface.
-        let l = -to_surface_n;
-        lit += blinn_phong_contribution(n, l, v, albedo, specular_strength, shininess, radiance);
+                // Density at the midpoint's height (same formula as
+                // the surface optical-depth helper, evaluated point-
+                // wise rather than along an integral).
+                let density_at_mid = fog_density
+                    * exp(-lights.fog_base_falloff.y * (p_mid.y - lights.fog_base_falloff.x));
+                // Transmittance camera→midpoint via the same Beer's-
+                // law integral the surface fog uses.
+                let tau_to_mid = fog_optical_depth(p_mid, camera.position.xyz);
+                let trans_to_mid = exp(-tau_to_mid);
+
+                let inscatter_coeff = fog_scattering * spot.outer_cos_shadow.z;
+                let spot_radiance = spot.color_inner_cos.xyz
+                                  * spot.position_intensity.w
+                                  * cone_factor_mid
+                                  * range_factor_mid;
+                god_ray_sum += spot_radiance
+                             * inscatter_coeff
+                             * density_at_mid
+                             * seg_len
+                             * trans_to_mid;
+            }
+        }
     }
 
     // Point lights.
@@ -320,5 +583,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // so it survives shadow and ambient is irrelevant.
     let emissive = model.emissive.xyz * model.emissive.w;
 
-    return vec4<f32>(ambient + lit + emissive, 1.0);
+    let scene = ambient + lit + emissive;
+
+    // Height fog blends in HDR linear space against the lit color so
+    // emissive surfaces dim through dense fog (a red lamp behind a
+    // wall of fog reads as a red haze, not a hot spot poking through).
+    // Tonemap then sees the already-foggy frame, so the curve shapes
+    // the foggy highlights coherently with the rest of the scene.
+    //
+    // God-rays are additive on top — they represent extra radiance
+    // scattered into the view ray by the medium itself, separate
+    // from the surface-attenuation + ambient-in-scatter that `mix`
+    // captures. This is the second term of the radiative-transfer
+    // equation L = L_surface · T + ∫J · T dt; the mix is the first
+    // term plus the ambient half of the integral.
+    let optical_depth = fog_optical_depth(in.world_position, camera.position.xyz);
+    let transmittance = exp(-optical_depth);
+    let final_color = mix(lights.fog_color_density.xyz, scene, transmittance) + god_ray_sum;
+
+    return vec4<f32>(final_color, 1.0);
 }

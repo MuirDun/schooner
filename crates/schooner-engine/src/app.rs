@@ -14,7 +14,7 @@ use crate::debug::{DebugState, ProfilerView, debug_input_system};
 use crate::ecs::{IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::Input;
 use crate::render::{
-    ColorGrade, DebugOverlay, ForwardPipeline, HDR_FORMAT, MeshRegistry, PostPipeline,
+    ColorGrade, DebugOverlay, Fog, ForwardPipeline, HDR_FORMAT, MeshRegistry, PostPipeline,
     RenderContext, ShadowMaps, ShadowPipeline, Vignette, render_frame,
 };
 use crate::time::Time;
@@ -320,6 +320,18 @@ impl ApplicationHandler for App {
                 // drive per-scene mood.
                 self.world.insert_resource(ColorGrade::CAGE_WARM);
                 self.world.insert_resource(Vignette::CINEMATIC);
+                // Fog seeded with a moderate cool-grey medium so the
+                // 1.E.1 smoke test is visible without authoring effort.
+                // 1.E.3 will replace this with named presets driven by
+                // an F4 debug cycle, matching the F2/F3 grade/vignette
+                // pattern.
+                self.world.insert_resource(Fog {
+                    color: glam::Vec3::new(0.55, 0.58, 0.62),
+                    base_height: 0.0,
+                    density: 0.08,
+                    falloff: 0.5,
+                    scattering: 0.5,
+                });
                 self.world.insert_resource(overlay);
             }
             Err(err) => {

@@ -50,6 +50,7 @@ use crate::debug::{
 use crate::ecs::World;
 use crate::material::Material;
 use crate::render::context::RenderContext;
+use crate::render::fog::Fog;
 use crate::render::light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
 use crate::render::mesh::MeshHandle;
 use crate::render::overlay::DebugOverlay;
@@ -169,6 +170,7 @@ fn build_lights_uniform(world: &mut World) -> (LightsUniformData, Vec<Mat4>) {
             spot.inner_cone_cos,
             spot.outer_cone_cos,
             shadow_index,
+            spot.god_ray_intensity,
             view_proj_cols,
         );
         spot_count += 1;
@@ -223,6 +225,13 @@ fn build_lights_uniform(world: &mut World) -> (LightsUniformData, Vec<Mat4>) {
     // only after that pass. Keeping the assignment out of this
     // function keeps `build_lights_uniform` independent of debug
     // state.
+
+    // Fog: fold the per-scene atmosphere into the same uniform.
+    // Missing resource falls back to `Fog::DEFAULT` (density = 0,
+    // shader short-circuits). Co-located with the lights because
+    // 1.E.2's god-ray loop reads both inside the spot iteration.
+    let fog = world.resource::<Fog>().copied().unwrap_or(Fog::DEFAULT);
+    data.set_fog(&fog);
 
     (data, shadow_vps)
 }

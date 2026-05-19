@@ -28,7 +28,7 @@ pub use input::{Input, KeyCode, MouseButton};
 pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
 pub use render::{
-    ColorGrade, DebugOverlay, DirectionalLight, ForwardPipeline, MeshHandle, MeshRegistry,
+    ColorGrade, DebugOverlay, DirectionalLight, Fog, ForwardPipeline, MeshHandle, MeshRegistry,
     PointLight, ShadowMaps, ShadowPipeline, Shadowcaster, SpotLight, Vignette, render_frame,
 };
 pub use time::{DEFAULT_FIXED_HZ, MAX_FIXED_STEPS_PER_FRAME, Time};

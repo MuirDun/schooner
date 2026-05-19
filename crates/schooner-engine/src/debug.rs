@@ -30,6 +30,7 @@ use puffin::{FrameSinkId, FrameView, GlobalProfiler, MergeScope, ScopeCollection
 
 use crate::ecs::{Res, ResMut};
 use crate::input::{Input, KeyCode};
+use crate::render::fog::Fog;
 use crate::render::grade::ColorGrade;
 use crate::render::vignette::Vignette;
 
@@ -115,6 +116,13 @@ pub struct DebugState {
     /// Active vignette preset for the F3 debug cycle. Same shape
     /// as `grade_preset`.
     pub vignette_preset: VignettePreset,
+    /// Active fog preset for the F4 debug cycle. Defaults to
+    /// `Medium` so the cycle agrees with the `Fog` resource seeded
+    /// in [`crate::app::App::resumed`] — first F4 press steps to
+    /// the next state rather than re-applying the seed. 1.E.3 will
+    /// reshape this enum into the four per-zone presets matching
+    /// the `ColorGrade` zones.
+    pub fog_preset: FogPreset,
     pub frame_stats: FrameStats,
 }
 
@@ -126,6 +134,7 @@ impl Default for DebugState {
             pcf_kernel: PcfKernel::Soft3x3,
             grade_preset: GradePreset::Default,
             vignette_preset: VignettePreset::Default,
+            fog_preset: FogPreset::Medium,
             frame_stats: FrameStats::new(),
         }
     }
@@ -248,6 +257,77 @@ impl VignettePreset {
     }
 }
 
+/// Active fog preset for the F4 debug cycle.
+///
+/// Verification-shaped for 1.E.1 — `Off / Medium / Heavy` lets the
+/// developer A/B the height-fog math against an unfogged scene and
+/// confirm the optical-depth integral reads correctly at low and high
+/// density. 1.E.3 will replace these placeholder variants with the
+/// four per-zone presets (chamber-white, cage-warm, service-red,
+/// labyrinth) that match the [`ColorGrade`] zones.
+///
+/// `Medium` is kept literal-equivalent to the `Fog` resource seeded
+/// in `App::resumed` so the F4 cycle's starting state matches the
+/// rendered scene; if either drifts, the visible "press F4 and
+/// nothing changes" hint catches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FogPreset {
+    /// Fog disabled — `Fog::DEFAULT`. Verifies that the unfogged
+    /// path is a true no-op (transmittance = 1, no color shift).
+    Off,
+    /// Light atmospheric dust.
+    Light,
+    /// Moderate cool-grey medium. Matches the app.rs seed value;
+    /// the cycle is coherent with the scene's starting state.
+    Medium,
+    /// Thick low-lying fog. Stresses the optical-depth integral at
+    /// high density and a stronger height falloff — useful for
+    /// confirming that horizontal vs vertical rays integrate
+    /// differently (the analytic guard at small `falloff·Δy`).
+    Heavy,
+}
+
+impl FogPreset {
+    /// Cycle Off → Medium → Heavy → Off.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::Light,
+            Self::Light => Self::Medium,
+            Self::Medium => Self::Heavy,
+            Self::Heavy => Self::Off,
+        }
+    }
+
+    /// Resolve to the corresponding `Fog` value to write into the
+    /// resource.
+    pub fn value(self) -> Fog {
+        match self {
+            Self::Off => Fog::DEFAULT,
+            Self::Light => Fog {
+                color: Vec3::new(0.55, 0.58, 0.62),
+                base_height: 0.0,
+                density: 0.03,
+                falloff: 0.5,
+                scattering: 0.2,
+            },
+            Self::Medium => Fog {
+                color: Vec3::new(0.55, 0.58, 0.62),
+                base_height: 0.0,
+                density: 0.08,
+                falloff: 0.5,
+                scattering: 0.5,
+            },
+            Self::Heavy => Fog {
+                color: Vec3::new(0.55, 0.58, 0.62),
+                base_height: 0.0,
+                density: 0.20,
+                falloff: 0.4,
+                scattering: 0.6,
+            },
+        }
+    }
+}
+
 /// System: read debug-key presses and update [`DebugState`] +
 /// downstream render resources.
 ///
@@ -256,16 +336,18 @@ impl VignettePreset {
 /// overlay is hidden so the player can re-summon it.
 ///
 /// Key map (all on the F-row so the mental model is "render-debug
-/// effects on F1–F3, overlay UI on F12"):
+/// effects on F1–F4, overlay UI on F12"):
 /// - **F1**  cycle PCF kernel (shadow softness)
 /// - **F2**  cycle `ColorGrade` preset
 /// - **F3**  cycle `Vignette` preset
+/// - **F4**  cycle `Fog` preset
 /// - **F12** toggle the debug overlay
 pub fn debug_input_system(
     input: Res<Input>,
     mut debug: ResMut<DebugState>,
     mut grade: ResMut<ColorGrade>,
     mut vignette: ResMut<Vignette>,
+    mut fog: ResMut<Fog>,
 ) {
     if input.just_pressed(KeyCode::F12) {
         debug.overlay_visible = !debug.overlay_visible;
@@ -283,6 +365,11 @@ pub fn debug_input_system(
         debug.vignette_preset = debug.vignette_preset.cycle();
         *vignette = debug.vignette_preset.value();
         log::info!("debug: Vignette → {:?}", debug.vignette_preset);
+    }
+    if input.just_pressed(KeyCode::F4) {
+        debug.fog_preset = debug.fog_preset.cycle();
+        *fog = debug.fog_preset.value();
+        log::info!("debug: Fog → {:?}", debug.fog_preset);
     }
 }
 

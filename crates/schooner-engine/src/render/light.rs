@@ -88,6 +88,16 @@ pub struct SpotLight {
     pub range: f32,
     pub inner_cone_cos: f32,
     pub outer_cone_cos: f32,
+    /// Per-spot god-ray scaling. Multiplies the medium's
+    /// `Fog::scattering` in the analytic in-scatter formula
+    /// (Phase 1.E.2). Defaults to `1.0` — every spot inherits the
+    /// medium's nominal beam visibility — and authors deviate when
+    /// stylistic emphasis matters (chamber overhead beam at `1.8`,
+    /// corridor accent at `0.4`). Same dial UE/Frostbite expose as
+    /// "Volumetric Scattering Intensity." Setting this to `0`
+    /// disables the god-ray for one spot without touching the
+    /// medium.
+    pub god_ray_intensity: f32,
 }
 
 impl SpotLight {
@@ -95,6 +105,8 @@ impl SpotLight {
     /// `inner_deg` is the angle within which the light is at full
     /// strength; between `inner_deg` and `outer_deg` it falls off
     /// smoothly; beyond `outer_deg` it contributes nothing.
+    /// `god_ray_intensity` defaults to `1.0`; use
+    /// [`SpotLight::with_god_ray_intensity`] to override.
     pub fn new(color: Vec3, intensity: f32, range: f32, inner_deg: f32, outer_deg: f32) -> Self {
         Self {
             color,
@@ -102,7 +114,16 @@ impl SpotLight {
             range,
             inner_cone_cos: inner_deg.to_radians().cos(),
             outer_cone_cos: outer_deg.to_radians().cos(),
+            god_ray_intensity: 1.0,
         }
+    }
+
+    /// Builder: scale the god-ray contribution for this spot.
+    /// Multiplier on the medium's `Fog::scattering`. See the
+    /// `god_ray_intensity` field doc for the authoring guidance.
+    pub fn with_god_ray_intensity(mut self, intensity: f32) -> Self {
+        self.god_ray_intensity = intensity;
+        self
     }
 }
 

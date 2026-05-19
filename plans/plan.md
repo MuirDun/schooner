@@ -8,6 +8,8 @@ The progression is designed around one principle: **each game adds exactly one m
 
 The engine's reason for existence — the four pillars that justify every architectural decision — and the long-form vision for each subsystem live in `plans/architecture/*.md`. This plan is the *staging*: which game introduces what, in what order, and why. The architecture docs are the *what* and *why*; this plan is the *when*.
 
+Engine architecture and games are highly opinionated. Games would be developed by one main architector. Therefore, everything in the engine should be shifted towards the author's control.
+
 ---
 
 ## Engine Subsystem Build Order

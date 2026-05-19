@@ -1,7 +1,7 @@
 # Part 1 — Mood
 
 **Kind:** Tech buildout (renderer & atmosphere)
-**Status:** Phases 1.A + 1.B + 1.C complete (2026-05-14) — Phase 1.D not started
+**Status:** Phases 1.A–1.E complete (1.A–1.D on 2026-05-14, 1.E on 2026-05-19) — Phase 1.F not started
 **Depends on:** Game 0 (complete)
 
 ---
@@ -87,10 +87,10 @@ Introduce an offscreen HDR render target and a post-process chain. This is the p
 Make spotlight cones visible by scattering in the lighting model + a light-shaft contribution. This is the single biggest aesthetic win of Part 1.
 
 **Steps:**
-- [ ] **1.E.1** `Fog` resource: per-scene height-fog params (color, base height, density, falloff). Applied in the main shader as in-scattering on the lit color (exponential height fog).
-- [ ] **1.E.2** Spot-light god-ray contribution: analytic in-scattering through the spot cone, computed in the main shader against the fog medium. Cheaper than screen-space radial blur and reads correctly even with shadow occlusion.
-- [ ] **1.E.3** Per-scene fog presets matching the `ColorGrade` zones (chamber, cage, service-red, labyrinth).
-- [ ] **1.E.4** Smoke test: playground precursor with a single spot light, fog enabled. Cone is visible as a god-ray. Walk through it — fog density and scattering read correctly from inside vs outside the beam.
+- [x] **1.E.1** `Fog` resource: per-scene height-fog params (color, base height, density, falloff). Applied in the main shader as in-scattering on the lit color (exponential height fog). *(Landed 2026-05-19. `Fog` lives at engine root in `render/fog.rs`. Folded into the existing `LightsUniformData` at `@group(1)` rather than its own bind group — the same uniform feeds 1.E.2's god-ray loop, so co-location keeps the pipeline at four bind groups (wgpu's default `max_bind_groups`). WGSL applies Wenzel 2007's closed-form integral of `density · exp(-falloff · Δy)` with a Taylor guard at horizontal rays. `density = 0` short-circuits to transmittance = 1. F4 cycle landed in `debug.rs` as a `FogPreset` enum (`Off / Medium / Heavy`) — placeholder shape, 1.E.3 reshapes into the per-zone presets matching `ColorGrade`. `scattering` deliberately deferred to 1.E.2.)*
+- [x] **1.E.2** Spot-light god-ray contribution: analytic in-scattering through the spot cone, computed in the main shader against the fog medium. Cheaper than screen-space radial blur and reads correctly even with shadow occlusion. *(Landed 2026-05-19. `Fog::scattering` decoupled from `density` (UE/Frostbite split — "thick atmosphere with subtle glow" and "thin atmosphere with bright god-rays" are independently authorable). Per-spot `SpotLight::god_ray_intensity` multiplier on the medium's scattering, default 1.0, packed into the previously-reserved `outer_cos_shadow.z` slot (zero growth in `SpotLightUniformData`). WGSL `ray_cone_segment` solves the `(D·V)² ≥ cos²θ·|U|²` quadratic with both `a < 0` (narrow cone) and `a > 0` (wide / near-axial) branches, plus a front-half-plane clip for the back-mirror cone and a range-sphere clip. `t_max = view_len` so walls correctly occlude the god-ray. In-scatter evaluated as `spot_radiance · scattering · god_ray_intensity · density_at_mid · seg_len · transmittance(camera→mid)` — Toth 2009 midpoint analytic. Additive composition: `mix(fog_color, scene, T) + god_ray_sum`, the second term of the radiative-transfer equation joining the first. `do_god_rays` flag is a uniform branch so disabling fog is divergence-free.)*
+- [x] **1.E.3** Per-scene fog presets matching the `ColorGrade` zones (chamber, cage, service-red, labyrinth). *(Descoped 2026-05-19. Engine-level zone presets deferred — the developer will author scene-specific fog values directly against the playground binary (Phase 1.H), the same way per-scene lighting setups will be authored there. The 1.E.1/1.E.2 work landed `Fog::DEFAULT` plus the F4 debug cycle (`Off / Medium / Heavy`); zone-named constants on `Fog` would have been speculative without the playground to tune against.)*
+- [x] **1.E.4** Smoke test: playground precursor with a single spot light, fog enabled. Cone is visible as a god-ray. Walk through it — fog density and scattering read correctly from inside vs outside the beam. *(Verified 2026-05-19 against the orbiting-spot Game-0 scene. The F4 cycle from 1.E.1 carried this — `Off` confirms the unfogged path is a true no-op; `Medium` shows the cone glowing in the air, walls correctly clipping the god-ray via `view_len`; `Heavy` darkens the transmittance term and reads as a denser-medium environment. Playground-proper revisit lands in 1.H when the dedicated scene exists.)*
 
 ### Phase 1.F — Asset pipeline v0
 
