@@ -18,6 +18,8 @@
 
 use glam::Vec3;
 
+use crate::render::texture::TextureHandle;
+
 /// Per-draw surface parameters consumed by the forward shader.
 ///
 /// `roughness` is a Blinn–Phong analogue, not a PBR term: it
@@ -30,7 +32,13 @@ use glam::Vec3;
 /// `emissive` is added *outside* the lighting equation — it is the
 /// surface's own light, not a reflection. Red lamps and the glowing
 /// food gel use this; the Mahli eye behind the frosted window will
-/// in Phase 3.
+/// later.
+///
+/// `albedo_texture` is multiplied into the per-fragment albedo at
+/// sample time. `None` binds the engine's WHITE 1×1 built-in so the
+/// shader's textured and untextured paths stay uniform — a `Material`
+/// with no texture reads `albedo = albedo_tint × white = albedo_tint`,
+/// identical to the pre-texture pipeline's behaviour.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Material {
     pub albedo: Vec3,
@@ -38,6 +46,7 @@ pub struct Material {
     pub emissive: Vec3,
     pub emissive_intensity: f32,
     pub blend: BlendMode,
+    pub albedo_texture: Option<TextureHandle>,
 }
 
 impl Default for Material {
@@ -56,6 +65,7 @@ impl Material {
         emissive: Vec3::ZERO,
         emissive_intensity: 0.0,
         blend: BlendMode::Opaque,
+        albedo_texture: None,
     };
 }
 
@@ -90,6 +100,7 @@ mod tests {
         assert_eq!(m.emissive, Vec3::ZERO);
         assert_eq!(m.emissive_intensity, 0.0);
         assert_eq!(m.blend, BlendMode::Opaque);
+        assert_eq!(m.albedo_texture, None);
     }
 
     #[test]

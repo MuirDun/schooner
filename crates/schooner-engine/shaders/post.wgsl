@@ -14,8 +14,11 @@
 // Bind groups:
 //   @group(0) — HDR texture + linear-clamp sampler (the forward
 //               pass's output, sampled at the fragment's screen UV).
-//   @group(1) — post-process params uniform (grade now; vignette and
-//               overlay fields appended in later 1.D Steps).
+//   @group(1) — post-process params uniform (grade + vignette +
+//               overlay scalars).
+//   @group(2) — overlay texture + sampler. Always bound (a pipeline
+//               layout binds all its groups or none); WHITE when the
+//               overlay is off, gated to a no-op by intensity = 0.
 //
 // Drawn as a single fullscreen triangle: three vertices outside the
 // screen so the bounding rect covers the viewport. UVs are derived
@@ -29,16 +32,20 @@
 // `src/render/uniforms.rs`. Most vec3s sit in a vec4 for std140
 // alignment with `.w` as padding; vignette packs `intensity` into
 // `vignette_tint.w` (always read together) and packs both radii
-// into `vignette_radii.xy`.
+// into `vignette_radii.xy`. Overlay packs intensity + blend index.
 struct PostParams {
     lift: vec4<f32>,
     gamma: vec4<f32>,
     gain: vec4<f32>,
     vignette_tint: vec4<f32>,   // xyz = tint, w = intensity
     vignette_radii: vec4<f32>,  // x = inner, y = outer
+    overlay: vec4<f32>,         // x = intensity, y = blend index
 };
 
 @group(1) @binding(0) var<uniform> post_params: PostParams;
+
+@group(2) @binding(0) var overlay_tex: texture_2d<f32>;
+@group(2) @binding(1) var overlay_sampler: sampler;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -144,6 +151,34 @@ fn apply_vignette(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
                v * post_params.vignette_tint.w);
 }
 
+// Fullscreen overlay composited last, on top of the graded + vignetted
+// frame. Three blend modes, selected by an index the CPU packs into
+// `overlay.y` (see `src/render/post_overlay.rs`):
+//
+//   1 AlphaBlend  mix(scene, tex.rgb, tex.a * intensity)  — death noise
+//   2 Multiply    mix(scene, scene * tex.rgb, intensity)  — hunger tint
+//   3 Additive    scene + tex.rgb * intensity             — flashes
+//
+// The branch is on `overlay.y`, a uniform value — every fragment takes
+// the same path, so there is no warp divergence (unlike a branch on a
+// per-fragment quantity). `intensity = 0` makes all three a no-op, so
+// the disabled overlay (WHITE bound at @group(2)) costs only the
+// sample + ALU, never a special case. Index 0 / anything unrecognized
+// falls through as pass-through.
+fn apply_overlay(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let tex = textureSample(overlay_tex, overlay_sampler, uv);
+    let intensity = post_params.overlay.x;
+    let mode = u32(post_params.overlay.y);
+    if (mode == 1u) {
+        return mix(color, tex.rgb, tex.a * intensity);
+    } else if (mode == 2u) {
+        return mix(color, color * tex.rgb, intensity);
+    } else if (mode == 3u) {
+        return color + tex.rgb * intensity;
+    }
+    return color;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let hdr_color = textureSample(hdr, hdr_sampler, in.uv).rgb;
@@ -157,12 +192,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tonemapped = tonemap_aces(hdr_color);
     let graded = apply_color_grade(tonemapped);
     let vignetted = apply_vignette(graded, in.uv);
+    let overlaid = apply_overlay(vignetted, in.uv);
 
-    // Final clamp — grade can push past [0, 1] when gain + lift sum
-    // exceeds one, and later stages (overlay) need a clean LDR
-    // baseline. The swap chain stores 8-bit sRGB; values > 1 clip
-    // anyway, the clamp just makes the clip explicit.
-    let ldr = clamp(vignetted, vec3<f32>(0.0), vec3<f32>(1.0));
+    // Final clamp — after overlay so an Additive flash (which may push
+    // past 1.0 on purpose) lands on a defined LDR value. Grade can also
+    // push past [0, 1] when gain + lift sum exceeds one. The swap chain
+    // stores 8-bit sRGB; values > 1 clip anyway, the clamp just makes
+    // the clip explicit.
+    let ldr = clamp(overlaid, vec3<f32>(0.0), vec3<f32>(1.0));
 
     return vec4<f32>(ldr, 1.0);
 }

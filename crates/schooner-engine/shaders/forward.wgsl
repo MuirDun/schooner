@@ -2,14 +2,15 @@
 // N point lights.
 //
 // Bind groups:
-//   @group(0) — Camera  (view, proj, view_proj, position).
-//   @group(1) — Lights  (directional + spot/point arrays + counts).
-//   @group(2) — Model   (per-draw model matrix + material params,
-//                        dynamic-offset).
+//   @group(0) — Camera   (view, proj, view_proj, position).
+//   @group(1) — Lights   (directional + spot/point arrays + counts).
+//   @group(2) — Model    (per-draw model matrix + material params,
+//                         dynamic-offset).
+//   @group(3) — Shadow   (depth-array + comparison sampler).
+//   @group(4) — Material (albedo texture + linear-repeat sampler).
 //
 // Vertex layout matches `render::mesh::Vertex`: pos (3f) at
 // location 0, normal (3f) at location 1, uv (2f) at location 2.
-// uv is unused for now — first textured material lands in Phase 1.F.
 
 struct CameraUniform {
     view: mat4x4<f32>,
@@ -87,6 +88,8 @@ struct ModelUniform {
 @group(2) @binding(0) var<uniform> model: ModelUniform;
 @group(3) @binding(0) var shadow_maps: texture_depth_2d_array;
 @group(3) @binding(1) var shadow_sampler: sampler_comparison;
+@group(4) @binding(0) var albedo_texture: texture_2d<f32>;
+@group(4) @binding(1) var albedo_sampler: sampler;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -98,6 +101,12 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
+    // Perspective-correct interpolated per-fragment UV. The
+    // rasterizer divides by W to keep texture-space distances
+    // correct across foreshortened triangles — without that, a
+    // wall viewed at an angle would stretch the texture toward
+    // the far end.
+    @location(2) uv: vec2<f32>,
 };
 
 @vertex
@@ -115,6 +124,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         model.model[2].xyz,
     );
     out.world_normal = normalize(normal_mat * in.normal);
+    out.uv = in.uv;
     return out;
 }
 
@@ -390,7 +400,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let v = normalize(camera.position.xyz - in.world_position);
 
-    let albedo = model.albedo_roughness.xyz;
+    // Albedo: per-instance tint × bound albedo texture. The texture
+    // is `Rgba8UnormSrgb`, so `textureSample` returns *linear* light
+    // values — no manual `pow(rgb, 2.2)` needed. Materials without
+    // an authored texture bind the WHITE 1×1 built-in, making the
+    // multiply a no-op so the shader's textured and untextured
+    // paths stay uniform.
+    let tex_sample = textureSample(albedo_texture, albedo_sampler, in.uv).rgb;
+    let albedo = model.albedo_roughness.xyz * tex_sample;
     let roughness = model.albedo_roughness.w;
 
     // Map roughness ∈ [0, 1] to Blinn–Phong shininess. Calibrated

@@ -57,7 +57,9 @@ use crate::render::overlay::DebugOverlay;
 use crate::render::grade::ColorGrade;
 use crate::render::pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 use crate::render::post::PostPipeline;
-use crate::render::registry::MeshRegistry;
+use crate::render::post_overlay::PostOverlay;
+use crate::render::registry::{MeshRegistry, TextureRegistry};
+use crate::render::texture::TextureHandle;
 use crate::render::shadow::{
     MAX_SHADOW_CASTERS, SHADOW_VP_UNIFORM_STRIDE, ShadowMaps, ShadowPipeline, compute_shadow_vp,
 };
@@ -464,6 +466,57 @@ pub fn render_frame(world: &mut World) {
     // Forward pass.
     {
         puffin::profile_scope!("forward_pass");
+
+        // Pre-pass — populate the per-material bind-group cache for
+        // every unique texture handle this frame's draws need. Done
+        // outside the render pass because cache writes take a
+        // mutable borrow on `ForwardPipeline` while the pass below
+        // holds a shared borrow. The two-scope shape keeps the
+        // `TextureRegistry` (shared) and `ForwardPipeline` (mutable)
+        // borrows strictly disjoint. `TextureView` is internally an
+        // `Arc`, so cloning it across the borrow boundary is cheap.
+        {
+            let mut unique_handles = std::collections::HashSet::new();
+            // WHITE is the universal fallback — always cached so a
+            // draw that references a missing texture still binds
+            // something valid.
+            unique_handles.insert(TextureHandle::WHITE);
+            for (_, _, material) in &draws {
+                unique_handles
+                    .insert(material.albedo_texture.unwrap_or(TextureHandle::WHITE));
+            }
+
+            let views: Vec<(TextureHandle, wgpu::TextureView)> = {
+                let Some(textures) = world.resource::<TextureRegistry>() else {
+                    warn!("render_frame: TextureRegistry missing");
+                    return;
+                };
+                unique_handles
+                    .iter()
+                    .filter_map(|&h| {
+                        // Handles absent from the registry resolve to
+                        // WHITE; the cache still ends up with an entry
+                        // under the requested key, pointing at the
+                        // WHITE view.
+                        let actual = if textures.contains(h) {
+                            h
+                        } else {
+                            TextureHandle::WHITE
+                        };
+                        textures.get(actual).map(|tex| (h, tex.view.clone()))
+                    })
+                    .collect()
+            };
+
+            let Some(pipeline) = world.resource_mut::<ForwardPipeline>() else {
+                warn!("render_frame: ForwardPipeline missing");
+                return;
+            };
+            for (handle, view) in &views {
+                pipeline.ensure_material_bind_group_with_view(&device, *handle, view);
+            }
+        }
+
         let Some(pipeline) = world.resource::<ForwardPipeline>() else {
             warn!("render_frame: ForwardPipeline missing");
             return;
@@ -508,13 +561,29 @@ pub fn render_frame(world: &mut World) {
         pass.set_bind_group(1, &pipeline.lights_bind_group, &[]);
         pass.set_bind_group(3, shadow_maps.bind_group(), &[]);
 
-        for (i, (_, handle, _)) in draws.iter().enumerate() {
+        for (i, (_, handle, material)) in draws.iter().enumerate() {
             let Some(mesh) = meshes.get(*handle) else {
                 warn!("render_frame: missing mesh for handle {handle:?}; skipping draw");
                 continue;
             };
             let dyn_offset = (i as u32) * (MODEL_UNIFORM_STRIDE as u32);
             pass.set_bind_group(2, &pipeline.model_bind_group, &[dyn_offset]);
+
+            // The pre-pass guarantees an entry exists for every
+            // handle the draw list needs, including the WHITE
+            // fallback for `None` and unknown handles. A `None`
+            // here would indicate a logic error above; the warn
+            // surfaces it without crashing the frame.
+            let texture_handle = material.albedo_texture.unwrap_or(TextureHandle::WHITE);
+            let Some(material_bg) = pipeline.material_bind_group(texture_handle) else {
+                warn!(
+                    "render_frame: material bind group missing for {:?}; skipping draw",
+                    texture_handle
+                );
+                continue;
+            };
+            pass.set_bind_group(4, material_bg, &[]);
+
             pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(mesh.index_buffer.slice(..), IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
@@ -528,9 +597,9 @@ pub fn render_frame(world: &mut World) {
     {
         puffin::profile_scope!("post_pass");
 
-        // Pack per-scene grade + vignette. Missing either resource
-        // falls back to its identity (no-op) — the renderer should
-        // never wedge on an unconfigured world.
+        // Pack per-scene grade + vignette + overlay. Missing any
+        // resource falls back to its identity (no-op) — the renderer
+        // should never wedge on an unconfigured world.
         let grade = world
             .resource::<ColorGrade>()
             .copied()
@@ -539,7 +608,38 @@ pub fn render_frame(world: &mut World) {
             .resource::<Vignette>()
             .copied()
             .unwrap_or(Vignette::DEFAULT);
-        let params = PostParamsUniform::pack(&grade, &vignette);
+        let overlay = world
+            .resource::<PostOverlay>()
+            .copied()
+            .unwrap_or(PostOverlay::DEFAULT);
+        let params = PostParamsUniform::pack(&grade, &vignette, &overlay);
+
+        // Resolve the overlay texture to a view under a shared borrow,
+        // then drop it before taking the mutable PostPipeline borrow —
+        // same disjoint-borrow shape as the material pre-pass. An
+        // absent or missing handle falls back to WHITE; the shader's
+        // overlay term is gated by `intensity = 0` anyway, so the bound
+        // texture is irrelevant when the overlay is off. `TextureView`
+        // is `Arc`-backed, so the clone is cheap.
+        let overlay_handle = overlay.texture.unwrap_or(TextureHandle::WHITE);
+        let (overlay_handle, overlay_view) = {
+            let Some(textures) = world.resource::<TextureRegistry>() else {
+                warn!("render_frame: TextureRegistry missing");
+                return;
+            };
+            let actual = if textures.contains(overlay_handle) {
+                overlay_handle
+            } else {
+                TextureHandle::WHITE
+            };
+            match textures.get(actual) {
+                Some(tex) => (actual, tex.view.clone()),
+                None => {
+                    warn!("render_frame: overlay texture + WHITE both missing");
+                    return;
+                }
+            }
+        };
 
         let Some(post) = world.resource_mut::<PostPipeline>() else {
             warn!("render_frame: PostPipeline missing");
@@ -549,6 +649,10 @@ pub fn render_frame(world: &mut World) {
         // compare otherwise. See PostPipeline::ensure_bind_group.
         let bind_group = post
             .ensure_bind_group(&device, &hdr_view, hdr_generation)
+            .clone();
+        // Overlay group rebuilds only when the active handle changes.
+        let overlay_bind_group = post
+            .ensure_overlay_bind_group(&device, overlay_handle, &overlay_view)
             .clone();
         queue.write_buffer(&post.params_buffer, 0, bytemuck::bytes_of(&params));
 
@@ -575,6 +679,7 @@ pub fn render_frame(world: &mut World) {
         pass.set_pipeline(&post.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.set_bind_group(1, &post.params_bind_group, &[]);
+        pass.set_bind_group(2, &overlay_bind_group, &[]);
         // Three verts, one instance — fullscreen triangle covers the
         // whole viewport; positions and UVs come from `vertex_index`.
         pass.draw(0..3, 0..1);

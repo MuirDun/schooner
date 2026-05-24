@@ -33,6 +33,7 @@ use wgpu::{
     VertexState,
 };
 
+use crate::render::texture::TextureHandle;
 use crate::render::uniforms::PostParamsUniform;
 
 /// All persistent GPU state for the post-process pass.
@@ -66,6 +67,18 @@ pub struct PostPipeline {
     /// the first frame after a resize (or initial construction).
     cached_bind_group: Option<BindGroup>,
     cached_generation: u64,
+    /// BGL for `@group(2)` — the overlay texture + sampler. Same shape
+    /// as the HDR group (filterable float 2D + filtering sampler); a
+    /// distinct layout object so the label and any future divergence
+    /// stay clean.
+    pub overlay_bgl: BindGroupLayout,
+    /// Cached overlay bind group + the handle it was built for.
+    /// Rebuilt when the active overlay handle changes — a
+    /// consumer-driven cadence (gameplay flips the overlay), distinct
+    /// from the HDR group's resize cadence and the params group's
+    /// per-frame writes. `None` until the first frame.
+    cached_overlay_bind_group: Option<BindGroup>,
+    cached_overlay_handle: Option<TextureHandle>,
 }
 
 impl PostPipeline {
@@ -75,6 +88,7 @@ impl PostPipeline {
     pub fn new(device: &Device, surface_format: TextureFormat) -> Self {
         let bgl = create_bgl(device);
         let params_bgl = create_params_bgl(device);
+        let overlay_bgl = create_overlay_bgl(device);
 
         // Seed the params buffer with the identity grade so the first
         // frame — which runs *before* the per-frame write in
@@ -98,7 +112,7 @@ impl PostPipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("post-pipeline-layout"),
-            bind_group_layouts: &[Some(&bgl), Some(&params_bgl)],
+            bind_group_layouts: &[Some(&bgl), Some(&params_bgl), Some(&overlay_bgl)],
             immediate_size: 0,
         });
 
@@ -183,6 +197,11 @@ impl PostPipeline {
             // rebuilds against whatever the context's generation is
             // — no need for a separate "first frame" branch.
             cached_generation: u64::MAX,
+            overlay_bgl,
+            cached_overlay_bind_group: None,
+            // None so the first `ensure_overlay_bind_group` call always
+            // builds — no handle has been bound yet.
+            cached_overlay_handle: None,
         }
     }
 
@@ -218,11 +237,82 @@ impl PostPipeline {
         // Just-assigned-above ⇒ infallible.
         self.cached_bind_group.as_ref().expect("bind group present")
     }
+
+    /// Lazily rebuild the overlay bind group when the active overlay
+    /// texture handle changes. `view` is the registry view for
+    /// `handle` (or WHITE's view when the overlay is off — the caller
+    /// resolves the fallback). Called once per frame from
+    /// `render_frame`; the steady state (overlay unchanged) is a
+    /// handle compare + early return.
+    ///
+    /// Keyed on handle, not on a generation: an F5 reload of the
+    /// overlay texture *specifically* (same handle, new view) won't
+    /// refresh until the handle changes. That's acceptable while the
+    /// overlay has no live consumer (1.D.5 ships a debug-key test
+    /// texture only); when Part 3's death sequence lands, revisit by
+    /// folding overlay invalidation into `f5_reload_system`.
+    pub fn ensure_overlay_bind_group(
+        &mut self,
+        device: &Device,
+        handle: TextureHandle,
+        view: &TextureView,
+    ) -> &BindGroup {
+        if self.cached_overlay_handle != Some(handle) || self.cached_overlay_bind_group.is_none() {
+            self.cached_overlay_bind_group = Some(device.create_bind_group(&BindGroupDescriptor {
+                label: Some("post-overlay-bind-group"),
+                layout: &self.overlay_bgl,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(view),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        // Reuse the HDR linear-clamp sampler — the
+                        // overlay is sampled at the same 1:1 screen UV.
+                        resource: BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            }));
+            self.cached_overlay_handle = Some(handle);
+        }
+        self.cached_overlay_bind_group
+            .as_ref()
+            .expect("overlay bind group present")
+    }
 }
 
 fn create_bgl(device: &Device) -> BindGroupLayout {
     device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("post-bgl"),
+        entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Float { filterable: true },
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+fn create_overlay_bgl(device: &Device) -> BindGroupLayout {
+    // Same shape as the HDR group: a filterable float 2D texture plus
+    // a filtering sampler. Built as its own layout so the binding
+    // labels read "overlay" and a later divergence (e.g. a repeat
+    // sampler for tiling noise) doesn't force a shared-layout split.
+    device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("post-overlay-bgl"),
         entries: &[
             BindGroupLayoutEntry {
                 binding: 0,

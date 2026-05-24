@@ -1,29 +1,92 @@
-//! `MeshRegistry` — handle → `MeshGpu` lookup table.
+//! Handle → GPU resource registries for meshes and textures.
 //!
-//! Resource form: lives in the `World`, declared by systems via
-//! `Res<MeshRegistry>` (read-only path used by the renderer) or
-//! `ResMut<MeshRegistry>` (write path used by asset loaders later).
+//! Resource form: live in the `World`, declared by systems via
+//! `Res<MeshRegistry>` / `Res<TextureRegistry>` (read-only path used
+//! by the renderer) or `ResMut<…>` (write path used by asset loaders).
 //!
-//! Built-ins (cube, plane) are uploaded eagerly at construction
-//! through `with_builtins` — see `architecture/render.md` "What
-//! the renderer owns" for why these live in the engine and not
-//! in `game-void`.
+//! Built-ins (cube + plane for meshes, WHITE for textures) are
+//! uploaded eagerly at construction through `with_builtins` — see
+//! `architecture/render.md` "What the renderer owns" for why these
+//! live in the engine and not in `game-void`.
+//!
+//! Each entry remembers its disk source path when one exists, so the
+//! F5 manual reload (Step 1.F.4) can walk the reloadable subset and
+//! re-read each file in place. Built-ins carry `None` and are
+//! naturally skipped by that walk.
+//!
+//! The two registries are parallel-shaped on purpose — same allocator,
+//! same source-tracking, same `with_builtins` pattern — but kept as
+//! distinct types so that systems can declare `Res<MeshRegistry>` and
+//! `Res<TextureRegistry>` independently and the change-detection /
+//! resource-disjointness machinery treats them as separate concerns.
+//! A shared generic registry would save ~30 lines and lose that.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use wgpu::Device;
+use wgpu::{Device, Queue};
 
+use crate::asset::{self, AssetResult};
 use crate::render::mesh::{MeshGpu, MeshHandle, cube_mesh, plane_mesh};
+use crate::render::texture::{TextureData, TextureGpu, TextureHandle};
+
+/// Outcome of one manual-reload pass over a registry's disk-sourced
+/// entries (the F5 path, Step 1.F.4).
+///
+/// `reloaded` lists the handles whose GPU resource was replaced in
+/// place this pass. The caller uses it to invalidate any downstream
+/// cache keyed by handle — the forward pipeline holds one bind group
+/// per `TextureHandle` (the `TextureView` is baked into the bind
+/// group), so a reloaded texture's cached bind group is stale until
+/// invalidated. Meshes have no such cache: `render_frame` reads the
+/// `MeshGpu` buffers straight from the registry each draw, so a
+/// swapped-in mesh is picked up with no further bookkeeping.
+///
+/// `failed` counts entries whose re-read errored. Those keep their
+/// previous GPU resource — the scene renders the last-good version —
+/// per the non-fatal reload contract. Per-failure detail is logged at
+/// `warn` inside `reload_all`; this struct carries only the count so
+/// the caller can print a one-line summary.
+///
+/// Generic over the handle type so both registries return the same
+/// shape; the registries themselves stay distinct types (see the
+/// module doc) — only this value object is shared.
+#[derive(Debug, Clone)]
+pub struct ReloadReport<H> {
+    pub reloaded: Vec<H>,
+    pub failed: u32,
+}
+
+// Hand-rolled rather than derived: `#[derive(Default)]` would add a
+// spurious `H: Default` bound (the well-known derive over-constraint),
+// but an empty report is valid for any handle type — `Vec<H>::default()`
+// is empty regardless of `H`. Handles deliberately have no `Default`
+// (handle 0 is a reserved built-in, not a sensible "default value").
+impl<H> Default for ReloadReport<H> {
+    fn default() -> Self {
+        Self {
+            reloaded: Vec::new(),
+            failed: 0,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MeshEntry {
+    gpu: MeshGpu,
+    source: Option<PathBuf>,
+}
 
 /// Handle → GPU mesh.
 ///
-/// Insertions go through [`MeshRegistry::insert`]; the renderer's
-/// frame loop only ever calls [`MeshRegistry::get`], so the read
-/// path stays cheap (one hash lookup per draw call). Game 0 has
+/// Insertions go through [`MeshRegistry::insert`],
+/// [`MeshRegistry::insert_new`], or [`MeshRegistry::load_gltf`]; the
+/// renderer's frame loop only ever calls [`MeshRegistry::get`], so the
+/// read path stays cheap (one hash lookup per draw call). Game 0 has
 /// no eviction — meshes live as long as the registry does.
 #[derive(Debug)]
 pub struct MeshRegistry {
-    meshes: HashMap<MeshHandle, MeshGpu>,
+    meshes: HashMap<MeshHandle, MeshEntry>,
     next_user_handle: u32,
 }
 
@@ -44,8 +107,20 @@ impl MeshRegistry {
         let mut registry = Self::empty();
         let cube = MeshGpu::upload(device, "builtin-cube", &cube_mesh());
         let plane = MeshGpu::upload(device, "builtin-plane", &plane_mesh());
-        registry.meshes.insert(MeshHandle::CUBE, cube);
-        registry.meshes.insert(MeshHandle::PLANE, plane);
+        registry.meshes.insert(
+            MeshHandle::CUBE,
+            MeshEntry {
+                gpu: cube,
+                source: None,
+            },
+        );
+        registry.meshes.insert(
+            MeshHandle::PLANE,
+            MeshEntry {
+                gpu: plane,
+                source: None,
+            },
+        );
         registry
     }
 
@@ -55,24 +130,100 @@ impl MeshRegistry {
     /// overwrites of built-ins (which they should treat as a bug,
     /// not a feature).
     pub fn insert(&mut self, handle: MeshHandle, mesh: MeshGpu) -> Option<MeshGpu> {
-        self.meshes.insert(handle, mesh)
+        self.meshes
+            .insert(
+                handle,
+                MeshEntry {
+                    gpu: mesh,
+                    source: None,
+                },
+            )
+            .map(|entry| entry.gpu)
     }
 
     /// Allocate a fresh handle past the built-in reserved range
     /// and insert `mesh` under it. The handle returned is
     /// guaranteed unique within this registry's lifetime.
     pub fn insert_new(&mut self, mesh: MeshGpu) -> MeshHandle {
-        let handle = MeshHandle(self.next_user_handle);
-        self.next_user_handle = self
-            .next_user_handle
-            .checked_add(1)
-            .expect("MeshHandle u32 space exhausted");
-        self.meshes.insert(handle, mesh);
+        let handle = self.allocate_handle();
+        self.meshes.insert(
+            handle,
+            MeshEntry {
+                gpu: mesh,
+                source: None,
+            },
+        );
         handle
     }
 
+    /// Parse a glTF mesh from disk, upload it, and register under a
+    /// fresh handle. The path is remembered so Step 1.F.4's F5
+    /// manual reload can re-read this entry in place.
+    pub fn load_gltf(
+        &mut self,
+        device: &Device,
+        path: impl AsRef<Path>,
+    ) -> AssetResult<MeshHandle> {
+        let path = path.as_ref();
+        let data = asset::load_gltf_mesh(path)?;
+        let label = format!("gltf:{}", path.display());
+        let gpu = MeshGpu::upload(device, &label, &data);
+        let handle = self.allocate_handle();
+        self.meshes.insert(
+            handle,
+            MeshEntry {
+                gpu,
+                source: Some(path.to_path_buf()),
+            },
+        );
+        Ok(handle)
+    }
+
+    /// Re-read every disk-sourced mesh from its tracked path and
+    /// replace the GPU buffers in place under the same handle. The F5
+    /// manual-reload path (Step 1.F.4).
+    ///
+    /// A snapshot of `(handle, path)` pairs is taken up front so the
+    /// re-read / upload / replace loop doesn't hold an iteration borrow
+    /// on the map it mutates. Built-ins (cube / plane, `source = None`)
+    /// are skipped by the filter. Each entry is independent: a malformed
+    /// glTF logs a `warn` and leaves that entry's previous `MeshGpu`
+    /// intact, then the loop carries on to the next — one broken file
+    /// never blocks the rest of the reload.
+    pub fn reload_all(&mut self, device: &Device) -> ReloadReport<MeshHandle> {
+        let targets: Vec<(MeshHandle, PathBuf)> = self
+            .meshes
+            .iter()
+            .filter_map(|(handle, entry)| entry.source.as_ref().map(|p| (*handle, p.clone())))
+            .collect();
+
+        let mut report = ReloadReport::default();
+        for (handle, path) in targets {
+            match asset::load_gltf_mesh(&path) {
+                Ok(data) => {
+                    let label = format!("gltf:{}", path.display());
+                    let gpu = MeshGpu::upload(device, &label, &data);
+                    if let Some(entry) = self.meshes.get_mut(&handle) {
+                        // Same handle, new buffers, source path
+                        // preserved so the next reload finds it again.
+                        entry.gpu = gpu;
+                    }
+                    report.reloaded.push(handle);
+                }
+                Err(err) => {
+                    log::warn!(
+                        "F5 reload: mesh {handle:?} from {} failed: {err}",
+                        path.display()
+                    );
+                    report.failed += 1;
+                }
+            }
+        }
+        report
+    }
+
     pub fn get(&self, handle: MeshHandle) -> Option<&MeshGpu> {
-        self.meshes.get(&handle)
+        self.meshes.get(&handle).map(|entry| &entry.gpu)
     }
 
     pub fn contains(&self, handle: MeshHandle) -> bool {
@@ -86,6 +237,168 @@ impl MeshRegistry {
     pub fn is_empty(&self) -> bool {
         self.meshes.is_empty()
     }
+
+    /// Source path for `handle` if it was loaded from disk. Built-ins
+    /// return `None`. The F5 manual-reload system (Step 1.F.4) uses
+    /// this to discover which entries should be re-read.
+    pub fn source(&self, handle: MeshHandle) -> Option<&Path> {
+        self.meshes
+            .get(&handle)
+            .and_then(|entry| entry.source.as_deref())
+    }
+
+    fn allocate_handle(&mut self) -> MeshHandle {
+        let handle = MeshHandle(self.next_user_handle);
+        self.next_user_handle = self
+            .next_user_handle
+            .checked_add(1)
+            .expect("MeshHandle u32 space exhausted");
+        handle
+    }
+}
+
+#[derive(Debug)]
+struct TextureEntry {
+    gpu: TextureGpu,
+    source: Option<PathBuf>,
+}
+
+/// Handle → GPU texture.
+///
+/// Parallel-shaped to [`MeshRegistry`]: built-in WHITE at handle 0,
+/// user-loaded textures past `FIRST_USER`, disk-loaded entries carry
+/// their source path for F5 manual reload.
+#[derive(Debug)]
+pub struct TextureRegistry {
+    textures: HashMap<TextureHandle, TextureEntry>,
+    next_user_handle: u32,
+}
+
+impl TextureRegistry {
+    /// Empty registry. Useful for tests; production code goes
+    /// through [`TextureRegistry::with_builtins`].
+    pub fn empty() -> Self {
+        Self {
+            textures: HashMap::new(),
+            next_user_handle: TextureHandle::FIRST_USER.0,
+        }
+    }
+
+    /// Build the registry and upload the engine-owned WHITE 1×1
+    /// texel at the reserved built-in slot. Called once during
+    /// `App::resumed` after `RenderContext` is up.
+    pub fn with_builtins(device: &Device, queue: &Queue) -> Self {
+        let mut registry = Self::empty();
+        let data = TextureData::white_1x1();
+        let gpu = TextureGpu::upload_rgba8(device, queue, "builtin-white", &data);
+        registry.textures.insert(
+            TextureHandle::WHITE,
+            TextureEntry {
+                gpu,
+                source: None,
+            },
+        );
+        registry
+    }
+
+    /// Decode a PNG from disk, upload it, and register under a fresh
+    /// handle. The path is remembered so Step 1.F.4's F5 manual
+    /// reload can re-read this entry in place.
+    pub fn load_png(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        path: impl AsRef<Path>,
+    ) -> AssetResult<TextureHandle> {
+        let path = path.as_ref();
+        let data = asset::load_png_pixels(path)?;
+        let label = format!("png:{}", path.display());
+        let gpu = TextureGpu::upload_rgba8(device, queue, &label, &data);
+        let handle = self.allocate_handle();
+        self.textures.insert(
+            handle,
+            TextureEntry {
+                gpu,
+                source: Some(path.to_path_buf()),
+            },
+        );
+        Ok(handle)
+    }
+
+    /// Re-read every disk-sourced texture from its tracked path and
+    /// replace the GPU texture in place under the same handle. The F5
+    /// manual-reload path (Step 1.F.4).
+    ///
+    /// Same snapshot-then-mutate shape as [`MeshRegistry::reload_all`].
+    /// The returned `reloaded` list matters more here than for meshes:
+    /// the forward pipeline caches one bind group per `TextureHandle`
+    /// against the old `TextureView`, so the caller must invalidate
+    /// each reloaded handle's cached bind group — otherwise the next
+    /// frame keeps sampling the pre-reload texture. A failed decode
+    /// leaves the previous `TextureGpu` (and its still-valid cached
+    /// bind group) untouched.
+    pub fn reload_all(&mut self, device: &Device, queue: &Queue) -> ReloadReport<TextureHandle> {
+        let targets: Vec<(TextureHandle, PathBuf)> = self
+            .textures
+            .iter()
+            .filter_map(|(handle, entry)| entry.source.as_ref().map(|p| (*handle, p.clone())))
+            .collect();
+
+        let mut report = ReloadReport::default();
+        for (handle, path) in targets {
+            match asset::load_png_pixels(&path) {
+                Ok(data) => {
+                    let label = format!("png:{}", path.display());
+                    let gpu = TextureGpu::upload_rgba8(device, queue, &label, &data);
+                    if let Some(entry) = self.textures.get_mut(&handle) {
+                        entry.gpu = gpu;
+                    }
+                    report.reloaded.push(handle);
+                }
+                Err(err) => {
+                    log::warn!(
+                        "F5 reload: texture {handle:?} from {} failed: {err}",
+                        path.display()
+                    );
+                    report.failed += 1;
+                }
+            }
+        }
+        report
+    }
+
+    pub fn get(&self, handle: TextureHandle) -> Option<&TextureGpu> {
+        self.textures.get(&handle).map(|entry| &entry.gpu)
+    }
+
+    pub fn contains(&self, handle: TextureHandle) -> bool {
+        self.textures.contains_key(&handle)
+    }
+
+    pub fn len(&self) -> usize {
+        self.textures.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.textures.is_empty()
+    }
+
+    /// Source path for `handle` if it was loaded from disk. Built-ins
+    /// return `None`.
+    pub fn source(&self, handle: TextureHandle) -> Option<&Path> {
+        self.textures
+            .get(&handle)
+            .and_then(|entry| entry.source.as_deref())
+    }
+
+    fn allocate_handle(&mut self) -> TextureHandle {
+        let handle = TextureHandle(self.next_user_handle);
+        self.next_user_handle = self
+            .next_user_handle
+            .checked_add(1)
+            .expect("TextureHandle u32 space exhausted");
+        handle
+    }
 }
 
 #[cfg(test)]
@@ -93,7 +406,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_registry_starts_blank() {
+    fn empty_mesh_registry_starts_blank() {
         let r = MeshRegistry::empty();
         assert!(r.is_empty());
         assert!(r.get(MeshHandle::CUBE).is_none());
@@ -101,21 +414,54 @@ mod tests {
     }
 
     #[test]
-    fn insert_new_skips_builtin_range() {
-        // The first user-allocated handle must be FIRST_USER, not
-        // CUBE or PLANE — otherwise `with_builtins` followed by
-        // `insert_new` would overwrite a built-in slot.
+    fn mesh_insert_new_skips_builtin_range() {
         let mut r = MeshRegistry::empty();
-        // Without uploading real meshes (no Device in unit tests),
-        // we can still exercise the handle allocator by skipping
-        // the actual upload step and checking the allocation logic.
         assert_eq!(r.next_user_handle, MeshHandle::FIRST_USER.0);
-        // Simulate two allocations.
-        let h0 = MeshHandle(r.next_user_handle);
-        r.next_user_handle += 1;
-        let h1 = MeshHandle(r.next_user_handle);
-        r.next_user_handle += 1;
+        let h0 = r.allocate_handle();
+        let h1 = r.allocate_handle();
         assert_eq!(h0, MeshHandle::FIRST_USER);
         assert_eq!(h1.0, MeshHandle::FIRST_USER.0 + 1);
+    }
+
+    #[test]
+    fn mesh_source_is_none_for_unknown_handle() {
+        let r = MeshRegistry::empty();
+        assert!(r.source(MeshHandle::FIRST_USER).is_none());
+    }
+
+    #[test]
+    fn empty_texture_registry_starts_blank() {
+        let r = TextureRegistry::empty();
+        assert!(r.is_empty());
+        assert!(r.get(TextureHandle::WHITE).is_none());
+    }
+
+    #[test]
+    fn texture_allocator_skips_builtin_slot() {
+        let mut r = TextureRegistry::empty();
+        assert_eq!(r.next_user_handle, TextureHandle::FIRST_USER.0);
+        let h0 = r.allocate_handle();
+        let h1 = r.allocate_handle();
+        assert_eq!(h0, TextureHandle::FIRST_USER);
+        assert_eq!(h1.0, TextureHandle::FIRST_USER.0 + 1);
+    }
+
+    #[test]
+    fn texture_source_is_none_for_unknown_handle() {
+        let r = TextureRegistry::empty();
+        assert!(r.source(TextureHandle::FIRST_USER).is_none());
+    }
+
+    // `reload_all` itself is GPU-bound (it uploads through a `Device`)
+    // and is exercised by the Step 1.F.5 smoke test, matching how the
+    // loaders' upload paths are validated — there is no headless test
+    // device in this crate. What we can guard here is the hand-rolled
+    // `Default`, since a typo there (e.g. `failed: 1`) would make every
+    // reload pass start out already reporting a phantom failure.
+    #[test]
+    fn reload_report_default_is_empty() {
+        let report = ReloadReport::<MeshHandle>::default();
+        assert!(report.reloaded.is_empty());
+        assert_eq!(report.failed, 0);
     }
 }

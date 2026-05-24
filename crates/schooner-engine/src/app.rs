@@ -10,12 +10,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::debug::{DebugState, ProfilerView, debug_input_system};
+use crate::debug::{DebugState, ProfilerView, debug_input_system, f5_reload_system};
 use crate::ecs::{IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::Input;
 use crate::render::{
-    ColorGrade, DebugOverlay, Fog, ForwardPipeline, HDR_FORMAT, MeshRegistry, PostPipeline,
-    RenderContext, ShadowMaps, ShadowPipeline, Vignette, render_frame,
+    ColorGrade, DebugOverlay, Fog, ForwardPipeline, HDR_FORMAT, MeshRegistry, PostOverlay,
+    PostPipeline, RenderContext, ShadowMaps, ShadowPipeline, TextureRegistry, Vignette,
+    render_frame,
 };
 use crate::time::Time;
 use crate::window::WindowConfig;
@@ -283,6 +284,11 @@ impl ApplicationHandler for App {
                 // creation is sync — the device handle is a
                 // ref-counted, share-safe view.
                 let registry = MeshRegistry::with_builtins(ctx.device());
+                // WHITE 1×1 default-fallback texture lands now alongside
+                // the cube/plane built-ins so materials with no albedo
+                // texture can bind a real GPU view (uniform shader path)
+                // before any later loads happen.
+                let texture_registry = TextureRegistry::with_builtins(ctx.device(), ctx.queue());
                 // Forward writes into the HDR offscreen target since
                 // 1.D.1, so the pipeline's color target format must
                 // be HDR_FORMAT — not the swap-chain format the post
@@ -311,6 +317,7 @@ impl ApplicationHandler for App {
                 let post_pipeline = PostPipeline::new(ctx.device(), ctx.surface_format());
                 self.world.insert_resource(ctx);
                 self.world.insert_resource(registry);
+                self.world.insert_resource(texture_registry);
                 self.world.insert_resource(pipeline);
                 self.world.insert_resource(shadow_pipeline);
                 self.world.insert_resource(shadow_maps);
@@ -332,6 +339,11 @@ impl ApplicationHandler for App {
                     falloff: 0.5,
                     scattering: 0.5,
                 });
+                // PostOverlay seeded off (no texture, intensity 0).
+                // F6 cycles its intensity + blend; the game points
+                // `.texture` at a test asset so the cycle composites a
+                // real image.
+                self.world.insert_resource(PostOverlay::DEFAULT);
                 self.world.insert_resource(overlay);
             }
             Err(err) => {
@@ -354,6 +366,13 @@ impl ApplicationHandler for App {
         // for why.
         self.schedule
             .add_system(&mut self.world, Stage::Render, exclusive(render_frame));
+
+        // F5 manual asset reload. Registered here, not in App::new(),
+        // because it reads RenderContext + the registries + the
+        // forward pipeline — resources that only exist once the device
+        // is up. See `debug::f5_reload_system`.
+        self.schedule
+            .add_system(&mut self.world, Stage::Update, f5_reload_system);
 
         self.window = Some(window);
     }

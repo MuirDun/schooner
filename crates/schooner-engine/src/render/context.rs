@@ -137,11 +137,23 @@ impl RenderContext {
         // with dynamic offset"). MemoryHints::Performance lets the
         // driver pick allocation strategy without the engine
         // pretending to know better.
+        //
+        // `max_bind_groups` is raised from wgpu's spec-minimum default
+        // of 4 to 5, accommodating the forward pipeline's per-material
+        // texture group at @group(4) (camera + lights + model + shadow
+        // + material). 5 is universally supported on every desktop GPU
+        // shipped this decade; mobile Tegra/Mali sometimes report 4
+        // as the floor, but Kinesis is desktop-only by design. Game 4
+        // skeletal animation likely raises this to 6 for per-skinned-
+        // instance bone matrices — we'll request what we actually
+        // need each time rather than over-budget speculatively.
+        let mut required_limits = Limits::default();
+        required_limits.max_bind_groups = 5;
         let (device, queue) = adapter
             .request_device(&DeviceDescriptor {
                 label: Some("schooner-device"),
                 required_features: Features::empty(),
-                required_limits: Limits::default(),
+                required_limits,
                 experimental_features: ExperimentalFeatures::default(),
                 memory_hints: MemoryHints::Performance,
                 trace: Trace::Off,

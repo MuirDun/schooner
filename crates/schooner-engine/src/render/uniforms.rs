@@ -17,6 +17,7 @@ use glam::{Mat4, Vec3};
 use crate::material::Material;
 use crate::render::fog::Fog;
 use crate::render::grade::ColorGrade;
+use crate::render::post_overlay::PostOverlay;
 use crate::render::vignette::Vignette;
 
 /// Maximum spot lights packed into [`LightsUniformData`] per frame.
@@ -293,9 +294,9 @@ impl ModelUniformData {
 
 /// Post-process params uniform — single bag of small parameters the
 /// fixed post chain reads. Grows as 1.D progresses: 1.D.3 landed
-/// color-grade fields; 1.D.4 appends vignette; 1.D.5 will append
-/// overlay. The bind group is stable across those Steps — only the
-/// struct (and matching WGSL) grow.
+/// color-grade fields; 1.D.4 appended vignette; 1.D.5 appends overlay.
+/// The bind group is stable across those Steps — only the struct (and
+/// matching WGSL) grow.
 ///
 /// Each `Vec3` is stored as `[f32; 4]` for std140 alignment; the
 /// trailing slot is padding except where called out (vignette packs
@@ -308,8 +309,9 @@ impl ModelUniformData {
 /// - `gain`            — 16 B (`xyz` = gain, `w` padding)
 /// - `vignette_tint`   — 16 B (`xyz` = tint, `w` = intensity)
 /// - `vignette_radii`  — 16 B (`x` = inner, `y` = outer, `zw` padding)
+/// - `overlay`         — 16 B (`x` = intensity, `y` = blend index, `zw` padding)
 ///
-/// Total 80 B. Microscopic vs. the 64 KB uniform-buffer limit.
+/// Total 96 B. Microscopic vs. the 64 KB uniform-buffer limit.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct PostParamsUniform {
@@ -318,13 +320,18 @@ pub struct PostParamsUniform {
     pub gain: [f32; 4],
     pub vignette_tint: [f32; 4],
     pub vignette_radii: [f32; 4],
+    /// `x` = overlay intensity, `y` = [`OverlayBlend`] shader index as
+    /// an `f32` (the WGSL re-narrows with `u32(...)`). `zw` padding.
+    ///
+    /// [`OverlayBlend`]: crate::render::post_overlay::OverlayBlend
+    pub overlay: [f32; 4],
 }
 
 impl PostParamsUniform {
-    /// Pack [`ColorGrade`] + [`Vignette`] into the GPU layout. Each
-    /// resource is independently optional at the call site — see
-    /// `forward.rs` for the fallback-to-identity pattern.
-    pub fn pack(grade: &ColorGrade, vignette: &Vignette) -> Self {
+    /// Pack [`ColorGrade`] + [`Vignette`] + [`PostOverlay`] into the
+    /// GPU layout. Each resource is independently optional at the call
+    /// site — see `forward.rs` for the fallback-to-identity pattern.
+    pub fn pack(grade: &ColorGrade, vignette: &Vignette, overlay: &PostOverlay) -> Self {
         Self {
             lift: [grade.lift.x, grade.lift.y, grade.lift.z, 0.0],
             gamma: [grade.gamma.x, grade.gamma.y, grade.gamma.z, 0.0],
@@ -336,6 +343,12 @@ impl PostParamsUniform {
                 vignette.intensity,
             ],
             vignette_radii: [vignette.inner, vignette.outer, 0.0, 0.0],
+            overlay: [
+                overlay.intensity,
+                overlay.blend.shader_index() as f32,
+                0.0,
+                0.0,
+            ],
         }
     }
 
@@ -344,6 +357,6 @@ impl PostParamsUniform {
     /// runs) renders an unchanged image instead of a zero-gamma
     /// black screen.
     pub fn identity() -> Self {
-        Self::pack(&ColorGrade::DEFAULT, &Vignette::DEFAULT)
+        Self::pack(&ColorGrade::DEFAULT, &Vignette::DEFAULT, &PostOverlay::DEFAULT)
     }
 }

@@ -27,8 +27,10 @@ pub mod mesh;
 pub mod overlay;
 pub mod pipeline;
 pub mod post;
+pub mod post_overlay;
 pub mod registry;
 pub mod shadow;
+pub mod texture;
 pub mod uniforms;
 pub mod vignette;
 
@@ -42,7 +44,9 @@ pub use mesh::{MeshData, MeshGpu, MeshHandle, Vertex, cube_mesh, plane_mesh};
 pub use overlay::DebugOverlay;
 pub use pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 pub use post::PostPipeline;
-pub use registry::MeshRegistry;
+pub use post_overlay::{OverlayBlend, PostOverlay};
+pub use registry::{MeshRegistry, ReloadReport, TextureRegistry};
+pub use texture::{TextureData, TextureGpu, TextureHandle};
 pub use shadow::{
     MAX_SHADOW_CASTERS, SHADOW_MAP_RESOLUTION, SHADOW_VP_UNIFORM_STRIDE, ShadowMaps,
     ShadowPipeline, compute_shadow_vp,

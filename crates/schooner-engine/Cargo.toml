@@ -20,3 +20,5 @@ egui-winit.workspace = true
 egui-wgpu.workspace = true
 puffin.workspace = true
 smallvec.workspace = true
+gltf.workspace = true
+image.workspace = true

@@ -32,7 +32,9 @@ use crate::ecs::{Res, ResMut};
 use crate::input::{Input, KeyCode};
 use crate::render::fog::Fog;
 use crate::render::grade::ColorGrade;
+use crate::render::post_overlay::{OverlayBlend, PostOverlay};
 use crate::render::vignette::Vignette;
+use crate::render::{ForwardPipeline, MeshRegistry, RenderContext, TextureRegistry};
 
 /// Number of frames the FPS / ms readout averages over.
 ///
@@ -123,6 +125,11 @@ pub struct DebugState {
     /// reshape this enum into the four per-zone presets matching
     /// the `ColorGrade` zones.
     pub fog_preset: FogPreset,
+    /// Active overlay preset for the F6 debug cycle. Drives the
+    /// `PostOverlay` resource's intensity + blend mode; the texture
+    /// itself is supplied game-side (the engine ships no overlay
+    /// asset). Defaults to `Off`.
+    pub overlay_preset: OverlayPreset,
     pub frame_stats: FrameStats,
 }
 
@@ -135,6 +142,7 @@ impl Default for DebugState {
             grade_preset: GradePreset::Default,
             vignette_preset: VignettePreset::Default,
             fog_preset: FogPreset::Medium,
+            overlay_preset: OverlayPreset::Off,
             frame_stats: FrameStats::new(),
         }
     }
@@ -328,6 +336,66 @@ impl FogPreset {
     }
 }
 
+/// Active overlay preset for the F6 debug cycle.
+///
+/// Drives the [`PostOverlay`] resource's `intensity` + `blend` so the
+/// developer can A/B the three compositing modes against the live
+/// scene. Unlike the grade / vignette / fog presets, this one does
+/// **not** replace the whole resource: it leaves `PostOverlay.texture`
+/// untouched, because the texture is the game's to supply (the engine
+/// ships no overlay asset). [`OverlayPreset::apply`] writes only the
+/// two scalar fields.
+///
+/// The intensities are chosen to read clearly with an *opaque* test
+/// texture (e.g. `rusty.png`, whose alpha is all 1.0): AlphaBlend at
+/// `0.8` mostly replaces the frame, Multiply at full strength tints
+/// it, Additive at `0.4` brightens with the pattern. A real
+/// alpha-masked asset (the Part-3 death noise) would confine
+/// AlphaBlend to the masked region instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayPreset {
+    /// Overlay disabled — `intensity = 0`, blend mode irrelevant.
+    Off,
+    /// [`OverlayBlend::AlphaBlend`] at `0.8`.
+    Alpha,
+    /// [`OverlayBlend::Multiply`] at `1.0`.
+    Multiply,
+    /// [`OverlayBlend::Additive`] at `0.4`.
+    Additive,
+}
+
+impl OverlayPreset {
+    /// Cycle Off → Alpha → Multiply → Additive → Off.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::Alpha,
+            Self::Alpha => Self::Multiply,
+            Self::Multiply => Self::Additive,
+            Self::Additive => Self::Off,
+        }
+    }
+
+    /// Write this preset's intensity + blend into `overlay`, leaving
+    /// its `texture` field alone.
+    pub fn apply(self, overlay: &mut PostOverlay) {
+        match self {
+            Self::Off => overlay.intensity = 0.0,
+            Self::Alpha => {
+                overlay.intensity = 0.8;
+                overlay.blend = OverlayBlend::AlphaBlend;
+            }
+            Self::Multiply => {
+                overlay.intensity = 1.0;
+                overlay.blend = OverlayBlend::Multiply;
+            }
+            Self::Additive => {
+                overlay.intensity = 0.4;
+                overlay.blend = OverlayBlend::Additive;
+            }
+        }
+    }
+}
+
 /// System: read debug-key presses and update [`DebugState`] +
 /// downstream render resources.
 ///
@@ -336,11 +404,15 @@ impl FogPreset {
 /// overlay is hidden so the player can re-summon it.
 ///
 /// Key map (all on the F-row so the mental model is "render-debug
-/// effects on F1–F4, overlay UI on F12"):
+/// effects on F1–F6, overlay UI on F12"). F5 (asset reload) is handled
+/// by [`f5_reload_system`] rather than here, because it needs the
+/// render registries + pipeline that only exist after `App::resumed`:
 /// - **F1**  cycle PCF kernel (shadow softness)
 /// - **F2**  cycle `ColorGrade` preset
 /// - **F3**  cycle `Vignette` preset
 /// - **F4**  cycle `Fog` preset
+/// - **F5**  reload disk assets — see [`f5_reload_system`]
+/// - **F6**  cycle `PostOverlay` preset (intensity + blend)
 /// - **F12** toggle the debug overlay
 pub fn debug_input_system(
     input: Res<Input>,
@@ -348,6 +420,7 @@ pub fn debug_input_system(
     mut grade: ResMut<ColorGrade>,
     mut vignette: ResMut<Vignette>,
     mut fog: ResMut<Fog>,
+    mut overlay: ResMut<PostOverlay>,
 ) {
     if input.just_pressed(KeyCode::F12) {
         debug.overlay_visible = !debug.overlay_visible;
@@ -371,6 +444,62 @@ pub fn debug_input_system(
         *fog = debug.fog_preset.value();
         log::info!("debug: Fog → {:?}", debug.fog_preset);
     }
+    if input.just_pressed(KeyCode::F6) {
+        debug.overlay_preset = debug.overlay_preset.cycle();
+        // Mutates intensity + blend only; the game's overlay texture
+        // (if any) is preserved across the cycle.
+        debug.overlay_preset.apply(&mut overlay);
+        log::info!("debug: PostOverlay → {:?}", debug.overlay_preset);
+    }
+}
+
+/// System: F5 manual asset reload (Step 1.F.4).
+///
+/// Re-reads every disk-sourced mesh and texture from its tracked path
+/// and swaps the GPU resource in place under the same handle, so the
+/// developer can tweak a `.png` / `.gltf` on disk and see the change
+/// without restarting the binary. The manual-key floor; file-watcher-
+/// driven automatic reload is Game 2A's job.
+///
+/// Kept out of [`debug_input_system`] on purpose: that system runs
+/// from the first frame against resources present at `App::new`,
+/// whereas this one needs [`RenderContext`], the two registries, and
+/// [`ForwardPipeline`] — all of which only land in `App::resumed`.
+/// Registering this separately there keeps the resource invariants of
+/// each system honest. It still rides `Stage::Update` so an F5 press
+/// is visible to the same frame's render.
+///
+/// Reload is non-fatal per asset (a malformed file keeps its previous
+/// GPU resource and the rest reload anyway — see
+/// [`MeshRegistry::reload_all`]). After the texture pass, every
+/// reloaded `TextureHandle` has its cached forward-pipeline bind group
+/// invalidated: that cache keys on the handle but bakes in the old
+/// `TextureView`, so without invalidation the next frame would keep
+/// sampling the pre-reload pixels.
+pub fn f5_reload_system(
+    input: Res<Input>,
+    ctx: Res<RenderContext>,
+    mut meshes: ResMut<MeshRegistry>,
+    mut textures: ResMut<TextureRegistry>,
+    mut pipeline: ResMut<ForwardPipeline>,
+) {
+    if !input.just_pressed(KeyCode::F5) {
+        return;
+    }
+
+    let mesh_report = meshes.reload_all(ctx.device());
+    let texture_report = textures.reload_all(ctx.device(), ctx.queue());
+
+    for handle in &texture_report.reloaded {
+        pipeline.invalidate_material_bind_group(*handle);
+    }
+
+    log::info!(
+        "F5 reload: {} mesh(es), {} texture(s) reloaded; {} failure(s)",
+        mesh_report.reloaded.len(),
+        texture_report.reloaded.len(),
+        mesh_report.failed + texture_report.failed,
+    );
 }
 
 /// Snapshot the renderer hands to [`build_overlay_ui`]. Owned

@@ -28,6 +28,8 @@ egui-winit = { version = "0.34", default-features = false }
 egui-wgpu = { version = "0.34", default-features = false }
 puffin = "0.20"
 smallvec = "1"
+gltf = { version = "1", default-features = false, features = ["import", "utils"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 schooner-engine = { path = "crates/schooner-engine" }
 
