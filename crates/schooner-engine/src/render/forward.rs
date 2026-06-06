@@ -48,7 +48,7 @@ use crate::debug::{
     DebugState, OverlayInteract, OverlayMetrics, PcfKernel, ProfilerView, build_overlay_ui,
 };
 use crate::ecs::World;
-use crate::material::Material;
+use crate::material::{BlendMode, Material};
 use crate::render::context::RenderContext;
 use crate::render::fog::Fog;
 use crate::render::light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
@@ -309,6 +309,45 @@ pub fn render_frame(world: &mut World) {
         )
     };
 
+    // Partition the draw list by blend mode in one pass. Opaque draws
+    // render first (the depth buffer resolves their order for free);
+    // AlphaBlend draws render after, in a separate transparent range,
+    // because the over-operator is order-dependent. Both lists index
+    // into the same `draws` vec, so each draw's model-buffer slot
+    // (= original index) stays stable for the uniform writes and the
+    // shadow pass below. The exhaustive `match` makes a future
+    // `BlendMode` variant a compile error here rather than a silently
+    // dropped draw. 1.G.1 leaves the transparent range in natural
+    // order; 1.G.2 sorts it back-to-front by camera distance.
+    let mut opaque_draws: Vec<usize> = Vec::with_capacity(draws.len());
+    let mut transparent_draws: Vec<usize> = Vec::new();
+    for (i, (_, _, material)) in draws.iter().enumerate() {
+        match material.blend {
+            BlendMode::Opaque => opaque_draws.push(i),
+            BlendMode::AlphaBlend => transparent_draws.push(i),
+        }
+    }
+
+    // Back-to-front sort of the transparent range — the painter's
+    // algorithm. The over-operator is order-dependent and depth-write
+    // is off, so the depth buffer can't order these for us; we must
+    // blend farthest-first. Key is the squared distance from the camera
+    // to each draw's world-space origin (the model matrix's translation
+    // column) — squaring drops the sqrt and gives the same ordering.
+    // `partial_cmp` because f32 isn't `Ord`; an unexpected NaN position
+    // sorts as Equal rather than panicking.
+    //
+    // Sorting by object origin is the standard cheap approximation: it
+    // orders *separated* transparent props correctly but can't resolve
+    // two interpenetrating transparent meshes, which would need per-
+    // triangle sorting or order-independent transparency (out of scope —
+    // Game 2A+).
+    transparent_draws.sort_by(|&a, &b| {
+        let da = (draws[a].0.w_axis.truncate() - cam_pos).length_squared();
+        let db = (draws[b].0.w_axis.truncate() - cam_pos).length_squared();
+        db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     // Acquire the swap-chain frame and clone device/queue handles.
     //    Device and Queue are refcounted in wgpu 29 — clone is cheap
     //    and lets the rest of the function operate without holding a
@@ -450,7 +489,11 @@ pub fn render_frame(world: &mut World) {
             let vp_offset = (i as u32) * (SHADOW_VP_UNIFORM_STRIDE as u32);
             pass.set_bind_group(0, &shadow.vp_bind_group, &[vp_offset]);
 
-            for (di, (_, handle, _)) in draws.iter().enumerate() {
+            // Only opaque draws occlude. Decals are flush stickers and
+            // the frosted pane can't throw a partial shadow into a
+            // binary depth map, so AlphaBlend draws are skipped here.
+            for &di in &opaque_draws {
+                let (_, handle, _) = &draws[di];
                 let Some(mesh) = meshes.get(*handle) else {
                     continue;
                 };
@@ -561,10 +604,15 @@ pub fn render_frame(world: &mut World) {
         pass.set_bind_group(1, &pipeline.lights_bind_group, &[]);
         pass.set_bind_group(3, shadow_maps.bind_group(), &[]);
 
-        for (i, (_, handle, material)) in draws.iter().enumerate() {
+        // Per-draw record shared by both ranges. Bind groups 0/1/3 stay
+        // set across the opaque→transparent pipeline switch because the
+        // two pipelines share one layout; only group 2 (per-draw
+        // dynamic offset) and group 4 (per-material texture) rebind.
+        let draw_one = |pass: &mut wgpu::RenderPass, i: usize| {
+            let (_, handle, material) = &draws[i];
             let Some(mesh) = meshes.get(*handle) else {
                 warn!("render_frame: missing mesh for handle {handle:?}; skipping draw");
-                continue;
+                return;
             };
             let dyn_offset = (i as u32) * (MODEL_UNIFORM_STRIDE as u32);
             pass.set_bind_group(2, &pipeline.model_bind_group, &[dyn_offset]);
@@ -580,13 +628,30 @@ pub fn render_frame(world: &mut World) {
                     "render_frame: material bind group missing for {:?}; skipping draw",
                     texture_handle
                 );
-                continue;
+                return;
             };
             pass.set_bind_group(4, material_bg, &[]);
 
             pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(mesh.index_buffer.slice(..), IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        };
+
+        // Opaque range first — written into a fresh depth buffer.
+        for &i in &opaque_draws {
+            draw_one(&mut pass, i);
+        }
+
+        // Transparent range: switch to the alpha-blend pipeline (depth
+        // test on, depth write off, no cull) and draw. The over-operator
+        // is order-dependent, so 1.G.2 will sort this range back-to-
+        // front; 1.G.1 draws it in natural order (correct for a single
+        // transparent surface).
+        if !transparent_draws.is_empty() {
+            pass.set_pipeline(&pipeline.transparent_pipeline);
+            for &i in &transparent_draws {
+                draw_one(&mut pass, i);
+            }
         }
     }
 

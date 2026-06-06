@@ -1,7 +1,7 @@
 # Part 1 — Mood
 
 **Kind:** Tech buildout (renderer & atmosphere)
-**Status:** Phases 1.A–1.E complete (1.A–1.D on 2026-05-14, 1.E on 2026-05-19) — Phase 1.F not started
+**Status:** Phases 1.A–1.G completed
 **Depends on:** Game 0 (complete)
 
 ---
@@ -109,12 +109,12 @@ Replace G0's hardcoded cube/plane workflow with on-disk glTF meshes and textures
 Alpha-blended materials for wall art decals and frosted glass. Textured-quad decals (not projected) — depth-biased to avoid z-fighting against the wall they sit on.
 
 **Steps:**
-- [ ] **1.G.1** `Material.blend` honored: `Opaque` (default) renders in the opaque pass; `AlphaBlend` is collected into a transparent pass.
-- [ ] **1.G.2** Transparent pass: rendered after opaque, sorted back-to-front by camera distance.
-- [ ] **1.G.3** Depth-bias control on `Material` (`f32` polygon offset) so decal quads sit cleanly on host surfaces.
-- [ ] **1.G.4** First decal asset: one scratched-stick-figure wall drawing (texture with alpha) on a quad mesh. Authored in Blender / Krita.
-- [ ] **1.G.5** Glass material: an alpha-blended iron-frame-around-frosted-pane composite. Frost is a simple tint + high-Fresnel specular — not real refraction.
-- [ ] **1.G.6** Smoke test: place a wall-art decal on the playground's iron wall (visibly flush); install the eye-window with its frosted-glass material; place a placeholder eye geometry behind it that's dimly visible.
+- [x] **1.G.1** `Material.blend` honored: `Opaque` (default) renders in the opaque pass; `AlphaBlend` is collected into a transparent pass.
+- [x] **1.G.2** Transparent pass: rendered after opaque, sorted back-to-front by camera distance.
+- [x] **1.G.3** Depth-bias control on `Material` (`f32` polygon offset) so decal quads sit cleanly on host surfaces.
+- [x] **1.G.4** First decal asset: one scratched-stick-figure wall drawing (texture with alpha) on a quad mesh. Authored in Blender / Krita.
+- [x] **1.G.5** Glass material: an alpha-blended iron-frame-around-frosted-pane composite. Frost is a simple tint + high-Fresnel specular — not real refraction.
+- [x] **1.G.6** Smoke test: place a wall-art decal on the playground's iron wall (visibly flush); install the eye-window with its frosted-glass material; place a placeholder eye geometry behind it that's dimly visible.
 
 ### Phase 1.H — The playground
 

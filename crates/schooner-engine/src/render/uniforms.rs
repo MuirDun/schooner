@@ -262,14 +262,17 @@ impl LightsUniformData {
 /// - `model` — 64 B (4 × vec4)
 /// - `albedo_roughness` — 16 B (`xyz` = albedo, `w` = roughness)
 /// - `emissive` — 16 B (`xyz` = emissive color, `w` = intensity)
+/// - `params` — 16 B (`x` = opacity; `y` = depth bias in world metres;
+///   `z` = Fresnel rim strength; `w` reserved)
 ///
-/// Total 96 B, well under the 256-byte dynamic-offset stride.
+/// Total 112 B, well under the 256-byte dynamic-offset stride.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct ModelUniformData {
     pub model: [[f32; 4]; 4],
     pub albedo_roughness: [f32; 4],
     pub emissive: [f32; 4],
+    pub params: [f32; 4],
 }
 
 impl ModelUniformData {
@@ -288,6 +291,7 @@ impl ModelUniformData {
                 material.emissive.z,
                 material.emissive_intensity,
             ],
+            params: [material.opacity, material.depth_bias, material.fresnel, 0.0],
         }
     }
 }

@@ -46,6 +46,32 @@ pub struct Material {
     pub emissive: Vec3,
     pub emissive_intensity: f32,
     pub blend: BlendMode,
+    /// Surface coverage in `[0, 1]`, multiplied into the texture's
+    /// alpha channel to give the final fragment alpha. `1.0` is fully
+    /// opaque. Only meaningful under `BlendMode::AlphaBlend` — the
+    /// opaque pipeline uses REPLACE blend and ignores alpha — so an
+    /// `Opaque` material with `opacity < 1` still renders solid. Lets
+    /// a flat-tinted surface (no authored alpha texture) fade uniformly:
+    /// glass panes and decal fades drive this.
+    pub opacity: f32,
+    /// World-space depth bias in metres: the vertex shader nudges this
+    /// surface toward the camera *along the view ray* by this amount
+    /// before the depth test, so screen position is unchanged but depth
+    /// shrinks. `0.0` (default) is no bias. Used by decal quads that sit
+    /// coplanar with a host surface — a few millimetres lets the decal
+    /// win `depth_compare: Less` against the wall it's painted on,
+    /// killing the coplanar z-fighting without the decal visibly
+    /// floating off the surface.
+    pub depth_bias: f32,
+    /// Schlick-Fresnel rim strength in `[0, 1]`. `0.0` (default) is a
+    /// matte dielectric — no rim reflection, the look of every opaque
+    /// surface and flat decal. Above zero, the shader lifts both the
+    /// specular highlight and the fragment alpha toward 1 at grazing
+    /// view angles via Schlick's `(1 − n·v)^5`, so the surface reads as
+    /// glass: clear face-on, reflective and opaque along its silhouette.
+    /// This is the only knob that turns a translucent pane into frosted
+    /// glass; pair it with a low `opacity` and low `roughness`.
+    pub fresnel: f32,
     pub albedo_texture: Option<TextureHandle>,
 }
 
@@ -65,6 +91,9 @@ impl Material {
         emissive: Vec3::ZERO,
         emissive_intensity: 0.0,
         blend: BlendMode::Opaque,
+        opacity: 1.0,
+        depth_bias: 0.0,
+        fresnel: 0.0,
         albedo_texture: None,
     };
 }
@@ -100,6 +129,9 @@ mod tests {
         assert_eq!(m.emissive, Vec3::ZERO);
         assert_eq!(m.emissive_intensity, 0.0);
         assert_eq!(m.blend, BlendMode::Opaque);
+        assert_eq!(m.opacity, 1.0);
+        assert_eq!(m.depth_bias, 0.0);
+        assert_eq!(m.fresnel, 0.0);
         assert_eq!(m.albedo_texture, None);
     }
 

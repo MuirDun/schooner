@@ -4,9 +4,10 @@ use glam::{Quat, Vec3};
 use schooner_engine::ecs::{Query, Res, WriteOnly, exclusive};
 use schooner_engine::logging::{self, LogConfig};
 use schooner_engine::{
-    ActiveCamera, App, Camera, DirectionalLight, FpsController, Material, MeshHandle, MeshRegistry,
-    PointLight, PostOverlay, RenderContext, Shadowcaster, SpotLight, Stage, TextureRegistry, Time,
-    Transform, WindowConfig, World, fps_cursor_toggle, fps_look, fps_move,
+    ActiveCamera, App, BlendMode, Camera, DirectionalLight, FpsController, Material, MeshHandle,
+    MeshRegistry, PointLight, PostOverlay, RenderContext, Shadowcaster, SpotLight, Stage,
+    TextureHandle, TextureRegistry, Time, Transform, WindowConfig, World, fps_cursor_toggle,
+    fps_look, fps_move,
 };
 
 // Asset paths, compile-time absolute via `CARGO_MANIFEST_DIR` so the
@@ -18,6 +19,8 @@ const WALL_MESH_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/wall.g
 const CUBE_MESH_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/cube.glb");
 const MONKEY_MESH_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/monkey.glb");
 const TORUS_MESH_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/torus.glb");
+const BABAH_DECAL_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Babah.png");
+const MIAINA_DECAL_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/MiaIna.png");
 
 fn main() -> anyhow::Result<()> {
     logging::init(LogConfig::default())?;
@@ -137,7 +140,11 @@ fn orbit_spot(time: Res<Time>, spots: Query<(WriteOnly<Transform>, &OrbitingSpot
 /// that slice of the scene is skipped, so a single bad path doesn't
 /// blank the whole room.
 fn load_assets(world: &mut World) {
-    if world.resource::<AssetsLoaded>().map(|s| s.done).unwrap_or(true) {
+    if world
+        .resource::<AssetsLoaded>()
+        .map(|s| s.done)
+        .unwrap_or(true)
+    {
         return;
     }
 
@@ -176,8 +183,8 @@ fn load_assets(world: &mut World) {
     };
 
     // Textures — rusty for the cubes' albedo, eye-pressure for the
-    // post-overlay slot.
-    let (rusty, eye) = {
+    // post-overlay slot, Babah/MiaIna are the alpha-cut decal art.
+    let (rusty, eye, babah, miaina) = {
         let Some(reg) = world.resource_mut::<TextureRegistry>() else {
             return;
         };
@@ -188,7 +195,12 @@ fn load_assets(world: &mut World) {
                 None
             }
         };
-        (load(RUSTY_TEXTURE_PATH), load(EYE_PRESSURE_PATH))
+        (
+            load(RUSTY_TEXTURE_PATH),
+            load(EYE_PRESSURE_PATH),
+            load(BABAH_DECAL_PATH),
+            load(MIAINA_DECAL_PATH),
+        )
     };
 
     // Hand eye-pressure to the overlay slot. It stays off (intensity 0)
@@ -215,21 +227,15 @@ fn load_assets(world: &mut World) {
 
     // Five rusty cubes scattered across the floor.
     if let Some(cube) = cube {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E3779B97F4A7C15);
-        let mut rng = Rng::new(seed);
-        for _ in 0..5 {
+        // let seed = SystemTime::now()
+        //     .duration_since(UNIX_EPOCH)
+        //     .map(|d| d.as_nanos() as u64)
+        //     .unwrap_or(0x9E3779B97F4A7C15);
+        // let mut rng = Rng::new(seed);
+
+        let spawn = |world: &mut World, x: f32, z: f32| {
             let e = world.spawn();
-            world.insert(
-                e,
-                Transform::from_translation(Vec3::new(
-                    rng.range(-7.0, 7.0),
-                    1.0,
-                    rng.range(-7.0, 7.0),
-                )),
-            );
+            world.insert(e, Transform::from_translation(Vec3::new(x, 1.0, z)));
             world.insert(e, cube);
             world.insert(
                 e,
@@ -238,7 +244,12 @@ fn load_assets(world: &mut World) {
                     ..Material::DEFAULT
                 },
             );
-        }
+        };
+        spawn(world, 7.5, -5.0);
+        spawn(world, 7.5, 5.0);
+
+        spawn(world, -7.5, -5.0);
+        spawn(world, -7.5, 5.0);
     }
 
     // Monkey at the centre, torus resting below it.
@@ -252,6 +263,67 @@ fn load_assets(world: &mut World) {
         world.insert(e, Transform::from_translation(Vec3::new(0.0, 0.5, 0.0)));
         world.insert(e, torus);
     }
+
+    // Decal-on-wall demo (1.G.4) — each call spawns a small opaque host
+    // slab with an alpha-cut decal stuck flush on its camera-facing
+    // face. This exercises the authored asset through the whole
+    // transparent path at once: the PNG loads, its alpha channel cuts
+    // the drawing out of its background (so the slab shows through
+    // around the figure), the back-to-front sort places it over the
+    // slab, and depth_bias lifts the coplanar decal off the slab so it
+    // doesn't z-fight. The flush-on-real-iron-wall version is 1.G.6.
+    // Removed when the playground (1.H) replaces this scene.
+    let decal_wall = |world: &mut World, x: f32, decal: Option<TextureHandle>| {
+        // Host slab: opaque grey iron, ~0.2 m thick, front face at
+        // z = 0.1.
+        let slab = world.spawn();
+        world.insert(
+            slab,
+            Transform {
+                translation: Vec3::new(x, 1.6, 0.0),
+                rotation: Quat::IDENTITY,
+                scale: Vec3::new(3.0, 3.0, 0.2),
+            },
+        );
+        world.insert(slab, MeshHandle::CUBE);
+        world.insert(
+            slab,
+            Material {
+                albedo: Vec3::splat(0.35),
+                ..Material::DEFAULT
+            },
+        );
+
+        // Decal: the unit plane rotated upright (normal → +Z) so it
+        // faces the camera, placed coplanar with the slab's front face.
+        // White albedo lets the texture show its true colors; opacity 1
+        // so the figure is solid where the PNG alpha is 1 and gone where
+        // it's 0. depth_bias nudges it just in front of the slab.
+        let Some(decal) = decal else {
+            return;
+        };
+        let e = world.spawn();
+        world.insert(
+            e,
+            Transform {
+                translation: Vec3::new(x, 1.6, 0.1),
+                rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+                scale: Vec3::splat(2.5),
+            },
+        );
+        world.insert(e, MeshHandle::PLANE);
+        world.insert(
+            e,
+            Material {
+                blend: BlendMode::AlphaBlend,
+                depth_bias: 0.02,
+                albedo_texture: Some(decal),
+                ..Material::DEFAULT
+            },
+        );
+    };
+    decal_wall(world, -3.5, babah);
+    decal_wall(world, 3.5, miaina);
 
     if let Some(state) = world.resource_mut::<AssetsLoaded>() {
         state.done = true;
@@ -325,6 +397,81 @@ fn spawn_scene(world: &mut World) {
         red_lamp,
         PointLight::new(Vec3::new(1.0, 0.1, 0.05), 5.0, 4.0),
     );
+
+    // Transparency-ordering demo (1.G.2) — two overlapping translucent
+    // panes (thin cubes) at different depths. The GREEN pane is nearer
+    // the camera (z = 4.5); the RED pane is farther (z = 2.5). They
+    // overlap in a central vertical band.
+    //
+    // They are spawned NEAR-FIRST on purpose. The unsorted transparent
+    // range draws in iteration (≈ spawn) order — near then far — so the
+    // far red pane blends *on top of* the near green pane in the overlap
+    // (depth-write is off, so nothing reorders them by distance). The
+    // overlap therefore reads RED-dominant, which is wrong: green is the
+    // nearer surface and should be in front. 1.G.2's back-to-front sort
+    // flips the draw order to far-then-near and the overlap turns
+    // GREEN-dominant — correct. Removed when the playground (1.H)
+    // replaces this scene.
+    let pane = |world: &mut World, x: f32, z: f32, albedo: Vec3| {
+        let e = world.spawn();
+        world.insert(
+            e,
+            Transform {
+                translation: Vec3::new(x, 1.6, z),
+                rotation: Quat::IDENTITY,
+                scale: Vec3::new(2.0, 2.0, 0.05),
+            },
+        );
+        world.insert(e, MeshHandle::CUBE);
+        world.insert(
+            e,
+            Material {
+                albedo,
+                opacity: 0.5,
+                blend: BlendMode::AlphaBlend,
+                ..Material::DEFAULT
+            },
+        );
+    };
+    // Near pane (green) spawned first, far pane (red) second — the
+    // wrong order for the over-operator until 1.G.2 sorts it.
+    pane(world, -0.4, 4.5, Vec3::new(0.2, 1.0, 0.3));
+    pane(world, 0.4, 2.5, Vec3::new(1.0, 0.2, 0.2));
+
+    // Frosted-glass demo (1.G.5) — two upright panes, identical except
+    // for Fresnel. The LEFT pane has fresnel = 0: a flat tinted sheet
+    // that reads like coloured fog, with no sense of a surface. The
+    // RIGHT pane has fresnel = 1: Schlick rim reflection lifts its
+    // specular and alpha at grazing angles, so it catches the orbiting
+    // spot as a moving glint and turns reflective along its silhouette —
+    // it reads as glass. Both are low-opacity (clear face-on) with low
+    // roughness (a tight highlight), so the geometry behind shows
+    // through. Removed when the playground (1.H) replaces this scene.
+    let glass = |world: &mut World, x: f32, fresnel: f32| {
+        let e = world.spawn();
+        world.insert(
+            e,
+            Transform {
+                translation: Vec3::new(x, 1.6, 1.0),
+                rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+                scale: Vec3::splat(1.8),
+            },
+        );
+        world.insert(e, MeshHandle::PLANE);
+        world.insert(
+            e,
+            Material {
+                albedo: Vec3::new(0.6, 0.7, 0.8),
+                roughness: 0.1,
+                opacity: 0.25,
+                blend: BlendMode::AlphaBlend,
+                fresnel,
+                ..Material::DEFAULT
+            },
+        );
+    };
+    glass(world, -1.2, 0.0); // matte sheet
+    glass(world, 1.2, 1.0); // glass
 
     // Player camera: standard FPS eye height (1.7 m), 8 m back from the
     // centre, facing -Z. FpsController starts at the same yaw/pitch so

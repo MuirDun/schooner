@@ -81,6 +81,10 @@ struct ModelUniform {
     albedo_roughness: vec4<f32>,
     // .xyz = emissive color (linear), .w = emissive intensity.
     emissive: vec4<f32>,
+    // .x = opacity ∈ [0, 1] (multiplied into texture alpha), .y =
+    // depth bias in world metres (view-ray nudge toward camera), .z =
+    // Fresnel rim strength (0 = matte dielectric), .w reserved.
+    params: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -113,7 +117,23 @@ struct VertexOutput {
 fn vs_main(in: VertexInput) -> VertexOutput {
     let world_pos4 = model.model * vec4<f32>(in.position, 1.0);
     var out: VertexOutput;
-    out.clip_position = camera.view_proj * world_pos4;
+
+    // Depth bias: shift the vertex toward the camera *along the view
+    // ray* by `params.y` world metres before projection. Because the
+    // shift is along the camera→vertex ray, the vertex stays on the
+    // same ray and therefore projects to the same screen pixel — only
+    // its depth shrinks, so a coplanar decal wins `depth_compare: Less`
+    // against its host surface without visibly lifting off it. Bias = 0
+    // (every opaque surface) leaves the position untouched. The guard
+    // avoids a normalize-of-zero when a vertex sits exactly at the eye.
+    let to_cam = camera.position.xyz - world_pos4.xyz;
+    let to_cam_dir = to_cam / max(length(to_cam), 1e-6);
+    let biased = world_pos4.xyz + to_cam_dir * model.params.y;
+    out.clip_position = camera.view_proj * vec4<f32>(biased, 1.0);
+
+    // Shading reads the *unbiased* world position — the bias is a
+    // depth-test trick, not a real geometric move, so lighting, shadows,
+    // and fog must see where the surface actually is.
     out.world_position = world_pos4.xyz;
     // Game 0 only uses uniform scale on built-ins, so the upper
     // 3x3 of the model matrix is a valid normal transform. When
@@ -406,9 +426,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // an authored texture bind the WHITE 1×1 built-in, making the
     // multiply a no-op so the shader's textured and untextured
     // paths stay uniform.
-    let tex_sample = textureSample(albedo_texture, albedo_sampler, in.uv).rgb;
-    let albedo = model.albedo_roughness.xyz * tex_sample;
+    let tex_sample = textureSample(albedo_texture, albedo_sampler, in.uv);
+    let albedo = model.albedo_roughness.xyz * tex_sample.rgb;
     let roughness = model.albedo_roughness.w;
+    // Output alpha comes straight from the texture's alpha channel
+    // (linear even on an sRGB texture — sRGB encodes only RGB). The
+    // opaque pipeline uses REPLACE blend, which writes this alpha but
+    // never blends on it, so the opaque path is unchanged; the
+    // transparent pipeline's over-operator reads it as coverage. A
+    // material with no authored texture binds the WHITE 1×1 built-in
+    // (alpha = 1), so untextured surfaces stay fully opaque.
 
     // Map roughness ∈ [0, 1] to Blinn–Phong shininess. Calibrated
     // so roughness = 0.5 yields shininess ≈ 32 — matching the
@@ -416,7 +443,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // the same as the pre-Material baseline.
     let shininess = pow(2.0, mix(0.0, 10.0, 1.0 - roughness));
 
-    let specular_strength = 0.3;
+    // Fresnel (Schlick 1994, "An Inexpensive BRDF Model"): a smooth
+    // dielectric reflects little head-on and approaches a mirror at
+    // grazing angles. `params.z` gates it — 0 leaves every opaque
+    // surface and flat decal matte (no behaviour change). `abs(dot)`
+    // rather than a clamped dot so a double-sided pane (the transparent
+    // pipeline disables back-face cull) reads the same Fresnel from
+    // either side instead of forcing its back face fully reflective.
+    let n_dot_v = abs(dot(n, v));
+    let fresnel = pow(1.0 - n_dot_v, 5.0) * model.params.z;
+
+    // Glass is smooth and mirror-bright at the silhouette — lift the
+    // specular toward 1 by the Fresnel factor so lights glint hardest
+    // at the pane's edges. fresnel = 0 keeps the matte 0.3 baseline.
+    let specular_strength = mix(0.3, 1.0, fresnel);
 
     var lit = vec3<f32>(0.0);
     // God-ray (analytic in-scattering through spot cones, 1.E.2)
@@ -618,5 +658,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let transmittance = exp(-optical_depth);
     let final_color = mix(lights.fog_color_density.xyz, scene, transmittance) + god_ray_sum;
 
-    return vec4<f32>(final_color, 1.0);
+    // Final alpha = texture coverage × material opacity, then lifted
+    // toward 1 by Fresnel so edge-on glass turns reflective/opaque while
+    // staying clear face-on. fresnel = 0 leaves it untouched, so the
+    // opaque pipeline's REPLACE blend and every flat decal are
+    // unaffected; the transparent pipeline's over-operator reads the
+    // result as the blend weight.
+    let alpha = mix(tex_sample.a * model.params.x, 1.0, fresnel);
+    return vec4<f32>(final_color, alpha);
 }

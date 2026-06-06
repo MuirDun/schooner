@@ -56,6 +56,17 @@ const MODEL_UNIFORM_SIZE: u64 = std::mem::size_of::<ModelUniformData>() as u64;
 pub struct ForwardPipeline {
     pub pipeline: RenderPipeline,
 
+    /// Alpha-blended variant of `pipeline` for the transparent draw
+    /// range (1.G). Same shader, layout, and BGLs — only the fixed-
+    /// function state differs: `ALPHA_BLENDING` over-operator blend,
+    /// depth *test* on but depth *write* off (transparent surfaces
+    /// must not occlude each other by depth — the back-to-front sort
+    /// orders them, not the depth buffer), and no back-face cull so
+    /// thin decals/glass are visible from both sides. Bound mid-pass
+    /// after the opaque draws; bind groups 0/1/3 carry over because
+    /// the pipeline layout is shared.
+    pub transparent_pipeline: RenderPipeline,
+
     pub camera_buffer: Buffer,
     pub camera_bind_group: BindGroup,
 
@@ -132,52 +143,75 @@ impl ForwardPipeline {
             source: ShaderSource::Wgsl(include_str!("../../shaders/forward.wgsl").into()),
         });
 
-        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("forward-pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Vertex::LAYOUT],
-            },
-            fragment: Some(FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(ColorTargetState {
-                    format: color_target_format,
-                    blend: Some(BlendState::REPLACE),
-                    write_mask: ColorWrites::ALL,
-                })],
-            }),
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(DepthStencilState {
-                format: DEPTH_FORMAT,
-                // wgpu 29 lifted these to Option to mirror the
-                // WebGPU spec's "None means depth not written /
-                // not tested." For an opaque forward pass we want
-                // both on.
-                depth_write_enabled: Some(true),
-                depth_compare: Some(CompareFunction::Less),
-                stencil: StencilState::default(),
-                bias: DepthBiasState::default(),
-            }),
-            multisample: MultisampleState::default(),
-            // Replaces the old `multiview` field. `None` means
-            // single-view (no array-layer broadcast); the mask is
-            // only used when rendering into multiple layers at once.
-            multiview_mask: None,
-            cache: None,
-        });
+        // Both pipelines share the shader, layout, vertex layout, and
+        // color target format; they differ only in blend mode, depth-
+        // write, and cull. A small builder keeps the two in lockstep so
+        // a future vertex-layout or shader change touches one place.
+        let make_pipeline =
+            |label: &str, blend: BlendState, depth_write: bool, cull_mode: Option<Face>| {
+                device.create_render_pipeline(&RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&pipeline_layout),
+                    vertex: VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[Vertex::LAYOUT],
+                    },
+                    fragment: Some(FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(ColorTargetState {
+                            format: color_target_format,
+                            blend: Some(blend),
+                            write_mask: ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: PrimitiveState {
+                        topology: PrimitiveTopology::TriangleList,
+                        strip_index_format: None,
+                        front_face: FrontFace::Ccw,
+                        cull_mode,
+                        unclipped_depth: false,
+                        polygon_mode: PolygonMode::Fill,
+                        conservative: false,
+                    },
+                    depth_stencil: Some(DepthStencilState {
+                        format: DEPTH_FORMAT,
+                        // wgpu 29 lifted these to Option to mirror the
+                        // WebGPU spec's "None means depth not written /
+                        // not tested." Opaque writes depth; transparent
+                        // tests but does not write (depth_write = false).
+                        depth_write_enabled: Some(depth_write),
+                        depth_compare: Some(CompareFunction::Less),
+                        stencil: StencilState::default(),
+                        bias: DepthBiasState::default(),
+                    }),
+                    multisample: MultisampleState::default(),
+                    // Replaces the old `multiview` field. `None` means
+                    // single-view (no array-layer broadcast); the mask is
+                    // only used when rendering into multiple layers at once.
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+
+        // Opaque: REPLACE blend, depth write on, back-face cull.
+        let pipeline = make_pipeline(
+            "forward-pipeline",
+            BlendState::REPLACE,
+            true,
+            Some(Face::Back),
+        );
+        // Transparent: over-operator alpha blend, depth write off, no
+        // cull. See the `transparent_pipeline` field doc for the why.
+        let transparent_pipeline = make_pipeline(
+            "forward-transparent-pipeline",
+            BlendState::ALPHA_BLENDING,
+            false,
+            None,
+        );
 
         let camera_buffer = create_uniform_buffer(
             device,
@@ -282,6 +316,7 @@ impl ForwardPipeline {
 
         Self {
             pipeline,
+            transparent_pipeline,
             camera_buffer,
             camera_bind_group,
             lights_buffer,
