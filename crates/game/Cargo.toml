@@ -11,3 +11,8 @@ schooner-engine.workspace = true
 anyhow.workspace = true
 log.workspace = true
 glam.workspace = true
+subsecond = { version = "0.7.9", optional = true }
+dioxus-devtools = { version = "0.7.9", optional = true }
+
+[features]
+hot = ["dep:subsecond", "dep:dioxus-devtools"]

@@ -60,7 +60,13 @@ pub fn run_transition(world: &mut World) {
     // reposition_player(world, entry_point());
 }
 
-pub fn build(world: &mut World, id: SceneId) {
+fn build(world: &mut World, id: SceneId) {
+    #[cfg(feature = "hot")]
+    subsecond::call(|| build_inner(world, id));
+    #[cfg(not(feature = "hot"))]
+    build_inner(world, id);
+}
+fn build_inner(world: &mut World, id: SceneId) {
     match id {
         SceneId::Playground => playground::build(world),
     }

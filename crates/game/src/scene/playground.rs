@@ -102,7 +102,7 @@ pub fn build(world: &mut World) {
     world.insert(
         sun,
         DirectionalLight {
-            intensity: 0.8,
+            intensity: 0.2,
             ..DirectionalLight::default()
         },
     );
