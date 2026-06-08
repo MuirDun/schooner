@@ -374,6 +374,12 @@ impl ApplicationHandler for App {
         self.schedule
             .add_system(&mut self.world, Stage::Update, f5_reload_system);
 
+        // Drain the Startup stage exactly once, now that the device,
+        // registries and pipelines exist. Scene builders and asset
+        // loads registered for Stage::Startup run here — at the one
+        // correct moment, before the first frame, with no latch.
+        self.schedule.run_startup(&mut self.world);
+
         self.window = Some(window);
     }
 

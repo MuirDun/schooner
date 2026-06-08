@@ -76,9 +76,9 @@ use crate::transform::Transform;
 /// rather than pure black so a scene with no draws is visibly
 /// "rendering nothing" instead of "renderer crashed."
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 0.05,
-    g: 0.06,
-    b: 0.08,
+    r: 0.02,
+    g: 0.02,
+    b: 0.02,
     a: 1.0,
 };
 

@@ -46,6 +46,7 @@ use crate::ecs::world::World;
 /// enum keeps stage-handling code honest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stage {
+    Startup,
     FixedUpdate,
     Update,
     Render,
@@ -88,6 +89,7 @@ pub struct Schedule {
     fixed_update: SystemStage,
     update: SystemStage,
     render: SystemStage,
+    startup: SystemStage,
 }
 
 impl Default for Schedule {
@@ -102,6 +104,7 @@ impl Schedule {
             fixed_update: SystemStage::new(),
             update: SystemStage::new(),
             render: SystemStage::new(),
+            startup: SystemStage::new(),
         }
     }
 
@@ -133,6 +136,7 @@ impl Schedule {
             Stage::FixedUpdate => self.fixed_update.push(boxed),
             Stage::Update => self.update.push(boxed),
             Stage::Render => self.render.push(boxed),
+            Stage::Startup => self.startup.push(boxed),
         }
         self
     }
@@ -164,11 +168,20 @@ impl Schedule {
         self.render.run(world);
     }
 
+    /// Advance `world.current_tick` once.
+    /// Called exactly once, from App:resumed.
+    pub fn run_startup(&mut self, world: &mut World) {
+        puffin::profile_scope!("startup_stage");
+        world.increment_tick();
+        self.startup.run(world);
+    }
+
     pub fn system_count(&self, stage: Stage) -> usize {
         match stage {
             Stage::FixedUpdate => self.fixed_update.len(),
             Stage::Update => self.update.len(),
             Stage::Render => self.render.len(),
+            Stage::Startup => self.startup.len(),
         }
     }
 }
@@ -443,6 +456,7 @@ mod tests {
                 Stage::FixedUpdate => "fixed",
                 Stage::Update => "update",
                 Stage::Render => "render",
+                Stage::Startup => "startup",
             }
         }
         assert_eq!(_exhaustive(Stage::FixedUpdate), "fixed");
