@@ -14,7 +14,7 @@ pub mod transform;
 pub mod window;
 
 pub use app::{App, AppError};
-pub use asset::{AssetError, AssetResult, load_gltf_mesh, load_png_pixels};
+pub use asset::{AssetError, AssetResult, GltfModel, load_gltf_mesh, load_gltf_model, load_png_pixels};
 pub use camera::{
     ActiveCamera, Camera, FpsController, Projection, fps_cursor_toggle, fps_look, fps_move,
 };
@@ -30,10 +30,10 @@ pub use input::{Input, KeyCode, MouseButton};
 pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
 pub use render::{
-    ColorGrade, DebugOverlay, DirectionalLight, Fog, ForwardPipeline, MeshHandle, MeshRegistry,
-    OverlayBlend, PointLight, PostOverlay, ReloadReport, RenderContext, ShadowMaps, ShadowPipeline,
-    Shadowcaster, SpotLight, TextureData, TextureGpu, TextureHandle, TextureRegistry, Vignette,
-    render_frame,
+    ColorGrade, DebugOverlay, DirectionalLight, Fog, ForwardPipeline, MeshData, MeshHandle,
+    MeshRegistry, OverlayBlend, PointLight, PostOverlay, ReloadReport, RenderContext, ShadowMaps,
+    ShadowPipeline, Shadowcaster, SpotLight, TextureData, TextureGpu, TextureHandle,
+    TextureRegistry, Vignette, render_frame,
 };
 pub use time::{DEFAULT_FIXED_HZ, MAX_FIXED_STEPS_PER_FRAME, Time};
 pub use transform::Transform;

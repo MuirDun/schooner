@@ -121,8 +121,8 @@ Alpha-blended materials for wall art decals and frosted glass. Textured-quad dec
 A single sealed indoor space using everything Parts 1.A–1.G produced. This is the artifact every subsequent Part returns to.
 
 **Steps:**
-- [ ] **1.H.1** New binary target: `crates/game/src/bin/playground.rs`. Default `main.rs` becomes the game stub (will be Kinesis proper later). Playground launched via `cargo run -p game --bin playground`.
-- [ ] **1.H.2** Playground room: a ~6×6×4m sealed iron chamber, one wall with a frosted-glass window, one doorway opening into a short service corridor lit by a red point light.
+- [x] **1.H.1** New binary target: `crates/game/src/bin/playground.rs`. Default `main.rs` becomes the game stub (will be Kinesis proper later). Playground launched via `cargo run -p game --bin playground`.
+- [x] **1.H.2** Playground room: a ~6×6×4m sealed iron chamber, one wall with a frosted-glass window, one doorway opening into a short service corridor lit by a red point light.
 - [ ] **1.H.3** Lighting setup: one directional fill (very dim), one shadow-casting white spot from above the chamber, one red point in the service corridor, one dim spot inside the cavity behind the window.
 - [ ] **1.H.4** Materials: chamber walls use the rusted-iron material; the wall flagged for state-cycling carries all three variants accessible via debug keys (1 = polished, 2 = default, 3 = pitted).
 - [ ] **1.H.5** Dressing: a handful of static sulfur-block meshes (no physics yet — purely visual), a placeholder gel-brick with emissive material, the eye placeholder behind the glass.

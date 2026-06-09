@@ -16,6 +16,7 @@ repository = "https://github.com/MuirDun/schooner"
 wgpu = "29"
 winit = "0.30"
 glam = "0.32"
+bitflags = "2.13.0"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 log = "0.4"

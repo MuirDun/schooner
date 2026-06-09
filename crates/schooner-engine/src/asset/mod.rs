@@ -11,7 +11,7 @@ use std::path::PathBuf;
 pub mod mesh;
 pub mod texture;
 
-pub use mesh::load_gltf_mesh;
+pub use mesh::{GltfModel, load_gltf_mesh, load_gltf_model};
 pub use texture::load_png_pixels;
 
 /// All named failure modes the asset module surfaces.
@@ -68,6 +68,15 @@ pub enum AssetError {
         path: PathBuf,
         #[source]
         source: image::ImageError,
+    },
+
+    /// A glTF-embedded image decoded to a pixel format the upload path
+    /// can't take (the 16-bit-per-channel variants). Not a parse failure
+    /// — a wrong export. RGBA8 / RGB8 / grayscale are the supported set.
+    #[error("glTF image in {path} has unsupported pixel format {format:?}")]
+    UnsupportedImageFormat {
+        path: PathBuf,
+        format: gltf::image::Format,
     },
 }
 

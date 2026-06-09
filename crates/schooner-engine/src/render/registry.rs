@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use wgpu::{Device, Queue};
 
 use crate::asset::{self, AssetResult};
-use crate::render::mesh::{MeshGpu, MeshHandle, cube_mesh, plane_mesh};
+use crate::render::mesh::{MeshData, MeshGpu, MeshHandle, cube_mesh, plane_mesh};
 use crate::render::texture::{TextureData, TextureGpu, TextureHandle};
 
 /// Outcome of one manual-reload pass over a registry's disk-sourced
@@ -154,6 +154,17 @@ impl MeshRegistry {
             },
         );
         handle
+    }
+
+    /// Upload already-parsed CPU mesh data under a fresh handle. Unlike
+    /// [`MeshRegistry::load_gltf`] this records no source path, so the F5
+    /// reload walk skips it — used for meshes that came bundled inside a
+    /// glb via `load_gltf_model`, where the source is the glb (not a
+    /// standalone mesh file) and hot-reload of bundled assets is deferred
+    /// to the Game 2A asset pipeline.
+    pub fn insert_mesh_data(&mut self, device: &Device, label: &str, data: &MeshData) -> MeshHandle {
+        let gpu = MeshGpu::upload(device, label, data);
+        self.insert_new(gpu)
     }
 
     /// Parse a glTF mesh from disk, upload it, and register under a
@@ -323,6 +334,30 @@ impl TextureRegistry {
             },
         );
         Ok(handle)
+    }
+
+    /// Upload already-decoded RGBA8 texture data under a fresh handle.
+    /// The texture-side twin of [`MeshRegistry::insert_mesh_data`]:
+    /// records no source path (F5 reload skips it), used for base-color
+    /// images pulled out of a glb by `load_gltf_model`. Hot-reload of
+    /// glb-bundled textures is deferred to the Game 2A asset pipeline.
+    pub fn insert_texture_data(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        label: &str,
+        data: &TextureData,
+    ) -> TextureHandle {
+        let gpu = TextureGpu::upload_rgba8(device, queue, label, data);
+        let handle = self.allocate_handle();
+        self.textures.insert(
+            handle,
+            TextureEntry {
+                gpu,
+                source: None,
+            },
+        );
+        handle
     }
 
     /// Re-read every disk-sourced texture from its tracked path and

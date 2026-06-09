@@ -11,6 +11,7 @@ schooner-engine.workspace = true
 anyhow.workspace = true
 log.workspace = true
 glam.workspace = true
+bitflags.workspace = true
 subsecond = { version = "0.7.9", optional = true }
 dioxus-devtools = { version = "0.7.9", optional = true }
 

@@ -1,4 +1,7 @@
-use schooner_engine::{RenderContext, TextureHandle, TextureRegistry, World};
+use schooner_engine::{
+    MeshHandle, MeshRegistry, RenderContext, TextureHandle, TextureRegistry, World,
+    load_gltf_model,
+};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -6,14 +9,32 @@ pub enum TextureAsset {
     Glass,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum MeshAsset {
+    Eye,
+}
+
+/// A glb loaded as one drawable: its mesh plus the base-color texture
+/// that shipped inside the file (`None` if the glb embeds none, in which
+/// case the spawn site leaves `Material::albedo_texture` at WHITE). The
+/// texture rides along with the mesh so scenes don't list it as a
+/// separate `TextureAsset` or hand-stitch it onto the material.
+#[derive(Clone, Copy)]
+pub struct ModelHandle {
+    pub mesh: MeshHandle,
+    pub albedo_texture: Option<TextureHandle>,
+}
+
 #[derive(Clone, Copy)]
 pub struct SceneAssets {
     pub texture: &'static [TextureAsset],
+    pub mesh: &'static [MeshAsset],
 }
 
 #[derive(Default)]
 pub struct Assets {
     textures: HashMap<TextureAsset, TextureHandle>,
+    models: HashMap<MeshAsset, ModelHandle>,
 }
 
 impl Assets {
@@ -23,14 +44,22 @@ impl Assets {
             .get(&k)
             .unwrap_or_else(|| panic!("texture {k:?} not resident - missing from manifest"))
     }
+    pub fn model(&self, k: MeshAsset) -> ModelHandle {
+        *self
+            .models
+            .get(&k)
+            .unwrap_or_else(|| panic!("model {k:?} not resident - missing from manifest"))
+    }
 }
 
 fn texture_path(k: TextureAsset) -> &'static str {
     match k {
-        TextureAsset::Glass => concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/assets/steel-window2.png"
-        ),
+        TextureAsset::Glass => concat!(env!("CARGO_MANIFEST_DIR"), "/assets/steel-window2.png"),
+    }
+}
+fn mesh_path(k: MeshAsset) -> &'static str {
+    match k {
+        MeshAsset::Eye => concat!(env!("CARGO_MANIFEST_DIR"), "/assets/mahli-eye.glb"),
     }
 }
 
@@ -66,6 +95,56 @@ pub fn ensure(world: &mut World, need: SceneAssets) {
         let a = world.resource_mut::<Assets>().unwrap();
         for (k, h) in loaded {
             a.textures.insert(k, h);
+        }
+    }
+
+
+    let missing: Vec<MeshAsset> = {
+        let a = world.resource::<Assets>().unwrap();
+        need.mesh
+            .iter()
+            .copied()
+            .filter(|k| !a.models.contains_key(k))
+            .collect()
+    };
+
+    // Parse first (pure CPU, holds no registry borrow), then upload mesh
+    // and texture in separate `&mut` scopes — `World` lends only one
+    // resource mutably at a time, and the two registries are distinct
+    // types on purpose.
+    let parsed: Vec<(MeshAsset, schooner_engine::GltfModel)> = missing
+        .iter()
+        .filter_map(|&k| match load_gltf_model(std::path::Path::new(mesh_path(k))) {
+            Ok(model) => Some((k, model)),
+            Err(e) => {
+                log::warn!("model {k:?} failed: {e}");
+                None
+            }
+        })
+        .collect();
+
+    let loaded: Vec<(MeshAsset, ModelHandle)> = parsed
+        .into_iter()
+        .map(|(k, model)| {
+            let label = format!("model:{:?}", k);
+            let mesh = world
+                .resource_mut::<MeshRegistry>()
+                .unwrap()
+                .insert_mesh_data(&device, &label, &model.mesh);
+            let albedo_texture = model.albedo.map(|tex| {
+                world
+                    .resource_mut::<TextureRegistry>()
+                    .unwrap()
+                    .insert_texture_data(&device, &queue, &label, &tex)
+            });
+            (k, ModelHandle { mesh, albedo_texture })
+        })
+        .collect();
+
+    {
+        let a = world.resource_mut::<Assets>().unwrap();
+        for (k, h) in loaded {
+            a.models.insert(k, h);
         }
     }
 }
