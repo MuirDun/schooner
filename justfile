@@ -1,0 +1,37 @@
+# Schooner dev task runner. `just --list` to see recipes.
+# Dev-only for now — CI does not call these.
+
+# Default: show available recipes
+default:
+    @just --list
+
+# Dev build with hot reload (dioxus subsecond hotpatching)
+serve:
+    dx serve --hotpatch --features hot -p game --bin playground
+
+# Run the playground without hot reload
+play:
+    cargo run -p game --bin playground
+
+# Build the whole workspace
+build:
+    cargo build --workspace
+
+# Format all crates
+fmt:
+    cargo fmt --all
+
+# Lint, treating warnings as errors
+lint:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Run the test suite
+test:
+    cargo test --workspace
+
+# Pre-push gate: format, lint, test
+check: fmt lint test
+
+# Run the ECS benchmarks
+bench:
+    cargo bench -p bench-ecs
