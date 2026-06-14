@@ -19,6 +19,7 @@
 //! device.
 
 use bytemuck::{Pod, Zeroable};
+use glam::{Vec2, Vec3};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{Buffer, BufferUsages, Device, VertexAttribute, VertexBufferLayout, VertexStepMode};
 
@@ -31,22 +32,25 @@ use wgpu::{Buffer, BufferUsages, Device, VertexAttribute, VertexBufferLayout, Ve
 /// transpose for non-uniform scale, but Game 0 only uses uniform
 /// scale on the cube/plane built-ins).
 ///
-/// `uv` is unused by the Blinn–Phong shader for Game 0 — there is
-/// no texture sampling yet — but the slot is reserved in the
-/// vertex layout so adding the first texture in Game 1 is a
-/// shader change, not a layout change.
+/// `tangent` is the surface tangent in mesh-local space: `xyz` is the
+/// direction of increasing U, `w` is the bitangent handedness (±1) so
+/// the shader reconstructs `B = (N × T) · w`. Together with the normal
+/// it forms the TBN basis that rotates a tangent-space normal map into
+/// world space. Authored tangents come from the glTF `TANGENT` attribute
+/// when present; otherwise [`fill_tangents`] derives them.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
+    pub tangent: [f32; 4],
 }
 
 impl Vertex {
     /// `wgpu::VertexBufferLayout` matching the field order.
     /// Locations are `@location(0)` position, `@location(1)`
-    /// normal, `@location(2)` uv in WGSL.
+    /// normal, `@location(2)` uv, `@location(3)` tangent in WGSL.
     pub const LAYOUT: VertexBufferLayout<'static> = VertexBufferLayout {
         array_stride: std::mem::size_of::<Self>() as u64,
         step_mode: VertexStepMode::Vertex,
@@ -66,8 +70,78 @@ impl Vertex {
                 shader_location: 2,
                 format: wgpu::VertexFormat::Float32x2,
             },
+            VertexAttribute {
+                offset: 32, // 8 × f32
+                shader_location: 3,
+                format: wgpu::VertexFormat::Float32x4,
+            },
         ],
     };
+}
+
+/// Derive per-vertex tangents (xyz + handedness in `w`) from positions,
+/// normals, and UVs, writing them into each `Vertex::tangent` in place.
+///
+/// Lengyel's method (*Foundations of Game Engine Development*, vol. 2,
+/// §7.5): accumulate each triangle's UV-derivative tangent and bitangent
+/// into its three vertices, then Gram-Schmidt the summed tangent against
+/// the normal and record the bitangent's handedness. This is the
+/// fallback for meshes with no authored tangents — the cube/plane
+/// built-ins and any glTF primitive missing the `TANGENT` attribute.
+/// Because it averages across shared vertices it can disagree with a
+/// MikkTSpace bake at hard UV seams; at Kinesis asset complexity that's
+/// an accepted limitation, not a bug.
+pub fn fill_tangents(verts: &mut [Vertex], indices: &[u32]) {
+    let mut tan = vec![Vec3::ZERO; verts.len()];
+    let mut bitan = vec![Vec3::ZERO; verts.len()];
+
+    for tri in indices.chunks_exact(3) {
+        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        let p0 = Vec3::from(verts[i0].position);
+        let e1 = Vec3::from(verts[i1].position) - p0;
+        let e2 = Vec3::from(verts[i2].position) - p0;
+        let uv0 = Vec2::from(verts[i0].uv);
+        let duv1 = Vec2::from(verts[i1].uv) - uv0;
+        let duv2 = Vec2::from(verts[i2].uv) - uv0;
+
+        let denom = duv1.x * duv2.y - duv1.y * duv2.x;
+        // Degenerate UVs (zero area in texture space) carry no tangent
+        // information — skip rather than divide by ~0.
+        if denom.abs() < 1e-8 {
+            continue;
+        }
+        let r = 1.0 / denom;
+        let t = (e1 * duv2.y - e2 * duv1.y) * r;
+        let b = (e2 * duv1.x - e1 * duv2.x) * r;
+
+        for &i in &[i0, i1, i2] {
+            tan[i] += t;
+            bitan[i] += b;
+        }
+    }
+
+    for (idx, v) in verts.iter_mut().enumerate() {
+        let n = Vec3::from(v.normal);
+        // Gram-Schmidt: project the accumulated tangent off the normal.
+        let t_ortho = tan[idx] - n * n.dot(tan[idx]);
+        let t_final = if t_ortho.length_squared() > 1e-12 {
+            t_ortho.normalize()
+        } else {
+            // Tangent collinear with the normal or no contribution at all
+            // — any perpendicular keeps the TBN well-formed (the normal
+            // map's xy will simply land in an arbitrary-but-consistent
+            // frame, invisible for the flat-normal fallback).
+            n.any_orthonormal_vector()
+        };
+        // Handedness: +1 when (N × T) agrees with the accumulated
+        // bitangent, −1 when the UV chart is mirrored.
+        let w = if n.cross(t_final).dot(bitan[idx]) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        v.tangent = [t_final.x, t_final.y, t_final.z, w];
+    }
 }
 
 /// CPU-side mesh: a vertex/index pair ready to upload. Built by
@@ -162,6 +236,8 @@ pub fn cube_mesh() -> MeshData {
                 position: *corner,
                 normal,
                 uv: *uv,
+                // Filled by `fill_tangents` once the mesh is assembled.
+                tangent: [0.0; 4],
             });
         }
         // CCW front-face: 0-1-2 and 0-2-3.
@@ -254,6 +330,7 @@ pub fn cube_mesh() -> MeshData {
         [0.0, -1.0, 0.0],
     );
 
+    fill_tangents(&mut verts, &indices);
     MeshData {
         vertices: verts,
         indices,
@@ -269,29 +346,35 @@ pub fn cube_mesh() -> MeshData {
 /// users tile it later.
 pub fn plane_mesh() -> MeshData {
     let normal = [0.0, 1.0, 0.0];
-    let vertices = vec![
+    let t = [0.0; 4]; // filled by `fill_tangents` below
+    let mut vertices = vec![
         Vertex {
             position: [-0.5, 0.0, 0.5],
             normal,
             uv: [0.0, 1.0],
+            tangent: t,
         },
         Vertex {
             position: [0.5, 0.0, 0.5],
             normal,
             uv: [1.0, 1.0],
+            tangent: t,
         },
         Vertex {
             position: [0.5, 0.0, -0.5],
             normal,
             uv: [1.0, 0.0],
+            tangent: t,
         },
         Vertex {
             position: [-0.5, 0.0, -0.5],
             normal,
             uv: [0.0, 0.0],
+            tangent: t,
         },
     ];
     let indices = vec![0, 1, 2, 0, 2, 3];
+    fill_tangents(&mut vertices, &indices);
     MeshData { vertices, indices }
 }
 

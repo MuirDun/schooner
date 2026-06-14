@@ -83,8 +83,15 @@ struct ModelUniform {
     emissive: vec4<f32>,
     // .x = opacity ∈ [0, 1] (multiplied into texture alpha), .y =
     // depth bias in world metres (view-ray nudge toward camera), .z =
-    // Fresnel rim strength (0 = matte dielectric), .w reserved.
+    // Fresnel rim strength (0 = matte dielectric), .w = normal-map
+    // strength (scales the tangent-space xy; 0 = flat, 1 = full relief).
     params: vec4<f32>,
+    // .xy = UV tiling scale, .zw = UV offset. Applied as
+    // `uv * scale + offset` in the vertex shader. In triplanar mode
+    // .x is reused as world repeats/metre.
+    uv_scale_offset: vec4<f32>,
+    // .x = triplanar on/off (0.0 / 1.0), .yzw reserved.
+    flags: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -94,11 +101,18 @@ struct ModelUniform {
 @group(3) @binding(1) var shadow_sampler: sampler_comparison;
 @group(4) @binding(0) var albedo_texture: texture_2d<f32>;
 @group(4) @binding(1) var albedo_sampler: sampler;
+// Normal map — sampled with the same sampler as albedo. The texture is
+// linear-format (`Rgba8Unorm`); FLAT_NORMAL (0,0,1) binds here for
+// materials with no authored map, making the perturbation the identity.
+@group(4) @binding(2) var normal_texture: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // Mesh-local tangent: xyz = direction of increasing U, w = bitangent
+    // handedness (±1). Forms the TBN basis with the normal.
+    @location(3) tangent: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -111,6 +125,10 @@ struct VertexOutput {
     // wall viewed at an angle would stretch the texture toward
     // the far end.
     @location(2) uv: vec2<f32>,
+    // World-space tangent (xyz) + handedness (w), interpolated. The
+    // fragment shader re-orthonormalizes against the interpolated
+    // normal before building the TBN matrix.
+    @location(3) world_tangent: vec4<f32>,
 };
 
 @vertex
@@ -144,7 +162,14 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         model.model[2].xyz,
     );
     out.world_normal = normalize(normal_mat * in.normal);
-    out.uv = in.uv;
+    // Tangent transforms by the same model 3×3 as the normal (under
+    // uniform scale they share the basis); handedness passes through
+    // untouched. Re-orthonormalization is deferred to the fragment
+    // shader, after interpolation.
+    out.world_tangent = vec4<f32>(normal_mat * in.tangent.xyz, in.tangent.w);
+    // UV tiling + offset. Linear, so perspective-correct interpolation
+    // still holds across the triangle.
+    out.uv = in.uv * model.uv_scale_offset.xy + model.uv_scale_offset.zw;
     return out;
 }
 
@@ -415,18 +440,93 @@ fn ray_cone_segment(
     return vec2<f32>(t0, t1);
 }
 
+// Albedo + world-space normal produced by a sampling path (UV or
+// triplanar), handed back to the shared lighting code.
+struct Surface {
+    albedo: vec4<f32>,
+    normal: vec3<f32>,
+};
+
+// World-space triplanar projection. Samples albedo + normal on the three
+// world planes and blends by the geometric normal, so a texture stays
+// continuous across separately-spawned boxes — no UVs, no per-box seam,
+// no thin-reveal stretching. The normal uses Golus's whiteout blend
+// ("Normal Mapping for a Triplanar Shader", 2017): naive triplanar
+// flattens normal maps, so each plane's tangent normal is reoriented by
+// the geometric normal before the blend. `scale` is world repeats/metre,
+// `strength` scales the tangent-space xy (the normal_strength knob).
+fn sample_triplanar(world_pos: vec3<f32>, geo_n: vec3<f32>, scale: f32, strength: f32) -> Surface {
+    let p = world_pos * scale;
+
+    // Blend weights, sharpened so the three-way overlap band stays tight.
+    var w = abs(geo_n);
+    w = w * w * w;
+    w = w / (w.x + w.y + w.z);
+
+    // Canonical plane UVs: X-facing reads zy, Y-facing xz, Z-facing xy.
+    let a_x = textureSample(albedo_texture, albedo_sampler, p.zy);
+    let a_y = textureSample(albedo_texture, albedo_sampler, p.xz);
+    let a_z = textureSample(albedo_texture, albedo_sampler, p.xy);
+
+    var n_x = textureSample(normal_texture, albedo_sampler, p.zy).xyz * 2.0 - 1.0;
+    var n_y = textureSample(normal_texture, albedo_sampler, p.xz).xyz * 2.0 - 1.0;
+    var n_z = textureSample(normal_texture, albedo_sampler, p.xy).xyz * 2.0 - 1.0;
+    n_x = vec3<f32>(n_x.xy * strength, n_x.z);
+    n_y = vec3<f32>(n_y.xy * strength, n_y.z);
+    n_z = vec3<f32>(n_z.xy * strength, n_z.z);
+
+    // Whiteout blend: reorient each plane's tangent normal into world
+    // space via the geometric normal, then blend with the same weights.
+    let t_x = vec3<f32>(n_x.xy + geo_n.zy, abs(n_x.z) * geo_n.x);
+    let t_y = vec3<f32>(n_y.xy + geo_n.xz, abs(n_y.z) * geo_n.y);
+    let t_z = vec3<f32>(n_z.xy + geo_n.xy, abs(n_z.z) * geo_n.z);
+    let world_n = normalize(t_x.zyx * w.x + t_y.xzy * w.y + t_z.xyz * w.z);
+
+    var out: Surface;
+    out.albedo = a_x * w.x + a_y * w.y + a_z * w.z;
+    out.normal = world_n;
+    return out;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let n = normalize(in.world_normal);
+    let geo_n = normalize(in.world_normal);
+
+    // Surface sampling: triplanar (world-space, seamless across boxes)
+    // when `flags.x` is set, otherwise ordinary UV mapping. The branch is
+    // uniform across the draw (the flag is per-draw uniform data), so no
+    // warp divergence — the unused path is skipped for free.
+    //
+    // UV-path normal mapping: decode the tangent-space normal [0,1] →
+    // [-1,1], scale xy by `normal_strength` (params.w), and rotate into
+    // world space through the TBN. The interpolated tangent is
+    // re-orthonormalized (Gram-Schmidt) since interpolation breaks
+    // orthogonality; handedness comes from the tangent's w. FLAT_NORMAL
+    // decodes to (0,0,1), the identity for unmapped materials.
+    var tex_sample: vec4<f32>;
+    var n: vec3<f32>;
+    if (model.flags.x > 0.5) {
+        let surf = sample_triplanar(
+            in.world_position, geo_n, model.uv_scale_offset.x, model.params.w);
+        tex_sample = surf.albedo;
+        n = surf.normal;
+    } else {
+        tex_sample = textureSample(albedo_texture, albedo_sampler, in.uv);
+        let tn_raw = textureSample(normal_texture, albedo_sampler, in.uv).xyz * 2.0 - 1.0;
+        let tn = vec3<f32>(tn_raw.xy * model.params.w, tn_raw.z);
+        let t = normalize(in.world_tangent.xyz - geo_n * dot(geo_n, in.world_tangent.xyz));
+        let b = cross(geo_n, t) * in.world_tangent.w;
+        let tbn = mat3x3<f32>(t, b, geo_n);
+        n = normalize(tbn * tn);
+    }
+
     let v = normalize(camera.position.xyz - in.world_position);
 
-    // Albedo: per-instance tint × bound albedo texture. The texture
-    // is `Rgba8UnormSrgb`, so `textureSample` returns *linear* light
-    // values — no manual `pow(rgb, 2.2)` needed. Materials without
-    // an authored texture bind the WHITE 1×1 built-in, making the
-    // multiply a no-op so the shader's textured and untextured
-    // paths stay uniform.
-    let tex_sample = textureSample(albedo_texture, albedo_sampler, in.uv);
+    // Albedo: per-instance tint × sampled albedo (UV or triplanar, from
+    // the branch above). The texture is `Rgba8UnormSrgb`, so the sample
+    // is *linear* — no manual `pow(rgb, 2.2)`. Materials without an
+    // authored texture bind the WHITE 1×1 built-in, making the multiply a
+    // no-op so textured and untextured paths stay uniform.
     let albedo = model.albedo_roughness.xyz * tex_sample.rgb;
     let roughness = model.albedo_roughness.w;
     // Output alpha comes straight from the texture's alpha channel

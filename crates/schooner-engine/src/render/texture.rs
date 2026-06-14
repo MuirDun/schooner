@@ -44,10 +44,18 @@ impl TextureHandle {
     /// shader's textured and untextured paths stay uniform.
     pub const WHITE: Self = Self(0);
 
+    /// 1×1 flat tangent-space normal `(0, 0, 1)`, encoded `(128, 128,
+    /// 255)`. Materials with no `normal_texture` bind this; decoding
+    /// `xyz * 2 - 1` yields `(0, 0, 1)` so the TBN rotate is the identity
+    /// and the mapped/unmapped fragment paths stay uniform — the normal-
+    /// map twin of [`TextureHandle::WHITE`]. Uploaded **linear**
+    /// (`Rgba8Unorm`); a normal map must never go through the sRGB path.
+    pub const FLAT_NORMAL: Self = Self(1);
+
     /// First handle a user-supplied texture may take. Registry's
     /// allocator starts here so built-in slots are never overwritten
     /// by a later load.
-    pub const FIRST_USER: Self = Self(1);
+    pub const FIRST_USER: Self = Self(2);
 }
 
 /// CPU-side decoded texture: tightly packed RGBA8 pixels, dimensions,
@@ -72,6 +80,19 @@ impl TextureData {
             pixels: vec![255, 255, 255, 255],
         }
     }
+
+    /// 1×1 flat tangent-space normal — `(0, 0, 1)` encoded as
+    /// `(128, 128, 255)`. The FLAT_NORMAL built-in uploads this through
+    /// the *linear* path so the decode `xyz * 2 - 1` recovers `(0, 0, 1)`
+    /// exactly. (128 decodes to ≈0.0039, not 0 — close enough that the
+    /// perturbation is imperceptible; 127.5 isn't representable in u8.)
+    pub fn flat_normal_1x1() -> Self {
+        Self {
+            width: 1,
+            height: 1,
+            pixels: vec![128, 128, 255, 255],
+        }
+    }
 }
 
 /// GPU-resident texture: the wgpu texture plus a default view ready
@@ -89,8 +110,10 @@ pub struct TextureGpu {
 }
 
 impl TextureGpu {
-    /// Upload `data` as a single-mip `Rgba8UnormSrgb` 2D texture. See
-    /// the module docs for the sRGB-format rationale.
+    /// Upload `data` as a single-mip `Rgba8UnormSrgb` 2D texture — the
+    /// **color** path. See the module docs for the sRGB-format rationale:
+    /// authored albedo is sRGB-encoded, so this format makes the texture
+    /// unit linearize at sample time.
     ///
     /// Mip generation is deferred to Game 2A's asset-pipeline
     /// maturation — runtime mip downsampling is its own subsystem,
@@ -98,6 +121,31 @@ impl TextureGpu {
     /// answer. Single-mip is correct for indoor Kinesis scenes where
     /// every textured surface is viewed at near-1:1 sampling.
     pub fn upload_rgba8(device: &Device, queue: &Queue, label: &str, data: &TextureData) -> Self {
+        Self::upload_with_format(device, queue, label, data, TextureFormat::Rgba8UnormSrgb)
+    }
+
+    /// Upload `data` as a single-mip `Rgba8Unorm` 2D texture — the
+    /// **data** path. Normal maps, spec/roughness masks, and any other
+    /// non-color texture must use this: their bytes are not sRGB-encoded,
+    /// so routing them through `upload_rgba8` would have the texture unit
+    /// apply a spurious sRGB→linear curve, tilting every sampled value
+    /// (a flat normal `(128,128,255)` would read low and bend lighting).
+    pub fn upload_rgba8_linear(
+        device: &Device,
+        queue: &Queue,
+        label: &str,
+        data: &TextureData,
+    ) -> Self {
+        Self::upload_with_format(device, queue, label, data, TextureFormat::Rgba8Unorm)
+    }
+
+    fn upload_with_format(
+        device: &Device,
+        queue: &Queue,
+        label: &str,
+        data: &TextureData,
+        format: TextureFormat,
+    ) -> Self {
         let size = Extent3d {
             width: data.width,
             height: data.height,
@@ -109,7 +157,7 @@ impl TextureGpu {
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -148,8 +196,20 @@ mod tests {
     }
 
     #[test]
-    fn first_user_skips_builtin_slot() {
-        assert_eq!(TextureHandle::FIRST_USER.0, 1);
+    fn first_user_skips_builtin_slots() {
+        // WHITE (0) and FLAT_NORMAL (1) are reserved; users start at 2.
+        assert_eq!(TextureHandle::WHITE.0, 0);
+        assert_eq!(TextureHandle::FLAT_NORMAL.0, 1);
+        assert_eq!(TextureHandle::FIRST_USER.0, 2);
+    }
+
+    #[test]
+    fn flat_normal_1x1_decodes_to_up() {
+        let data = TextureData::flat_normal_1x1();
+        assert_eq!(data.width, 1);
+        assert_eq!(data.height, 1);
+        // (128, 128, 255) ≈ (0, 0, 1) after `xyz * 2 - 1` in the shader.
+        assert_eq!(data.pixels, vec![128, 128, 255, 255]);
     }
 
     #[test]

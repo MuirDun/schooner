@@ -70,6 +70,17 @@ impl ColorGrade {
         gain: Vec3::new(1.0, 1.0, 1.02),
     };
 
+    /// Hostile clinical lab — an aggressive cold push: red pulled down,
+    /// blue lifted across mids and highlights so white surfaces read as
+    /// hard fluorescent blue-white rather than warm cream. Stronger than
+    /// [`ColorGrade::CHAMBER_WHITE`]'s faint cool; pairs with cold,
+    /// over-lit ambient. The "interrogation room" end of the chamber mood.
+    pub const CLINICAL_COLD: Self = Self {
+        lift: Vec3::new(0.0, 0.005, 0.02),
+        gamma: Vec3::new(0.95, 1.0, 1.06),
+        gain: Vec3::new(0.95, 1.0, 1.08),
+    };
+
     /// Warm "comfortable" cage feel — slight amber push across
     /// shadows, mids, highlights. Reads as the comfort-side of the
     /// attitude axis.

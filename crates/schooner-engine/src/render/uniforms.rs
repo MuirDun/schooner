@@ -263,9 +263,12 @@ impl LightsUniformData {
 /// - `albedo_roughness` — 16 B (`xyz` = albedo, `w` = roughness)
 /// - `emissive` — 16 B (`xyz` = emissive color, `w` = intensity)
 /// - `params` — 16 B (`x` = opacity; `y` = depth bias in world metres;
-///   `z` = Fresnel rim strength; `w` reserved)
+///   `z` = Fresnel rim strength; `w` = normal-map strength)
+/// - `uv_scale_offset` — 16 B (`xy` = UV tiling scale, `zw` = UV offset;
+///   in triplanar mode `x` = world repeats/metre, rest ignored)
+/// - `flags` — 16 B (`x` = triplanar on/off as 0.0/1.0, `yzw` reserved)
 ///
-/// Total 112 B, well under the 256-byte dynamic-offset stride.
+/// Total 144 B, well under the 256-byte dynamic-offset stride.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct ModelUniformData {
@@ -273,6 +276,8 @@ pub struct ModelUniformData {
     pub albedo_roughness: [f32; 4],
     pub emissive: [f32; 4],
     pub params: [f32; 4],
+    pub uv_scale_offset: [f32; 4],
+    pub flags: [f32; 4],
 }
 
 impl ModelUniformData {
@@ -291,7 +296,19 @@ impl ModelUniformData {
                 material.emissive.z,
                 material.emissive_intensity,
             ],
-            params: [material.opacity, material.depth_bias, material.fresnel, 0.0],
+            params: [
+                material.opacity,
+                material.depth_bias,
+                material.fresnel,
+                material.normal_strength,
+            ],
+            uv_scale_offset: [
+                material.uv_scale.x,
+                material.uv_scale.y,
+                material.uv_offset.x,
+                material.uv_offset.y,
+            ],
+            flags: [if material.triplanar { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
         }
     }
 }

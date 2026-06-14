@@ -519,17 +519,28 @@ pub fn render_frame(world: &mut World) {
         // borrows strictly disjoint. `TextureView` is internally an
         // `Arc`, so cloning it across the borrow boundary is cheap.
         {
-            let mut unique_handles = std::collections::HashSet::new();
-            // WHITE is the universal fallback — always cached so a
-            // draw that references a missing texture still binds
-            // something valid.
-            unique_handles.insert(TextureHandle::WHITE);
+            use std::collections::{HashMap, HashSet};
+
+            // Each draw needs an (albedo, normal) texture pair. Defaults
+            // are the WHITE / FLAT_NORMAL builtins so an unmapped material
+            // still binds valid textures (WHITE → albedo no-op, FLAT_NORMAL
+            // → zero perturbation).
+            let mut pairs: HashSet<(TextureHandle, TextureHandle)> = HashSet::new();
+            pairs.insert((TextureHandle::WHITE, TextureHandle::FLAT_NORMAL));
             for (_, _, material) in &draws {
-                unique_handles
-                    .insert(material.albedo_texture.unwrap_or(TextureHandle::WHITE));
+                let albedo = material.albedo_texture.unwrap_or(TextureHandle::WHITE);
+                let normal = material.normal_texture.unwrap_or(TextureHandle::FLAT_NORMAL);
+                pairs.insert((albedo, normal));
             }
 
-            let views: Vec<(TextureHandle, wgpu::TextureView)> = {
+            // Resolve a view for every handle either slot references.
+            let mut unique_handles: HashSet<TextureHandle> = HashSet::new();
+            for &(albedo, normal) in &pairs {
+                unique_handles.insert(albedo);
+                unique_handles.insert(normal);
+            }
+
+            let views: HashMap<TextureHandle, wgpu::TextureView> = {
                 let Some(textures) = world.resource::<TextureRegistry>() else {
                     warn!("render_frame: TextureRegistry missing");
                     return;
@@ -539,8 +550,7 @@ pub fn render_frame(world: &mut World) {
                     .filter_map(|&h| {
                         // Handles absent from the registry resolve to
                         // WHITE; the cache still ends up with an entry
-                        // under the requested key, pointing at the
-                        // WHITE view.
+                        // under the requested key.
                         let actual = if textures.contains(h) {
                             h
                         } else {
@@ -555,8 +565,18 @@ pub fn render_frame(world: &mut World) {
                 warn!("render_frame: ForwardPipeline missing");
                 return;
             };
-            for (handle, view) in &views {
-                pipeline.ensure_material_bind_group_with_view(&device, *handle, view);
+            for &(albedo, normal) in &pairs {
+                if let (Some(albedo_view), Some(normal_view)) =
+                    (views.get(&albedo), views.get(&normal))
+                {
+                    pipeline.ensure_material_bind_group_with_views(
+                        &device,
+                        albedo,
+                        albedo_view,
+                        normal,
+                        normal_view,
+                    );
+                }
             }
         }
 
@@ -618,15 +638,15 @@ pub fn render_frame(world: &mut World) {
             pass.set_bind_group(2, &pipeline.model_bind_group, &[dyn_offset]);
 
             // The pre-pass guarantees an entry exists for every
-            // handle the draw list needs, including the WHITE
-            // fallback for `None` and unknown handles. A `None`
-            // here would indicate a logic error above; the warn
-            // surfaces it without crashing the frame.
-            let texture_handle = material.albedo_texture.unwrap_or(TextureHandle::WHITE);
-            let Some(material_bg) = pipeline.material_bind_group(texture_handle) else {
+            // (albedo, normal) pair the draw list needs, including the
+            // WHITE / FLAT_NORMAL fallback for `None` and unknown
+            // handles. A `None` here would indicate a logic error above;
+            // the warn surfaces it without crashing the frame.
+            let albedo = material.albedo_texture.unwrap_or(TextureHandle::WHITE);
+            let normal = material.normal_texture.unwrap_or(TextureHandle::FLAT_NORMAL);
+            let Some(material_bg) = pipeline.material_bind_group((albedo, normal)) else {
                 warn!(
-                    "render_frame: material bind group missing for {:?}; skipping draw",
-                    texture_handle
+                    "render_frame: material bind group missing for ({albedo:?}, {normal:?}); skipping draw"
                 );
                 return;
             };

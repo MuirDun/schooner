@@ -89,11 +89,11 @@ pub struct ForwardPipeline {
     /// the shader stacks a 3×3 tap loop on top for the soft edge.
     pub comparison_sampler: Sampler,
 
-    /// BGL for `@group(4)` — per-material albedo texture + linear
-    /// sampler. Material bind groups are looked up per draw call from
-    /// `material_bind_groups` and built lazily on first use; rebuilt
-    /// on F5 manual reload when an entry's underlying texture view is
-    /// replaced.
+    /// BGL for `@group(4)` — per-material albedo texture, shared linear
+    /// sampler, and normal-map texture. Material bind groups are looked
+    /// up per draw call from `material_bind_groups` and built lazily on
+    /// first use; rebuilt on F5 manual reload when an entry's underlying
+    /// texture view is replaced.
     pub material_bgl: BindGroupLayout,
 
     /// Linear-repeat sampler bound into every material bind group.
@@ -102,12 +102,15 @@ pub struct ForwardPipeline {
     /// because we don't author mips yet (Game 2A's job).
     pub material_sampler: Sampler,
 
-    /// Cache: `TextureHandle` → material bind group. Built lazily by
-    /// [`Self::ensure_material_bind_group_with_view`] and read by
-    /// [`Self::material_bind_group`]; reload invalidates a single
-    /// entry via [`Self::invalidate_material_bind_group`] so the
-    /// next frame rebuilds against the reloaded view.
-    material_bind_groups: HashMap<TextureHandle, BindGroup>,
+    /// Cache: `(albedo, normal)` handle pair → material bind group. A
+    /// material binds two textures, so the cache key is the pair — two
+    /// materials sharing an albedo but differing in normal map are
+    /// distinct bind groups. Built lazily by
+    /// [`Self::ensure_material_bind_group_with_views`] and read by
+    /// [`Self::material_bind_group`]; reload drops every entry touching a
+    /// replaced handle via [`Self::invalidate_material_bind_group`] so
+    /// the next frame rebuilds against the reloaded view.
+    material_bind_groups: HashMap<(TextureHandle, TextureHandle), BindGroup>,
 }
 
 impl ForwardPipeline {
@@ -331,24 +334,24 @@ impl ForwardPipeline {
         }
     }
 
-    /// Ensure `handle` has a cached material bind group bound to the
-    /// given `view`. No-op if the entry already exists; otherwise
-    /// builds it and caches under `handle`.
+    /// Ensure the `(albedo, normal)` pair has a cached material bind
+    /// group bound to the given views. No-op if the entry already exists;
+    /// otherwise builds it and caches under the pair.
     ///
-    /// Two-arg shape (handle + view) instead of (handle + registry)
-    /// because the renderer's pre-pass already extracts views from
-    /// the registry under a shared borrow, then takes a mutable
-    /// borrow on this pipeline to populate the cache — the two
-    /// borrows can't overlap, so the view is threaded through as a
-    /// value.
-    pub fn ensure_material_bind_group_with_view(
+    /// Views threaded through as values (not registry handles) because
+    /// the renderer's pre-pass already extracts them from the registry
+    /// under a shared borrow, then takes a mutable borrow on this
+    /// pipeline to populate the cache — the two borrows can't overlap.
+    pub fn ensure_material_bind_group_with_views(
         &mut self,
         device: &Device,
-        handle: TextureHandle,
-        view: &TextureView,
+        albedo: TextureHandle,
+        albedo_view: &TextureView,
+        normal: TextureHandle,
+        normal_view: &TextureView,
     ) {
         self.material_bind_groups
-            .entry(handle)
+            .entry((albedo, normal))
             .or_insert_with(|| {
                 device.create_bind_group(&BindGroupDescriptor {
                     label: Some("material-bind-group"),
@@ -356,32 +359,41 @@ impl ForwardPipeline {
                     entries: &[
                         BindGroupEntry {
                             binding: 0,
-                            resource: BindingResource::TextureView(view),
+                            resource: BindingResource::TextureView(albedo_view),
                         },
                         BindGroupEntry {
                             binding: 1,
                             resource: BindingResource::Sampler(&self.material_sampler),
+                        },
+                        BindGroupEntry {
+                            binding: 2,
+                            resource: BindingResource::TextureView(normal_view),
                         },
                     ],
                 })
             });
     }
 
-    /// Read-side lookup for the per-draw bind step. Returns the
-    /// cached bind group if one has been built for `handle`; `None`
-    /// otherwise. The forward pass populates every handle it needs
-    /// ahead of opening the render pass, so a `None` here means a
-    /// logic error in the pre-pass — not a routine cache miss.
-    pub fn material_bind_group(&self, handle: TextureHandle) -> Option<&BindGroup> {
-        self.material_bind_groups.get(&handle)
+    /// Read-side lookup for the per-draw bind step. Returns the cached
+    /// bind group for the `(albedo, normal)` pair if one has been built;
+    /// `None` otherwise. The forward pass populates every pair it needs
+    /// ahead of opening the render pass, so a `None` here means a logic
+    /// error in the pre-pass — not a routine cache miss.
+    pub fn material_bind_group(
+        &self,
+        key: (TextureHandle, TextureHandle),
+    ) -> Option<&BindGroup> {
+        self.material_bind_groups.get(&key)
     }
 
-    /// Drop the cached bind group for `handle`. Called from the F5
-    /// reload path when a texture's underlying GPU view has been
-    /// replaced — the next pre-pass population rebuilds against the
+    /// Drop every cached bind group that references `handle` (as either
+    /// its albedo or normal slot). Called from the F5 reload path when a
+    /// texture's underlying GPU view has been replaced — the next
+    /// pre-pass population rebuilds the affected pairs against the
     /// reloaded view.
     pub fn invalidate_material_bind_group(&mut self, handle: TextureHandle) {
-        self.material_bind_groups.remove(&handle);
+        self.material_bind_groups
+            .retain(|&(albedo, normal), _| albedo != handle && normal != handle);
     }
 }
 
@@ -480,6 +492,19 @@ fn create_material_layout(device: &Device) -> BindGroupLayout {
                 binding: 1,
                 visibility: ShaderStages::FRAGMENT,
                 ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 2,
+                // Normal map — fragment-only, sampled like albedo but the
+                // texture itself is linear-format (data, not color). Same
+                // filtering sampler at binding 1 serves both.
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Float { filterable: true },
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
                 count: None,
             },
         ],

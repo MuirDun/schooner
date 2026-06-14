@@ -300,15 +300,32 @@ impl TextureRegistry {
     /// `App::resumed` after `RenderContext` is up.
     pub fn with_builtins(device: &Device, queue: &Queue) -> Self {
         let mut registry = Self::empty();
-        let data = TextureData::white_1x1();
-        let gpu = TextureGpu::upload_rgba8(device, queue, "builtin-white", &data);
+
+        let white = TextureGpu::upload_rgba8(device, queue, "builtin-white", &TextureData::white_1x1());
         registry.textures.insert(
             TextureHandle::WHITE,
             TextureEntry {
-                gpu,
+                gpu: white,
                 source: None,
             },
         );
+
+        // Flat normal goes through the *linear* path — it's data, not
+        // color (see `upload_rgba8_linear`).
+        let flat_normal = TextureGpu::upload_rgba8_linear(
+            device,
+            queue,
+            "builtin-flat-normal",
+            &TextureData::flat_normal_1x1(),
+        );
+        registry.textures.insert(
+            TextureHandle::FLAT_NORMAL,
+            TextureEntry {
+                gpu: flat_normal,
+                source: None,
+            },
+        );
+
         registry
     }
 
@@ -336,6 +353,30 @@ impl TextureRegistry {
         Ok(handle)
     }
 
+    /// Decode a PNG from disk and upload it through the *linear*
+    /// (`Rgba8Unorm`) path — for **data** textures (normal maps, mask
+    /// maps) loaded loose from disk rather than out of a glb. Routing a
+    /// normal map through `load_png` would apply a spurious sRGB→linear
+    /// curve and bend every sampled normal.
+    ///
+    /// Records `source: None` — F5 reload re-reads every tracked entry
+    /// via the sRGB path, which would corrupt a linear texture's
+    /// colorspace, so data textures opt out of hot-reload for now (the
+    /// same deferral as glb-bundled textures; revisits with the Game 2A
+    /// asset pipeline, where colorspace becomes per-entry metadata).
+    pub fn load_png_linear(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        path: impl AsRef<Path>,
+    ) -> AssetResult<TextureHandle> {
+        let path = path.as_ref();
+        let data = asset::load_png_pixels(path)?;
+        let label = format!("png-linear:{}", path.display());
+        let gpu = TextureGpu::upload_rgba8_linear(device, queue, &label, &data);
+        Ok(self.insert_gpu(gpu))
+    }
+
     /// Upload already-decoded RGBA8 texture data under a fresh handle.
     /// The texture-side twin of [`MeshRegistry::insert_mesh_data`]:
     /// records no source path (F5 reload skips it), used for base-color
@@ -349,6 +390,27 @@ impl TextureRegistry {
         data: &TextureData,
     ) -> TextureHandle {
         let gpu = TextureGpu::upload_rgba8(device, queue, label, data);
+        self.insert_gpu(gpu)
+    }
+
+    /// As [`TextureRegistry::insert_texture_data`] but uploads through
+    /// the *linear* (`Rgba8Unorm`) path — for normal maps and other data
+    /// textures pulled out of a glb by `load_gltf_model`. Routing a
+    /// normal map through the sRGB `insert_texture_data` would bend every
+    /// sampled normal; the two entry points keep that distinction
+    /// impossible to get wrong at the call site.
+    pub fn insert_texture_data_linear(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        label: &str,
+        data: &TextureData,
+    ) -> TextureHandle {
+        let gpu = TextureGpu::upload_rgba8_linear(device, queue, label, data);
+        self.insert_gpu(gpu)
+    }
+
+    fn insert_gpu(&mut self, gpu: TextureGpu) -> TextureHandle {
         let handle = self.allocate_handle();
         self.textures.insert(
             handle,
@@ -475,6 +537,7 @@ mod tests {
     fn texture_allocator_skips_builtin_slot() {
         let mut r = TextureRegistry::empty();
         assert_eq!(r.next_user_handle, TextureHandle::FIRST_USER.0);
+        assert_eq!(TextureHandle::FIRST_USER.0, 2); // WHITE + FLAT_NORMAL reserved
         let h0 = r.allocate_handle();
         let h1 = r.allocate_handle();
         assert_eq!(h0, TextureHandle::FIRST_USER);

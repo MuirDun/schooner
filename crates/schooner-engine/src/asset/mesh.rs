@@ -12,7 +12,7 @@ use std::path::Path;
 use gltf::image::Format;
 
 use crate::asset::{AssetError, AssetResult};
-use crate::render::mesh::{MeshData, Vertex};
+use crate::render::mesh::{MeshData, Vertex, fill_tangents};
 use crate::render::texture::TextureData;
 
 /// A glTF imported as a single drawable: the first primitive's geometry
@@ -30,6 +30,10 @@ pub struct GltfModel {
     /// Decoded RGBA8 base-color (albedo) texture, `None` when the
     /// primitive's material has no base-color texture bound.
     pub albedo: Option<TextureData>,
+    /// Decoded tangent-space normal map, `None` when the material binds
+    /// none. The caller must upload this **linear** (`Rgba8Unorm`) — it
+    /// is data, not color.
+    pub normal: Option<TextureData>,
 }
 
 /// Parse `path` and return the CPU-side mesh. Caller uploads with
@@ -73,14 +77,27 @@ pub fn load_gltf_model(path: &Path) -> AssetResult<GltfModel> {
     let mesh = read_primitive_mesh(&primitive, &buffers, path)?;
 
     // material → base-color texture → source image index → decoded pixels.
-    let albedo = primitive
-        .material()
+    let material = primitive.material();
+    let albedo = material
         .pbr_metallic_roughness()
         .base_color_texture()
         .map(|info| image_to_rgba8(&images[info.texture().source().index()], path))
         .transpose()?;
 
-    Ok(GltfModel { mesh, albedo })
+    // material → normal texture → source image index → decoded pixels.
+    // The glTF `scale` on the normal texture is intentionally ignored —
+    // strength is authored on the `Material` (`normal_strength`), matching
+    // how base-color factors are left to the spawn site.
+    let normal = material
+        .normal_texture()
+        .map(|nt| image_to_rgba8(&images[nt.texture().source().index()], path))
+        .transpose()?;
+
+    Ok(GltfModel {
+        mesh,
+        albedo,
+        normal,
+    })
 }
 
 fn first_primitive<'a>(
@@ -126,20 +143,26 @@ fn read_primitive_mesh(
         .map(|coords| coords.into_f32().collect())
         .unwrap_or_else(|| vec![[0.0, 0.0]; positions.len()]);
 
+    // Authored tangents (xyz + handedness w) when the exporter wrote
+    // them; otherwise derived below. Only trusted when the count matches
+    // — a partial TANGENT accessor falls back to the computed path.
+    let tangents: Option<Vec<[f32; 4]>> = reader
+        .read_tangents()
+        .map(|t| t.collect::<Vec<_>>())
+        .filter(|t| t.len() == positions.len());
+
     if positions.len() != normals.len() || positions.len() != uvs.len() {
         return Err(AssetError::AttributeMismatch {
             path: path.to_path_buf(),
         });
     }
 
-    let vertices: Vec<Vertex> = positions
-        .iter()
-        .zip(normals.iter())
-        .zip(uvs.iter())
-        .map(|((pos, normal), uv)| Vertex {
-            position: *pos,
-            normal: *normal,
-            uv: *uv,
+    let mut vertices: Vec<Vertex> = (0..positions.len())
+        .map(|i| Vertex {
+            position: positions[i],
+            normal: normals[i],
+            uv: uvs[i],
+            tangent: tangents.as_ref().map_or([0.0; 4], |t| t[i]),
         })
         .collect();
 
@@ -150,6 +173,11 @@ fn read_primitive_mesh(
         })?
         .into_u32()
         .collect();
+
+    // No authored tangents → derive them from positions/normals/UVs.
+    if tangents.is_none() {
+        fill_tangents(&mut vertices, &indices);
+    }
 
     Ok(MeshData { vertices, indices })
 }

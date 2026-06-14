@@ -16,7 +16,7 @@
 //! no emissive, opaque). That keeps Game 0's spawn sites — and any
 //! future debug/helper geometry — rendering unchanged.
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 use crate::render::texture::TextureHandle;
 
@@ -73,6 +73,39 @@ pub struct Material {
     /// glass; pair it with a low `opacity` and low `roughness`.
     pub fresnel: f32,
     pub albedo_texture: Option<TextureHandle>,
+    /// Per-axis UV tiling: the vertex shader multiplies mesh UVs by this
+    /// before interpolation, so `(4, 2)` repeats the texture 4× across U
+    /// and 2× across V. `(1, 1)` (default) is the authored mapping. The
+    /// material sampler is `Repeat`, so any value past 1 wraps. Per-axis
+    /// (not a scalar) keeps texels square on non-square surfaces — a wall
+    /// that is wider than it is tall tiles correctly. Textures are
+    /// single-mip until Game 2A, so very high tiling shimmers at distance.
+    pub uv_scale: Vec2,
+    /// UV translation applied after `uv_scale`: `uv * scale + offset`.
+    /// `(0, 0)` (default) is no shift. Lets coplanar decals or atlas
+    /// sub-rects pick a region without re-authoring the mesh UVs.
+    pub uv_offset: Vec2,
+    /// Tangent-space normal map perturbing the per-fragment normal. The
+    /// texture is *data, not color* — uploaded `Rgba8Unorm` (linear), not
+    /// sRGB — and decoded `xyz * 2 - 1`. `None` binds the engine's
+    /// FLAT_NORMAL 1×1 built-in `(0, 0, 1)`, so the perturbation is the
+    /// identity and the shader's mapped/unmapped paths stay uniform.
+    pub normal_texture: Option<TextureHandle>,
+    /// Scales the normal map's tangent-space `xy` before the TBN rotate,
+    /// so `0` is flat (geometric normal) and `1` is full authored relief.
+    /// Keep this *low* (≈0.3–0.6) for the HL2/Gothic look — subtle relief
+    /// raked by hard light, not high-frequency bump. `1.0` is the default
+    /// so an authored map reads at full strength unless dialed down.
+    pub normal_strength: f32,
+    /// When `true`, the surface is textured by **world-space triplanar
+    /// projection** instead of mesh UVs: albedo and normal are sampled on
+    /// the three world planes and blended by the geometric normal. This
+    /// makes the texture continuous across separately-spawned boxes (no
+    /// per-box UV seam, no thin-reveal stretching) — the right mode for
+    /// procedural architecture (walls, floors). `uv_scale.x` is then read
+    /// as world *repeats per metre* (the y/offset are ignored). `false`
+    /// (default) keeps ordinary UV mapping for authored meshes (the eye).
+    pub triplanar: bool,
 }
 
 impl Default for Material {
@@ -95,6 +128,11 @@ impl Material {
         depth_bias: 0.0,
         fresnel: 0.0,
         albedo_texture: None,
+        uv_scale: Vec2::ONE,
+        uv_offset: Vec2::ZERO,
+        normal_texture: None,
+        normal_strength: 1.0,
+        triplanar: false,
     };
 }
 
@@ -133,6 +171,11 @@ mod tests {
         assert_eq!(m.depth_bias, 0.0);
         assert_eq!(m.fresnel, 0.0);
         assert_eq!(m.albedo_texture, None);
+        assert_eq!(m.uv_scale, Vec2::ONE);
+        assert_eq!(m.uv_offset, Vec2::ZERO);
+        assert_eq!(m.normal_texture, None);
+        assert_eq!(m.normal_strength, 1.0);
+        assert!(!m.triplanar);
     }
 
     #[test]
