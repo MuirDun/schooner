@@ -2,9 +2,9 @@
 
 These are explicitly flagged as open and require input before final implementation.
 
-1. **The food.** What does it look like? The script describes it as "gel-bricks" with a vinegary smell. Confirm: gelatinous, semi-translucent, mounted in metal frames or loose? Color in default presentation? Note: high Researcher attitude shifts the *appearance* toward more appetizing without changing hunger fullness — needs an art direction pass on both default and high-comfort variants.
+1. ~~**The food.**~~ **Resolved** → [`assets.md`](assets.md) §Food (the gel-brick). Wet, glowing, semi-translucent sulfur gel; uncanny appetite (craved by the body, repellent to us); three attitude-presentation states; food is the licensed vivid beacon.
 
-2. **The sulfur blocks.** The pushable/throwable blocks throughout the chambers. Confirm aesthetic: rough cubes with white crystalline veining? Standardized size, or varied?
+2. ~~**The sulfur blocks.**~~ **Resolved** → [`assets.md`](assets.md) §Interactive objects (tools). The throwables are **forged metal, not sulfur** (sulfur is food only): dense, smooth, dark forged iron; affordance by form/material contrast; type family cube / sphere / rod / fixed plates.
 
 3. **Player avatar.** The player is first-person throughout, but their hands are visible during interactions. Confirm: are they shown as recognizably human (visibly modified with embedded apparatus)? Or are they abstracted / minimal?
 

@@ -7,6 +7,21 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum TextureAsset {
     Glass,
+    IronWall,
+    IronWallNormal,
+    MetalFloor,
+    MetalFloorNormal,
+    MetalCube,
+}
+
+impl TextureAsset {
+    /// `true` for *data* textures (normal maps) — they must upload
+    /// through the linear path. `false` for *color* textures (albedo,
+    /// glass), which are sRGB-encoded. Drives the `load_png` vs
+    /// `load_png_linear` branch in [`ensure`].
+    fn is_data(self) -> bool {
+        matches!(self, Self::IronWallNormal | Self::MetalFloorNormal)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -23,6 +38,9 @@ pub enum MeshAsset {
 pub struct ModelHandle {
     pub mesh: MeshHandle,
     pub albedo_texture: Option<TextureHandle>,
+    /// Normal map embedded in the glb, uploaded through the *linear*
+    /// path (it's data, not color). `None` when the glb binds none.
+    pub normal_texture: Option<TextureHandle>,
 }
 
 #[derive(Clone, Copy)]
@@ -50,20 +68,51 @@ impl Assets {
             .get(&k)
             .unwrap_or_else(|| panic!("model {k:?} not resident - missing from manifest"))
     }
+
+    pub fn clean(&mut self) {
+        self.textures.clear();
+        self.models.clear();
+    }
 }
 
 fn texture_path(k: TextureAsset) -> &'static str {
     match k {
         TextureAsset::Glass => concat!(env!("CARGO_MANIFEST_DIR"), "/assets/steel-window2.png"),
+        TextureAsset::MetalCube => concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/rusty.png"
+        ),
+        TextureAsset::IronWall => {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/metal-wall/iron-wall_albedo.png")
+        }
+        TextureAsset::IronWallNormal => {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/metal-wall/iron-wall_normal.png")
+        }
+        TextureAsset::MetalFloor => concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/metal-floor/Metal021_1K-PNG_Color.png"
+        ),
+        // OpenGL-convention normal (the +Y-up variant our shader expects);
+        // the DX sibling in the same folder is deliberately not used.
+        TextureAsset::MetalFloorNormal => concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/metal-floor/Metal021_1K-PNG_NormalGL.png"
+        ),
     }
 }
 fn mesh_path(k: MeshAsset) -> &'static str {
     match k {
-        MeshAsset::Eye => concat!(env!("CARGO_MANIFEST_DIR"), "/assets/mahli-eye.glb"),
+        MeshAsset::Eye => concat!(env!("CARGO_MANIFEST_DIR"), "/assets/EyeBall.glb"),
     }
 }
 
 pub fn ensure(world: &mut World, need: SceneAssets) {
+    #[cfg(feature = "hot")]
+    return subsecond::call(|| ensure_inner(world, need));
+    #[cfg(not(feature = "hot"))]
+    return ensure_inner(world, need);
+}
+fn ensure_inner(world: &mut World, need: SceneAssets) {
     let (device, queue) = match world.resource::<RenderContext>() {
         Some(ctx) => (ctx.device().clone(), ctx.queue().clone()),
         None => return,
@@ -81,11 +130,22 @@ pub fn ensure(world: &mut World, need: SceneAssets) {
         let reg = world.resource_mut::<TextureRegistry>().unwrap();
         missing
             .iter()
-            .filter_map(|&k| match reg.load_png(&device, &queue, texture_path(k)) {
-                Ok(h) => Some((k, h)),
-                Err(e) => {
-                    log::warn!("texture {k:?} failed: {e}");
-                    None
+            .filter_map(|&k| {
+                let path = texture_path(k);
+
+                // Normal maps are data → linear upload; albedo/glass are
+                // color → sRGB upload.
+                let result = if k.is_data() {
+                    reg.load_png_linear(&device, &queue, path)
+                } else {
+                    reg.load_png(&device, &queue, path)
+                };
+                match result {
+                    Ok(h) => Some((k, h)),
+                    Err(e) => {
+                        log::warn!("texture {k:?} failed: {e}");
+                        None
+                    }
                 }
             })
             .collect()
@@ -137,7 +197,21 @@ pub fn ensure(world: &mut World, need: SceneAssets) {
                     .unwrap()
                     .insert_texture_data(&device, &queue, &label, &tex)
             });
-            (k, ModelHandle { mesh, albedo_texture })
+            // Normal maps go through the *linear* upload — data, not color.
+            let normal_texture = model.normal.map(|tex| {
+                world
+                    .resource_mut::<TextureRegistry>()
+                    .unwrap()
+                    .insert_texture_data_linear(&device, &queue, &label, &tex)
+            });
+            (
+                k,
+                ModelHandle {
+                    mesh,
+                    albedo_texture,
+                    normal_texture,
+                },
+            )
         })
         .collect();
 

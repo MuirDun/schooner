@@ -9,6 +9,7 @@ use schooner_engine::{
 
 #[cfg(feature = "hot")]
 mod hot {
+    use game::scene::assets::Assets;
     use game::scene::{self, ActiveScene, SceneId};
     use schooner_engine::ecs::World;
     use std::sync::Arc;
@@ -31,6 +32,8 @@ mod hot {
                 .resource::<ActiveScene>()
                 .map(|a| a.0)
                 .unwrap_or(SceneId::Playground);
+            let assets = world.resource_mut::<Assets>().unwrap();
+            assets.clean();
             scene::load_scene(world, id);
             log::info!("hot-reloaded {id:?}");
         }

@@ -73,6 +73,13 @@ fn build_inner(world: &mut World, id: SceneId) {
 }
 
 pub fn manifest(id: SceneId) -> assets::SceneAssets {
+    #[cfg(feature = "hot")]
+    return subsecond::call(|| manifest_inner(id));
+    #[cfg(not(feature = "hot"))]
+    return manifest_inner(id);
+}
+
+fn manifest_inner(id: SceneId) -> assets::SceneAssets {
     match id {
         SceneId::Playground => playground::MANIFEST,
     }

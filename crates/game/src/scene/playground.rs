@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec2, Vec3};
 use schooner_engine::{
     BlendMode, ColorGrade, DirectionalLight, EntityId, Fog, Material, MeshHandle, PointLight,
     Shadowcaster, SpotLight, Transform, Vignette, World,
@@ -11,9 +11,27 @@ use crate::scene::{
 };
 
 pub const MANIFEST: SceneAssets = SceneAssets {
-    texture: &[TextureAsset::Glass],
+    texture: &[
+        TextureAsset::Glass,
+        TextureAsset::IronWall,
+        TextureAsset::IronWallNormal,
+        TextureAsset::MetalFloor,
+        TextureAsset::MetalFloorNormal,
+        TextureAsset::MetalCube,
+    ],
     mesh: &[MeshAsset::Eye],
 };
+
+/// World-space size of one texture tile, in metres. The chamber surfaces
+/// use triplanar projection, so this is a single world-space repeat
+/// distance shared by every wall and the floor — the texture is
+/// continuous across the boxes, repeating every `TILE_METERS`.
+const TILE_METERS: f32 = 2.0;
+
+/// Triplanar world scale (repeats per metre) packed into `uv_scale.x`.
+fn triplanar_scale() -> Vec2 {
+    Vec2::splat(1.0 / TILE_METERS)
+}
 
 bitflags! {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -118,6 +136,89 @@ fn spawn_lab_wall(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
 
     wall
 }
+
+/// A chamber wall/ceiling box: built geometry plus the iron-wall albedo +
+/// normal, tiled to `TILE_METERS`. `normal_strength` is held low (0.6) so
+/// the relief reads as raked panelwork, not a bump-everything demo.
+fn spawn_chamber_wall(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
+    let wall = spawn_box(world, center, size);
+
+    let (albedo, normal) = world
+        .resource::<Assets>()
+        .map(|a| {
+            (
+                a.texture(TextureAsset::IronWall),
+                a.texture(TextureAsset::IronWallNormal),
+            )
+        })
+        .unwrap();
+
+    world.insert(
+        wall,
+        Material {
+            albedo_texture: Some(albedo),
+            normal_texture: Some(normal),
+            normal_strength: 0.6,
+            roughness: 0.7,
+            triplanar: true,
+            uv_scale: triplanar_scale(),
+            ..Material::DEFAULT
+        },
+    );
+
+    wall
+}
+
+fn spawn_cube(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
+    let cube = spawn_box(world, center, size);
+
+    let texture = world
+        .resource::<Assets>()
+        .map(|a| a.texture(TextureAsset::MetalCube))
+        .unwrap();
+
+    world.insert(
+        cube,
+        Material {
+            albedo_texture: Some(texture),
+            roughness: 0.5,
+            ..Material::DEFAULT
+        },
+    );
+    cube
+}
+
+/// The chamber floor: the AmbientCG metal albedo + OpenGL normal, tiled to
+/// `TILE_METERS`. Slightly lower roughness than the walls for a tighter
+/// floor highlight under the raking lamp.
+fn spawn_chamber_floor(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
+    let floor = spawn_box(world, center, size);
+
+    let (albedo, normal) = world
+        .resource::<Assets>()
+        .map(|a| {
+            (
+                a.texture(TextureAsset::MetalFloor),
+                a.texture(TextureAsset::MetalFloorNormal),
+            )
+        })
+        .unwrap();
+
+    world.insert(
+        floor,
+        Material {
+            albedo_texture: Some(albedo),
+            normal_texture: Some(normal),
+            normal_strength: 0.6,
+            roughness: 0.35,
+            triplanar: true,
+            uv_scale: triplanar_scale(),
+            ..Material::DEFAULT
+        },
+    );
+
+    floor
+}
 fn spawn_window(world: &mut World, center: Vec3, size: Vec3) {
     let e = world.spawn();
     world.insert(
@@ -205,7 +306,7 @@ fn spawn_eye(world: &mut World, pos: Vec3, size: Vec3) {
         eye,
         Transform {
             translation: pos,
-            rotation: Quat::from_rotation_y((90.0 as f32).to_radians()),
+            rotation: Quat::from_rotation_z((270.0 as f32).to_radians()),
             scale: size,
         },
     );
@@ -214,6 +315,9 @@ fn spawn_eye(world: &mut World, pos: Vec3, size: Vec3) {
         eye,
         Material {
             albedo_texture: model.albedo_texture,
+            normal_texture: model.normal_texture,
+            // Subtle relief — dial up if the eye should read more rugged.
+            normal_strength: 0.5,
             ..Material::DEFAULT
         },
     );
@@ -221,13 +325,13 @@ fn spawn_eye(world: &mut World, pos: Vec3, size: Vec3) {
 }
 
 pub fn build(world: &mut World) {
-    // Zone mood — the per-scene resources. The "chamber" look.
+    // Zone mood — hostile clinical lab: cold grade + cold thin haze.
     world.insert_resource(ColorGrade::CHAMBER_WHITE);
     world.insert_resource(Vignette::CINEMATIC);
     world.insert_resource(Fog {
-        color: Vec3::new(0.04, 0.035, 0.03),
+        color: Vec3::new(0.05, 0.06, 0.08),
         base_height: 0.0,
-        density: 0.02,
+        density: 0.03,
         falloff: 0.3,
         scattering: 0.25,
     });
@@ -244,13 +348,24 @@ pub fn build(world: &mut World) {
     let t = 0.2;
     let h_t = t / 2.0;
 
+    // Chamber shell: ceiling + west/south walls get the iron material.
+    // FLOOR is excluded here and spawned separately so it can take the
+    // distinct metal-floor texture.
     spawn_room(
         world,
         Vec3::new(0.0, h_cs_y, 0.0),
         Vec3::new(chamber_size_x, chamber_size_y, chamber_size_z),
         t,
-        Walls::all() & !Walls::NORTH & !Walls::EAST,
-        spawn_box,
+        Walls::all() & !Walls::NORTH & !Walls::EAST & !Walls::FLOOR,
+        spawn_chamber_wall,
+    );
+
+    // Chamber floor — its own texture. Position/size mirror what
+    // `spawn_room` would compute for the FLOOR slab.
+    spawn_chamber_floor(
+        world,
+        Vec3::new(0.0, -h_t, 0.0),
+        Vec3::new(chamber_size_x, t, chamber_size_z),
     );
 
     // North Wall with a hole
@@ -264,22 +379,23 @@ pub fn build(world: &mut World) {
     let panel_horizontal_size = h_cs_x - h_hs_x;
     let panel_vertical_size = h_cs_y - h_hs_y;
 
-    spawn_box(
+    // North wall is part of the chamber shell — iron material too.
+    spawn_chamber_wall(
         world,
         Vec3::new(-h_cs_x + panel_horizontal_size / 2.0, h_cs_y, h_p_z),
         Vec3::new(panel_horizontal_size, chamber_size_y, t),
     ); // left panel
-    spawn_box(
+    spawn_chamber_wall(
         world,
         Vec3::new(h_cs_x - panel_horizontal_size / 2.0, h_cs_y, h_p_z),
         Vec3::new(panel_horizontal_size, chamber_size_y, t),
     ); // right panel
-    spawn_box(
+    spawn_chamber_wall(
         world,
         Vec3::new(0.0, chamber_size_y - panel_vertical_size / 2.0, h_p_z),
         Vec3::new(hole_size_x, panel_vertical_size, t),
     ); // top panel
-    spawn_box(
+    spawn_chamber_wall(
         world,
         Vec3::new(0.0, 0.0 + panel_vertical_size / 2.0, h_p_z),
         Vec3::new(hole_size_x, panel_vertical_size, t),
@@ -326,13 +442,17 @@ pub fn build(world: &mut World) {
 
     // Light
 
-    // Amibent
+    // Ambient — cold and lifted. A hostile lab is over-lit: brighter than
+    // the moody warm default and pushed blue-grey, so shadows read as cold
+    // fill rather than black. This is the main "birch → clinical" move; it
+    // lifts the whole room toward aggressive white without flattening the
+    // raking hero spot (which still carves the normal-map relief).
     let sun = world.spawn();
     world.insert(
         sun,
         DirectionalLight {
             intensity: 0.0,
-            ambient: Vec3::new(0.10, 0.065, 0.04),
+            ambient: Vec3::new(0.18, 0.20, 0.26),
             ..DirectionalLight::default()
         },
     );
@@ -351,7 +471,10 @@ pub fn build(world: &mut World) {
         world,
         Vec3::new(-h_cs_x * 0.15, lamp_y, -h_cs_z * 0.10),
         Vec3::new(h_cs_x * 0.05, 0.0, h_cs_z * 0.05), // nearly below itself
-        SpotLight::new(Vec3::splat(1.0), 28.0, lamp_range, 42.0, 60.0).with_god_ray_intensity(1.4),
+        // Cool fluorescent white — faintly blue, the interrogation-lamp
+        // tone. Pairs with the cold ambient and CLINICAL_COLD grade.
+        SpotLight::new(Vec3::new(0.92, 0.96, 1.0), 28.0, lamp_range, 42.0, 60.0)
+            .with_god_ray_intensity(1.4),
         true,
     );
 
@@ -373,9 +496,9 @@ pub fn build(world: &mut World) {
         PointLight::new(Vec3::new(1.0, 0.06, 0.03), 6.0, tunnel_length),
     );
 
-    spawn_box(world, Vec3::new(h_cs_x * 0.1, 0.4, 0.0), Vec3::splat(0.8));
-    spawn_box(world, Vec3::new(h_cs_x * 0.1, 1.0, 0.0), Vec3::splat(0.7));
-    spawn_box(
+    spawn_cube(world, Vec3::new(h_cs_x * 0.1, 0.4, 0.0), Vec3::splat(0.8));
+    spawn_cube(world, Vec3::new(h_cs_x * 0.1, 1.0, 0.0), Vec3::splat(0.7));
+    spawn_cube(
         world,
         Vec3::new(-h_cs_x * 0.25, 0.35, h_cs_z * 0.2),
         Vec3::splat(0.7),

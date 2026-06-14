@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Schooner — The Look &amp; Lighting Guide (Game 1: Kinesis)</title>
+<style>
+  :root {
+    --bg:#0e1014; --panel:#171a21; --panel2:#1d212b; --ink:#e7e9ee; --dim:#9aa3b2;
+    --line:#2a2f3a; --accent:#7db8ff; --warm:#ffb469; --red:#ff6b6b; --green:#7fdca0;
+    --violet:#b794f6; --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans);
+         line-height:1.6; font-size:16px; }
+  .wrap { display:grid; grid-template-columns:248px 1fr; max-width:1320px; margin:0 auto; }
+  /* ---- sidebar ---- */
+  nav { position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+        border-right:1px solid var(--line); padding:24px 18px; background:#0b0d11; }
+  nav h2 { font-size:13px; text-transform:uppercase; letter-spacing:.12em; color:var(--dim);
+           margin:18px 0 8px; }
+  nav a { display:block; color:var(--dim); text-decoration:none; padding:3px 0; font-size:14px; }
+  nav a:hover { color:var(--accent); }
+  nav .brand { font-weight:700; color:var(--ink); font-size:16px; letter-spacing:.02em; }
+  nav .sub { font-size:12px; color:var(--dim); margin-top:2px; }
+  /* ---- content ---- */
+  main { padding:40px 48px 120px; max-width:980px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 6px; letter-spacing:-.01em; }
+  h2 { font-size:25px; margin:54px 0 14px; padding-top:14px; border-top:1px solid var(--line);
+       letter-spacing:-.01em; }
+  h3 { font-size:19px; margin:34px 0 10px; color:#fff; }
+  h4 { font-size:15px; margin:22px 0 6px; color:var(--accent); text-transform:uppercase;
+       letter-spacing:.08em; }
+  p { margin:10px 0; }
+  a { color:var(--accent); }
+  code { font-family:var(--mono); font-size:.88em; background:#0b0d11; padding:1px 6px;
+         border-radius:4px; border:1px solid var(--line); color:#dfe6f0; }
+  pre { background:#0b0d11; border:1px solid var(--line); border-radius:10px; padding:16px 18px;
+        overflow-x:auto; font-family:var(--mono); font-size:13px; line-height:1.5; }
+  pre code { background:none; border:none; padding:0; }
+  .lead { font-size:18px; color:var(--dim); max-width:70ch; }
+  .tag { display:inline-block; font-size:11px; font-family:var(--mono); padding:2px 8px;
+         border-radius:20px; border:1px solid var(--line); color:var(--dim); margin-right:4px; }
+  /* tables */
+  table { border-collapse:collapse; width:100%; margin:16px 0; font-size:14px; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line);
+          vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12px; text-transform:uppercase;
+       letter-spacing:.06em; background:var(--panel); }
+  td code { white-space:nowrap; }
+  tr:hover td { background:#13161d; }
+  .def { color:var(--green); font-family:var(--mono); font-size:.85em; }
+  /* callouts */
+  .note, .warn, .key { border-radius:10px; padding:14px 18px; margin:18px 0; font-size:14.5px;
+        border:1px solid var(--line); background:var(--panel); }
+  .note { border-left:3px solid var(--accent); }
+  .warn { border-left:3px solid var(--warm); }
+  .key  { border-left:3px solid var(--violet); }
+  .note b, .warn b, .key b { color:#fff; }
+  /* pipeline diagram */
+  .pipe { display:flex; flex-wrap:wrap; gap:8px; align-items:stretch; margin:20px 0; }
+  .stage { background:var(--panel2); border:1px solid var(--line); border-radius:9px;
+           padding:10px 13px; font-size:13px; flex:1 1 120px; min-width:110px; position:relative; }
+  .stage .n { font-family:var(--mono); font-size:11px; color:var(--accent); }
+  .stage .t { font-weight:600; display:block; margin-top:2px; }
+  .stage .d { color:var(--dim); font-size:12px; margin-top:4px; }
+  .arrow { align-self:center; color:var(--dim); font-size:18px; }
+  .lane { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim);
+          margin:24px 0 6px; }
+  /* swatches */
+  .sw { display:inline-block; width:14px; height:14px; border-radius:3px; vertical-align:-2px;
+        margin-right:6px; border:1px solid rgba(255,255,255,.15); }
+  .grade-card, .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+        padding:18px 20px; margin:14px 0; }
+  .cardgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; }
+  .card h3 { margin-top:0; font-size:17px; }
+  .card .recipe { font-family:var(--mono); font-size:12.5px; color:#cdd6e4; background:#0b0d11;
+        border:1px solid var(--line); border-radius:8px; padding:11px 13px; margin-top:10px;
+        white-space:pre-wrap; }
+  .muted { color:var(--dim); }
+  .knob { font-family:var(--mono); font-size:12px; color:var(--dim); }
+  /* range bar */
+  .bar { height:8px; border-radius:6px; margin:6px 0 2px;
+         background:linear-gradient(90deg,#2a2f3a,#7db8ff); }
+  .bar.warm { background:linear-gradient(90deg,#2a2f3a,#ffb469); }
+  .bar.red  { background:linear-gradient(90deg,#2a2f3a,#ff6b6b); }
+  ul.tight { margin:8px 0; padding-left:22px; }
+  ul.tight li { margin:4px 0; }
+  .kbd { font-family:var(--mono); font-size:12px; background:#222732; border:1px solid #39414f;
+         border-bottom-width:2px; border-radius:5px; padding:1px 7px; color:#fff; }
+  .pillline { color:var(--dim); font-size:13px; font-style:italic; }
+  hr { border:none; border-top:1px solid var(--line); margin:40px 0; }
+  .toc-foot { font-size:11px; color:#56607a; margin-top:30px; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav>
+  <div class="brand">Schooner</div>
+  <div class="sub">The Look &amp; Lighting Guide<br>Game 1 · Kinesis · forward renderer</div>
+  <h2>Foundations</h2>
+  <a href="#philosophy">Rendering philosophy</a>
+  <a href="#pipeline">The frame pipeline</a>
+  <a href="#linear">Linear vs sRGB</a>
+  <h2>The knobs</h2>
+  <a href="#material">Material</a>
+  <a href="#roughness">Roughness &amp; specular</a>
+  <a href="#textures">Textures &amp; triplanar</a>
+  <a href="#normals">Normal maps</a>
+  <a href="#glass">Glass &amp; Fresnel</a>
+  <a href="#decals">Decals &amp; depth bias</a>
+  <a href="#lights">Lights</a>
+  <a href="#attenuation">Attenuation &amp; range</a>
+  <a href="#shadows">Shadows</a>
+  <a href="#fog">Fog &amp; god-rays</a>
+  <a href="#grade">Tonemap &amp; color grade</a>
+  <a href="#vignette">Vignette</a>
+  <a href="#overlay">Post overlay</a>
+  <a href="#camera">Camera</a>
+  <h2>Practice</h2>
+  <a href="#cookbook">Look cookbook</a>
+  <a href="#interactions">How they interact</a>
+  <a href="#debugkeys">Debug keys</a>
+  <a href="#reference">Reference card</a>
+  <div class="toc-foot">Generated against the engine at<br>commit <code>82bdf9f</code> (working tree).<br>2026-06-09.</div>
+</nav>
+
+<main>
+
+<h1>The Look &amp; Lighting Guide</h1>
+<p class="lead">Everything that shapes how a Schooner scene <em>looks</em> — every material field,
+every light, fog, shadows, the post chain — what each parameter does, the value ranges that
+read well, and how to combine them for a given mood. Written for Kinesis (Game&nbsp;1) against
+the forward renderer as it stands today.</p>
+
+<p class="pillline">Pillar fit: this is the engine “tailored, not generic.” The renderer is
+permanently Blinn–Phong + a warm filmic grade — no PBR, even in Game&nbsp;5 — so the knobs
+below are the whole palette. Learn them and you own the look.</p>
+
+<!-- ============================================================ -->
+<h2 id="philosophy">1 · Rendering philosophy</h2>
+
+<p>Three decisions colour everything else:</p>
+
+<ul class="tight">
+<li><b>Blinn–Phong, not PBR.</b> Surfaces have an <code>albedo</code> and a single
+<code>roughness</code> scalar that widens or tightens a specular lobe. There is no metallic,
+no GGX, no energy conservation. <code>roughness</code> here is an <em>artistic dial on highlight
+width</em>, not a physical microfacet term. This keeps the per-draw uniform tiny and the look
+hand-authored.</li>
+<li><b>HDR linear in, filmic LDR out.</b> The forward pass renders into a floating-point HDR
+target in linear light. Lights can push values well past 1.0. A post pass then runs a
+<b>Narkowicz ACES</b> tonemap to compress that HDR into displayable range with a soft
+highlight shoulder and gentle shadow toe — the “filmic” feel — before the color grade.</li>
+<li><b>Mood is a post-process, geometry is a forward-process.</b> Per-surface shading, lights,
+shadows, fog and god-rays happen <em>in the forward shader</em>. Zone mood (color cast,
+vignette, screen overlays) happens <em>after</em>, in the post chain, as cheap full-screen
+resources you can swap per scene or per gameplay beat without touching geometry.</li>
+</ul>
+
+<div class="note"><b>The mental split you’ll use constantly:</b> <span class="sw" style="background:#7db8ff"></span><b>Forward</b>
+answers “what is this surface and how is it lit here?” &nbsp;·&nbsp;
+<span class="sw" style="background:#b794f6"></span><b>Post</b> answers “what does the whole frame
+feel like?” Reach for a Material/Light knob for the first; reach for ColorGrade/Vignette/Overlay
+for the second.</div>
+
+<!-- ============================================================ -->
+<h2 id="pipeline">2 · The frame pipeline</h2>
+<p>One frame, start to finish. Understanding this order is the key to predicting how two knobs
+combine — e.g. why fog dims an emissive lamp but the color grade can’t, or why god-rays survive
+a vignette.</p>
+
+<div class="lane">Pass A — Shadow (depth only, once per shadow-casting spot)</div>
+<div class="pipe">
+  <div class="stage"><span class="n">A1</span><span class="t">Render depth</span><span class="d">Each <code>Shadowcaster</code> spot renders the scene’s depth from its viewpoint into a 1024² layer.</span></div>
+</div>
+
+<div class="lane">Pass B — Forward (per pixel of every mesh) → writes HDR linear</div>
+<div class="pipe">
+  <div class="stage"><span class="n">B1</span><span class="t">Vertex</span><span class="d">Model transform · depth-bias nudge · UV scale+offset · build TBN basis.</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">B2</span><span class="t">Sample surface</span><span class="d">Albedo + normal from UV map <em>or</em> triplanar projection.</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">B3</span><span class="t">Lighting</span><span class="d">Directional + spots + points, each Blinn–Phong, spots shadow-tested.</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">B4</span><span class="t">Compose</span><span class="d"><code>ambient + lit + emissive</code></span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">B5</span><span class="t">Fog + god-rays</span><span class="d"><code>mix(fog, scene, T)</code> then <b>+</b> additive god-ray in-scatter.</span></div>
+</div>
+
+<div class="lane">Pass C — Post (one full-screen triangle) → writes final sRGB</div>
+<div class="pipe">
+  <div class="stage"><span class="n">C1</span><span class="t">Tonemap</span><span class="d">Narkowicz ACES. HDR → ~[0,1] with filmic shoulder/toe.</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">C2</span><span class="t">Color grade</span><span class="d">ASC&nbsp;CDL lift/gamma/gain. The zone’s color cast.</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">C3</span><span class="t">Vignette</span><span class="d">Radial corner darken + tint.</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">C4</span><span class="t">Overlay</span><span class="d">Full-screen texture: alpha / multiply / additive.</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">C5</span><span class="t">Clamp</span><span class="d">To [0,1]; swap-chain does sRGB encode on present.</span></div>
+</div>
+
+<div class="key"><b>Two consequences worth memorising.</b>
+<ul class="tight">
+<li><b>Fog is pre-tonemap, grade is post-tonemap.</b> Fog mixes in HDR linear against the lit
+color, so a glowing red lamp behind thick fog correctly dims to a red haze. The grade then shapes
+the already-foggy frame — your color cast is coherent with the fog, not fighting it.</li>
+<li><b>God-rays are added <em>after</em> the fog mix but <em>before</em> tonemap.</b> They’re extra
+radiance scattered into the view ray, so they can blow past white and get rolled off by the ACES
+shoulder like any other highlight.</li>
+</ul></div>
+
+<h4>Bind-group map (where each knob lives on the GPU)</h4>
+<table>
+<tr><th>Group</th><th>Contents</th><th>Authored by</th></tr>
+<tr><td><code>@group(0)</code></td><td>Camera — view / proj / view_proj / position</td><td><code>Camera</code> + <code>Transform</code></td></tr>
+<tr><td><code>@group(1)</code></td><td>Lights <em>and fog</em> — 1 directional, 8 spots, 16 points, counts, fog</td><td>Light components + <code>Fog</code> resource</td></tr>
+<tr><td><code>@group(2)</code></td><td>Per-draw model matrix + material params (dynamic offset)</td><td><code>Transform</code> + <code>Material</code></td></tr>
+<tr><td><code>@group(3)</code></td><td>Shadow depth array + comparison sampler</td><td><code>Shadowcaster</code> marker</td></tr>
+<tr><td><code>@group(4)</code></td><td>Albedo texture + normal texture + sampler</td><td><code>Material</code> texture handles</td></tr>
+</table>
+<p class="muted">Fog rides in the lights group on purpose: the god-ray loop reads fog and spot
+fields together, and co-locating them keeps the pipeline at four bind groups (wgpu’s default cap).</p>
+
+<!-- ============================================================ -->
+<h2 id="linear">3 · Linear vs sRGB — the one thing that silently ruins a look</h2>
+<p>Color textures (albedo) are uploaded <b>sRGB</b> (<code>load_png</code>); the GPU decodes them
+to linear automatically on sample. Data textures (normal maps) must be uploaded <b>linear</b>
+(<code>load_png_linear</code>) — they’re vectors, not colors, and an sRGB decode would bend them.</p>
+<p>The asset layer already routes this for you: <code>TextureAsset::is_data()</code> returns
+<code>true</code> for normal maps, picking the linear path. When you add a new texture, the only
+question is: <em>is this color or data?</em> Get it wrong and normals come out subtly wrong
+(too weak, wrong direction) with no error.</p>
+<div class="warn"><b>Normal-map convention:</b> the shader expects <b>OpenGL</b> (+Y-up green channel).
+The floor uses <code>Metal021_..._NormalGL.png</code>, not the DirectX <code>_NormalDX</code> sibling.
+If relief looks inverted (bumps read as dents under raking light), you’ve got a DX map.</p>
+
+<!-- ============================================================ -->
+<h2 id="material">4 · Material — the per-surface knob set</h2>
+<p><code>Material</code> is an <em>optional</em> component. A mesh with no <code>Material</code>
+renders against <code>Material::DEFAULT</code>: white albedo, mid roughness, opaque, no texture.
+Spawn one to deviate. Every field, with the value that ships as default:</p>
+
+<table>
+<tr><th>Field</th><th>Type · default</th><th>Range that reads well</th><th>What it does</th></tr>
+<tr><td><code>albedo</code></td><td>Vec3 · <span class="def">(1,1,1)</span></td><td>0–1 per channel</td><td>Base surface color, linear. Multiplied into the sampled texture (so <code>(1,1,1)</code> + texture = texture untinted).</td></tr>
+<tr><td><code>roughness</code></td><td>f32 · <span class="def">0.5</span></td><td>0.05 – 1.0</td><td>Highlight width. Low = tight, bright glint (wet/metal); high = broad, dim (chalk/concrete). See §5.</td></tr>
+<tr><td><code>emissive</code></td><td>Vec3 · <span class="def">(0,0,0)</span></td><td>0–1 color</td><td>The surface’s <em>own</em> light color. Added outside lighting — survives shadow, ignores ambient.</td></tr>
+<tr><td><code>emissive_intensity</code></td><td>f32 · <span class="def">0.0</span></td><td>0 – ~5+</td><td>Scales emissive. Push past 1 to make a lamp glow into the ACES shoulder (bloom-like rolloff).</td></tr>
+<tr><td><code>blend</code></td><td>BlendMode · <span class="def">Opaque</span></td><td>Opaque / AlphaBlend</td><td>Opaque uses REPLACE (ignores alpha). AlphaBlend uses the over-operator (reads alpha as coverage).</td></tr>
+<tr><td><code>opacity</code></td><td>f32 · <span class="def">1.0</span></td><td>0–1</td><td>Uniform coverage, multiplied into texture alpha. <em>Only meaningful under AlphaBlend.</em></td></tr>
+<tr><td><code>depth_bias</code></td><td>f32 · <span class="def">0.0</span></td><td>0.001 – 0.01 m</td><td>Nudges the surface toward the camera along the view ray before the depth test. For coplanar decals. See §8.</td></tr>
+<tr><td><code>fresnel</code></td><td>f32 · <span class="def">0.0</span></td><td>0 or 1 (gate)</td><td>Schlick rim. 0 = matte dielectric. &gt;0 lifts specular + alpha at grazing angles → glass. See §7.</td></tr>
+<tr><td><code>albedo_texture</code></td><td>Option&lt;Handle&gt; · <span class="def">None</span></td><td>—</td><td>Color map. <code>None</code> binds WHITE 1×1 (the tint shows through unchanged).</td></tr>
+<tr><td><code>uv_scale</code></td><td>Vec2 · <span class="def">(1,1)</span></td><td>0.25 – 8</td><td>Per-axis UV tiling: <code>(4,2)</code> repeats 4× across U, 2× across V. In triplanar mode <code>.x</code> = world repeats/metre.</td></tr>
+<tr><td><code>uv_offset</code></td><td>Vec2 · <span class="def">(0,0)</span></td><td>0–1</td><td>UV shift after scale (<code>uv·scale + offset</code>). Atlas sub-rects, decal placement.</td></tr>
+<tr><td><code>normal_texture</code></td><td>Option&lt;Handle&gt; · <span class="def">None</span></td><td>—</td><td>Tangent-space normal map (linear). <code>None</code> binds FLAT_NORMAL (0,0,1) = identity.</td></tr>
+<tr><td><code>normal_strength</code></td><td>f32 · <span class="def">1.0</span></td><td><b>0.3 – 0.6</b></td><td>Scales the map’s tangent xy. Keep low for the HL2/Gothic “raked relief” look, not bump-everything. See §6.</td></tr>
+<tr><td><code>triplanar</code></td><td>bool · <span class="def">false</span></td><td>true for architecture</td><td>World-space projection instead of mesh UVs — seamless across separately-spawned boxes. See §6b.</td></tr>
+</table>
+
+<div class="note"><b>Idiom:</b> spread from the default and only set what differs.
+<pre><code>Material {
+    albedo_texture: Some(metal),
+    roughness: 0.35,
+    normal_texture: Some(metal_n),
+    normal_strength: 0.6,
+    triplanar: true,
+    uv_scale: Vec2::splat(1.0 / 2.0),  // a tile every 2 m
+    ..Material::DEFAULT
+}</code></pre></div>
+
+<!-- ============================================================ -->
+<h3 id="roughness">5 · Roughness → specular, in numbers</h3>
+<p>The shader maps roughness to a Blinn–Phong shininess exponent:</p>
+<pre><code>shininess = pow(2.0, mix(0.0, 10.0, 1.0 - roughness));</code></pre>
+<table>
+<tr><th>roughness</th><th>shininess</th><th>Reads as</th></tr>
+<tr><td><code>0.05</code></td><td>≈ 724</td><td>Sharp pinpoint glint — wet glass, polished chrome, the eye’s cornea.</td></tr>
+<tr><td><code>0.20</code></td><td>≈ 256</td><td>Clean metal panel, tight raking highlight (chamber walls).</td></tr>
+<tr><td><code>0.35</code></td><td>≈ 90</td><td>Brushed/worn metal floor — a defined but spread highlight.</td></tr>
+<tr><td><code>0.50</code></td><td><b>32</b></td><td>The default. Matches the Game-0 hardcoded baseline.</td></tr>
+<tr><td><code>1.00</code></td><td>1</td><td>Near-matte — concrete, painted drywall, the dark lab shell (<code>albedo 0.02, roughness 1.0</code>).</td></tr>
+</table>
+<p>Two things to remember: the highlight color is always white (dielectric convention), and the
+matte specular floor is <code>0.3</code> — every surface has <em>some</em> glint unless Fresnel
+pushes it higher. There is no “turn off specular”; instead crank roughness toward 1 to spread it
+into invisibility.</p>
+
+<!-- ============================================================ -->
+<h3 id="textures">6 · Textures, tiling &amp; triplanar</h3>
+<p><b>UV mode (default).</b> Mesh UVs × <code>uv_scale</code> + <code>uv_offset</code>. Use for
+authored meshes that ship their own UV layout (the eye glb). The sampler is <code>Repeat</code>,
+so any scale above 1 wraps and tiles.</p>
+
+<h4 id="triplanar-sub">6b · Triplanar projection</h4>
+<p>Set <code>triplanar: true</code> and the surface is textured by <b>world-space projection</b>:
+albedo and normal are sampled on the three world planes (X, Y, Z facing) and blended by the
+geometric normal. The payoff for Kinesis’ procedural architecture is huge:</p>
+<ul class="tight">
+<li>The texture is <b>continuous across separately-spawned boxes</b> — no per-box UV seam.</li>
+<li>No stretching on thin reveals (a wall’s edge doesn’t smear).</li>
+<li>You never author UVs for room geometry — just spawn boxes.</li>
+</ul>
+<p>In triplanar mode <code>uv_scale.x</code> is reinterpreted as <b>world repeats per metre</b>
+(y and offset ignored). The playground uses <code>1.0 / TILE_METERS</code> with
+<code>TILE_METERS = 2.0</code> — one texture tile every two metres, shared by every wall and floor.</p>
+<div class="note"><b>Industry note.</b> Normal maps naively triplanar-blended go flat; the shader uses
+Golus’s <em>whiteout blend</em> (2017) to reorient each plane’s tangent normal by the geometric
+normal before blending. You get correct relief on triplanar walls for free — just supply a
+<code>normal_texture</code>. <span class="muted">Cost: 3× the texture samples of UV mode. Fine for
+indoor scale; revisit if outdoor geometry dominates.</span></div>
+<div class="warn"><b>Single-mip caveat.</b> Textures are single-mip until Game 2A. Very high tiling
+(or thin distant surfaces) will shimmer — keep <code>uv_scale</code> / world-repeats modest.</div>
+
+<!-- ============================================================ -->
+<h3 id="normals">6c · Normal maps &amp; the “raked relief” look</h3>
+<p>A normal map perturbs the per-fragment normal so flat geometry catches light as if it had
+surface detail. The single most important authoring lesson here:</p>
+<div class="key"><b>Keep <code>normal_strength</code> at 0.3–0.6.</b> Full strength (1.0) reads as a
+high-frequency bump demo. The Schooner look is <em>subtle relief raked by hard light</em> —
+Half-Life&nbsp;2 / Gothic, not a tech showcase. The playground holds walls and floor at
+<code>0.6</code>, the eye at <code>0.5</code>. The hero spot’s grazing angle does the rest:
+low relief + raking light = panelwork that reads as real.</div>
+<p>Mechanically: the map’s tangent-space xy is scaled by <code>normal_strength</code> (0 = flat
+geometric normal, 1 = full authored relief), then rotated into world space through a TBN basis
+re-orthonormalised per fragment. FLAT_NORMAL binds when there’s no map, so the path is uniform.</p>
+
+<!-- ============================================================ -->
+<h3 id="glass">7 · Glass &amp; Fresnel</h3>
+<p><code>fresnel</code> is the <em>only</em> knob that turns a translucent pane into believable
+glass. At 0 (default) every surface is a matte dielectric. Above 0, the shader applies Schlick’s
+<code>(1 − n·v)⁵</code>: the surface stays clear face-on but lifts both its <b>specular highlight</b>
+and its <b>alpha</b> toward 1 at grazing angles — reflective and opaque along the silhouette,
+exactly how real glass behaves.</p>
+<p>The recipe is a combination, not a single field. From the playground window:</p>
+<pre><code>Material {
+    albedo: Vec3::new(0.6, 0.7, 0.8),   // cool glass tint
+    albedo_texture: Some(glass),
+    roughness: 0.1,                     // smooth → tight reflections
+    opacity: 0.2,                       // mostly see-through face-on
+    blend: BlendMode::AlphaBlend,       // needs the transparent path
+    fresnel: 1.0,                       // rim reflection ON
+    ..Material::DEFAULT
+}</code></pre>
+<p><b>fresnel pairs with low opacity + low roughness.</b> High opacity defeats the see-through;
+high roughness blurs the rim glint that sells it.</p>
+
+<!-- ============================================================ -->
+<h3 id="decals">8 · Decals &amp; depth bias</h3>
+<p>A decal quad sitting flush on a wall z-fights — both surfaces are coplanar, the depth test
+can’t decide which wins, and you get shimmer. <code>depth_bias</code> (world metres) nudges the
+decal toward the camera <em>along the view ray</em> before the depth test: screen position is
+unchanged (it stays on the same ray), only its depth shrinks, so it wins <code>depth_compare:
+Less</code> without visibly floating off the wall. A few millimetres (<code>0.002–0.01</code>) is
+plenty. Shading still uses the true unbiased position, so lighting and shadows are unaffected.</p>
+
+<!-- ============================================================ -->
+<h2 id="lights">9 · Lights</h2>
+<p>Three light types. All split <b>unit-magnitude tint (<code>color</code>)</b> from a
+<b>scalar <code>intensity</code></b> so you can rebalance brightness without retouching hue.
+The rough per-draw contribution is:</p>
+<pre><code>albedo · color · intensity · attenuation · dot(N, L)</code></pre>
+
+<h3>9a · DirectionalLight — the sun &amp; the ambient carrier</h3>
+<p>Positionless (at infinity). Carries its own <code>direction</code> (the way light
+<em>travels</em>, sun→surface) — it does <em>not</em> pair with a Transform. The renderer uses the
+first one it finds.</p>
+<table>
+<tr><th>Field</th><th>Default (<code>sun()</code>)</th><th>Notes</th></tr>
+<tr><td><code>direction</code></td><td>(-0.4, -1.0, -0.3)</td><td>Down-and-forward. Normalised in-shader.</td></tr>
+<tr><td><code>color</code></td><td>(1,1,1)</td><td>Unit tint.</td></tr>
+<tr><td><code>intensity</code></td><td>1.0</td><td>Set to <b>0</b> to keep only ambient (see below).</td></tr>
+<tr><td><code>ambient</code></td><td>(0.1, 0.1, 0.1)</td><td>Flat fill added to every fragment, tinted by albedo. Stand-in for indirect light.</td></tr>
+</table>
+<div class="key"><b>The ambient trick — use this constantly indoors.</b> Ambient is read
+<em>unconditionally</em> from the directional slot, even when <code>intensity = 0</code>. So an
+indoor chamber with no sun still spawns a <code>DirectionalLight</code> purely to carry ambient:
+<pre><code>DirectionalLight {
+    intensity: 0.0,                          // no sun beam
+    ambient: Vec3::new(0.18, 0.20, 0.26),    // cold lifted fill
+    ..DirectionalLight::default()
+}</code></pre>
+This is the “birch → clinical” move from the playground: a cold, <em>lifted</em> ambient pushes
+shadows toward cold fill rather than black, reading as a hostile over-lit lab — without flattening
+the raking hero spot that still carves the normal relief. If no DirectionalLight exists at all, a
+placeholder supplies a flat grey ambient (0.3) so geometry is at least visible.</div>
+
+<h3>9b · SpotLight — the workhorse of indoor mood</h3>
+<p>Positioned. <b>Authoring contract:</b> spawn with both a <code>Transform</code> and a
+<code>SpotLight</code>. Position is <code>Transform.translation</code>; aim is
+<code>Transform.rotation · -Z</code> (shines along local −Z). Build it with degree-valued cone
+half-angles via <code>SpotLight::new</code>:</p>
+<pre><code>SpotLight::new(color, intensity, range, inner_deg, outer_deg)
+    .with_god_ray_intensity(1.4)   // optional, default 1.0</code></pre>
+<table>
+<tr><th>Param</th><th>Default</th><th>What it does</th></tr>
+<tr><td><code>color</code></td><td>(1,1,1)</td><td>Beam tint. Cool fluorescent (0.92,0.96,1.0) for clinical; warm (1.0,0.96,0.9) for comfort.</td></tr>
+<tr><td><code>intensity</code></td><td>1.0</td><td><b>Goes high</b> — playground hero spot is <code>28</code>. Inverse-square falloff eats it (see §10).</td></tr>
+<tr><td><code>range</code></td><td>10 m</td><td>Soft cutoff radius; also the shadow far-plane. Set ~2× the room height.</td></tr>
+<tr><td><code>inner_deg</code></td><td>20°</td><td>Half-angle of the full-strength core.</td></tr>
+<tr><td><code>outer_deg</code></td><td>30°</td><td>Half-angle where the beam reaches zero. Inner→outer is a <code>smoothstep</code> soft edge.</td></tr>
+<tr><td><code>god_ray_intensity</code></td><td>1.0</td><td>Per-spot multiplier on fog scattering. 1.8 = emphatic beam, 0.4 = subtle, 0 = off. See §11.</td></tr>
+</table>
+<p><b>Cone shape intuition.</b> A tight inner/outer gap (e.g. 20°/22°) gives a hard-edged
+spotlight circle; a wide gap (42°/60°, the playground hero) gives a soft, equipment-like pool.
+Inner = outer makes a crisp cutoff with no falloff band.</p>
+<p>The playground’s “reads as equipment, not cinematography” hero lamp:</p>
+<pre><code>SpotLight::new(Vec3::new(0.92,0.96,1.0), 28.0, range, 42.0, 60.0)
+    .with_god_ray_intensity(1.4)
+// mounted high, offset to a corner, aimed near-straight-down
+// → rakes the floor, long hard shadows, carves the normal relief</code></pre>
+
+<h3>9c · PointLight — omnidirectional accents</h3>
+<p>Positioned, pairs with a Transform (only translation used). No cone, no shadow support.
+Inverse-square with a soft <code>range</code> cutoff. Kinesis uses these for the dim red
+service-corridor accents:</p>
+<pre><code>PointLight::new(Vec3::new(1.0, 0.06, 0.03), 6.0, tunnel_length)
+// deep red, intensity 6, reach = tunnel length</code></pre>
+<table>
+<tr><th>Param</th><th>Default</th><th>Notes</th></tr>
+<tr><td><code>color</code></td><td>(1,1,1)</td><td>Unit tint.</td></tr>
+<tr><td><code>intensity</code></td><td>1.0</td><td>Like spots, push up — 1/d² eats it fast.</td></tr>
+<tr><td><code>range</code></td><td>10 m</td><td>Soft cutoff radius.</td></tr>
+</table>
+<p class="muted">Capacity per frame: 1 directional, up to 8 spots, up to 16 points. Trailing slots
+are never read.</p>
+
+<!-- ============================================================ -->
+<h3 id="attenuation">10 · Why intensity goes so high — the attenuation model</h3>
+<p>Spots and points use a <b>windowed inverse-square</b> falloff (the UE4/Frostbite shape):</p>
+<pre><code>window = max(1 - (d/range)⁴, 0)
+atten  = window² / (1 + d²)</code></pre>
+<p>The <code>1/(1+d²)</code> is physically-motivated falloff with a guard against the blow-up at
+the lamp itself; the windowing term tapers smoothly to exactly zero at <code>range</code> (no hard
+edge). The practical consequence: <b>brightness drops to ~1/(1+d²) with distance</b>, so at 5 m a
+light is already at ~1/26 of source. That’s why the hero spot needs intensity 28 to read across a
+5 m chamber, and the red point needs 6. <em>If a light looks too dim, raise intensity before
+anything else.</em></p>
+
+<!-- ============================================================ -->
+<h2 id="shadows">11 · Shadows</h2>
+<p>Opt a spot into shadow-casting by attaching the <code>Shadowcaster</code> marker component
+(the playground’s <code>spawn_spot(.., casts_shadow: true)</code> does this). Cost is paid only by
+marked lights — both an extra depth pass and the forward shader’s comparison sample.</p>
+<table>
+<tr><th>Property</th><th>Value</th><th>Why</th></tr>
+<tr><td>Max shadow casters</td><td><b>4</b></td><td>Indoor Kinesis wants 1, rarely 2. Overflow is clamped + warned.</td></tr>
+<tr><td>Resolution</td><td>1024² per caster</td><td>Plenty for a 6–10 m indoor cast; PCF hides the texel grid.</td></tr>
+<tr><td>Projection</td><td>FOV from outer cone, near 0.1, far = <code>range</code></td><td>The shadow frustum tracks the spot’s cone automatically.</td></tr>
+<tr><td>Point-light shadows</td><td>Not supported</td><td>Would need cube maps (6 passes). Kinesis points are dim accents.</td></tr>
+</table>
+<h4>Softness — the F1 PCF cycle</h4>
+<p>Shadow edges are softened with <b>PCF</b> (percentage-closer filtering). <span class="kbd">F1</span>
+cycles the kernel; the shipping default is <b>Soft3x3</b>:</p>
+<table>
+<tr><th>Kernel</th><th>Taps</th><th>Look</th></tr>
+<tr><td>Single</td><td>1×1</td><td>Hard edges. A baseline to see what PCF adds.</td></tr>
+<tr><td><b>Soft3x3</b> (default)</td><td>3×3</td><td>Natural soft silhouette at 1024² indoor scale. <em>Ship this.</em></td></tr>
+<tr><td>Wide5x5</td><td>5×5</td><td>Wider blur; exists for the A/B comparison, not as a recommendation.</td></tr>
+</table>
+<p class="muted">Acne is handled by <b>normal-offset bias</b> (Sylvan/Holbert) — the sample position
+is pushed along the surface normal scaled by (1−n·l), plus a small slope-scaled rasterizer bias as
+far-plane defense. This is the modern recipe; you shouldn’t need to touch it.</p>
+<div class="note"><b>Authoring a good shadow:</b> mount the caster spot <em>high and off-centre</em>
+so it rakes — long shadows read as drama and reveal the normal relief. A near-straight-down lamp
+gives short, dull shadows. The hero lamp is offset to a corner for exactly this reason.</div>
+
+<!-- ============================================================ -->
+<h2 id="fog">12 · Fog &amp; god-rays — the atmosphere resource</h2>
+<p><code>Fog</code> is a single <code>World</code> resource (one medium per scene), seeded off
+(<code>density = 0</code>). It does two jobs from five fields: <b>height fog</b> (extinction) and
+<b>god-rays</b> (in-scattering through spot cones).</p>
+<table>
+<tr><th>Field</th><th>Off / range</th><th>What it does</th></tr>
+<tr><td><code>color</code></td><td>linear RGB</td><td>“What the room dissolves into” at infinity. Cool grey for cold dread, warm for dusk.</td></tr>
+<tr><td><code>density</code></td><td><b>0 = off</b>; 0.03 thin → 0.2 thick</td><td>Thickness at <code>base_height</code>. <code>0</code> short-circuits the whole system.</td></tr>
+<tr><td><code>base_height</code></td><td>world y</td><td>The y where density = <code>density</code>; above it density falls off.</td></tr>
+<tr><td><code>falloff</code></td><td>0 = uniform; 0.3–0.5 typical</td><td>Exponential height falloff (1/units). Higher = fog hugs the floor, thins overhead.</td></tr>
+<tr><td><code>scattering</code></td><td>0 = no rays; 0.2–0.6</td><td>Single-scatter coefficient → god-ray brightness. Decoupled from density on purpose.</td></tr>
+</table>
+
+<h4>Why height fog, not flat fog</h4>
+<p>Constant-density fog reads as “dirty lens” — looking up looks like looking forward. Exponential
+<b>height</b> fog gives the floor a denser layer that thins overhead: the Gothic/Witcher mood.
+The shader integrates the optical depth along the view ray analytically (Wenzel 2007, GPU Gems 2),
+so it’s one closed-form evaluation per fragment, no raymarch.</p>
+
+<h4>God-rays — decoupled scattering</h4>
+<p>Physically, doubling density doubles both extinction <em>and</em> scattering. Games split them
+because authors want “thick haze, subtle glow” and “thin air, bright shafts” as independent moods —
+so <code>scattering</code> is its own knob. For each spot and each fragment, the shader analytically
+finds the segment of the view ray inside the cone (ray-cone intersection, Eberly), evaluates the
+in-scatter at the segment midpoint (Toth 2009), and adds it. Then each spot scales it by its own
+<code>god_ray_intensity</code>.</p>
+<div class="warn"><b>God-rays need three things on at once:</b> <code>density &gt; 0</code> (a medium to
+scatter in), <code>scattering &gt; 0</code> (the medium’s coefficient), and a spot with
+<code>god_ray_intensity &gt; 0</code>. Turn off any one and the beam vanishes. There is no volumetric
+shadow occlusion yet — a wall in front clips the ray (via the visible-surface distance) but the wall
+doesn’t carve dust-motes out of the beam. That’s a Game 2A+ upgrade if it earns its keep.</div>
+
+<p>The playground’s cold thin haze + emphatic hero beam:</p>
+<pre><code>Fog {
+    color: Vec3::new(0.05, 0.06, 0.08),  // cold near-black
+    base_height: 0.0,
+    density: 0.03,                        // thin
+    falloff: 0.3,
+    scattering: 0.25,
+}
+// + hero spot .with_god_ray_intensity(1.4)</code></pre>
+<p class="muted"><span class="kbd">F4</span> cycles fog presets Off → Light → Medium → Heavy for
+quick A/B.</p>
+
+<!-- ============================================================ -->
+<h2 id="grade">13 · Tonemap &amp; color grade — the zone’s color</h2>
+
+<h4>The tonemap (fixed)</h4>
+<p>The HDR frame is compressed by a <b>Narkowicz 2015 fitted ACES</b> curve — the 5-MAD
+approximation everyone ships. It gives the soft highlight shoulder, gentle shadow toe and slight
+saturation push that read as “filmic.” You don’t configure it; you author <em>into</em> it (push
+emissive/lights past 1 and the shoulder rolls them off gracefully). Alternatives noted in the
+source if the look ever needs them: Hill ACES (closer chroma), Hable (warmer mids), Reinhard
+(cheap, muddy).</p>
+
+<h4>The grade — ASC CDL (lift / gamma / gain)</h4>
+<p><code>ColorGrade</code> is a <code>World</code> resource applied <em>post-tonemap</em>, so your
+numbers map to what you see on screen, not to HDR scene-linear. The formula is the industry-standard
+ASC CDL primary:</p>
+<pre><code>graded = (color · gain + lift) ^ (1 / gamma)</code></pre>
+<table>
+<tr><th>Field</th><th>Identity</th><th>Effect (per channel)</th></tr>
+<tr><td><code>gain</code></td><td>(1,1,1)</td><td>Highlight multiplier (shoulder tint). &gt;1 brightens that channel’s highs.</td></tr>
+<tr><td><code>lift</code></td><td>(0,0,0)</td><td>Shadow shift (toe tint). Added after gain.</td></tr>
+<tr><td><code>gamma</code></td><td>(1,1,1)</td><td>Midtone reshape. &gt;1 brightens mids, &lt;1 darkens. <b>Must stay &gt; 0</b> (zero/negative → NaN).</td></tr>
+</table>
+<p class="muted">Because it’s real ASC CDL in fixed order, a colorist can paste these exact numbers
+into DaVinci and see the same look. That portability is deliberate.</p>
+
+<h4>Shipped presets</h4>
+<div class="cardgrid">
+  <div class="grade-card">
+    <h3><span class="sw" style="background:#e9ecf2"></span>CHAMBER_WHITE</h3>
+    <p class="muted">Clinical white room — neutral mids, faintly cool shadows &amp; highs. The default chamber zone.</p>
+    <div class="recipe">lift  (0,    0,    0.01)
+gamma (1,    1,    1)
+gain  (1,    1,    1.02)</div>
+  </div>
+  <div class="grade-card">
+    <h3><span class="sw" style="background:#cdd9f0"></span>CLINICAL_COLD</h3>
+    <p class="muted">Hostile interrogation room — aggressive cold push; red pulled down, blue lifted. Pairs with cold ambient.</p>
+    <div class="recipe">lift  (0,    0.005, 0.02)
+gamma (0.95, 1,     1.06)
+gain  (0.95, 1,     1.08)</div>
+  </div>
+  <div class="grade-card">
+    <h3><span class="sw" style="background:#f3e2c8"></span>CAGE_WARM</h3>
+    <p class="muted">“Comfortable” cage — slight amber across shadows/mids/highs. The comfort side of the attitude axis.</p>
+    <div class="recipe">lift  (0.01, 0.005, 0)
+gamma (1.05, 1,     0.95)
+gain  (1.05, 1,     0.95)</div>
+  </div>
+  <div class="grade-card">
+    <h3><span class="sw" style="background:#e9b6a6"></span>SERVICE_RED</h3>
+    <p class="muted">Red service corridor — strong red bias even on neutral surfaces. The zone with the red point light.</p>
+    <div class="recipe">lift  (0.03, 0,    0)
+gamma (1.1,  0.95, 0.9)
+gain  (1.1,  0.9,  0.85)</div>
+  </div>
+</div>
+<p class="muted"><span class="kbd">F2</span> cycles Default → ChamberWhite → CageWarm → ServiceRed.
+<em>CLINICAL_COLD</em> exists in code but isn’t in the F2 cycle — set it directly on the resource
+(<code>world.insert_resource(ColorGrade::CLINICAL_COLD)</code>) like the scene <code>build</code>
+does.</p>
+<div class="note"><b>Grade vs ambient — don’t confuse them.</b> Ambient <em>color</em> (on the
+DirectionalLight) tints the actual fill light reaching surfaces and interacts with albedo and
+shadow. ColorGrade tints the <em>finished image</em> uniformly. For a cold room you usually want
+both: cold ambient so shadows read cold in 3D, plus a cold grade so the whole frame agrees.</div>
+
+<!-- ============================================================ -->
+<h2 id="vignette">14 · Vignette</h2>
+<p>Radial corner darkening + optional tint, applied after the grade. A separate resource from
+ColorGrade on purpose: the grade is the <em>look</em> (colorist territory, film-portable); the
+vignette is a <em>compositor mood tool</em> you modulate independently — heavier in tense moments,
+off in calm ones — without disturbing the zone’s color.</p>
+<table>
+<tr><th>Field</th><th>Range</th><th>Effect</th></tr>
+<tr><td><code>intensity</code></td><td>0 = off → 1 = full tint</td><td>Blend strength toward <code>tint</code> at the corners.</td></tr>
+<tr><td><code>inner</code></td><td>0 (centre) – 1 (corner)</td><td>Radius untouched inside. Smaller = darkening starts closer to centre.</td></tr>
+<tr><td><code>outer</code></td><td>&gt; inner</td><td>Radius at full tint. <code>inner &lt; outer</code> must hold.</td></tr>
+<tr><td><code>tint</code></td><td>linear RGB</td><td>What corners converge to — usually black.</td></tr>
+</table>
+<p>Presets: <b>CINEMATIC</b> (0.4, inner 0.5, outer 1.0) — “this is a photographed image,” the
+calm default · <b>OPPRESSIVE</b> (0.9, inner 0.2, outer 0.9) — corners crush to black, tunnel-vision,
+reads as threat. The vignette is elliptical (tracks aspect ratio) like every other engine’s.
+<span class="kbd">F3</span> cycles Default → Cinematic → Oppressive.</p>
+
+<!-- ============================================================ -->
+<h2 id="overlay">15 · Post overlay — the full-screen compositor slot</h2>
+<p>The last thing composited, on top of the graded + vignetted frame. A <code>PostOverlay</code>
+resource binds a full-screen texture and composites it one of three ways. It’s the slot for
+screen-space narrative effects.</p>
+<table>
+<tr><th>Blend</th><th>Math</th><th>Intended use</th></tr>
+<tr><td><code>AlphaBlend</code></td><td><code>mix(scene, tex.rgb, tex.a · intensity)</code></td><td>Death red-noise — the texture’s alpha masks where it lands.</td></tr>
+<tr><td><code>Multiply</code></td><td><code>mix(scene, scene·tex.rgb, intensity)</code></td><td>Hunger warm-tint — modulates the whole frame.</td></tr>
+<tr><td><code>Additive</code></td><td><code>scene + tex.rgb · intensity</code></td><td>Flashes — instrument glow, lightning; allowed past white before the final clamp.</td></tr>
+</table>
+<p><code>intensity = 0</code> (default) is the off switch — a no-op regardless of bound texture or
+blend. The texture is the <em>game’s</em> to supply (the engine ships none); it loads through the
+same registry as material textures, so it’s F5-reloadable. <span class="kbd">F6</span> cycles the
+intensity+blend for A/B (it leaves your texture handle alone).</p>
+
+<!-- ============================================================ -->
+<h2 id="camera">16 · Camera</h2>
+<p>Projection params live on the camera entity; pose comes from its <code>Transform</code>. The
+active camera is whichever entity carries the <code>ActiveCamera</code> tag.</p>
+<table>
+<tr><th>Param</th><th>Default</th><th>Effect on look</th></tr>
+<tr><td><code>fov_y_radians</code></td><td>60°</td><td>Vertical field of view. Narrower (45°) compresses depth, telephoto/tense; wider (75°+) exaggerates it, more space &amp; speed but edge distortion.</td></tr>
+<tr><td><code>near</code></td><td>0.1 m</td><td>Near clip. Don’t raise without reason — eats close geometry.</td></tr>
+<tr><td><code>far</code></td><td>1000 m</td><td>Far clip. Indoor scenes never need this much; reverse-Z + tighter far is a Game-3 outdoor upgrade.</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="cookbook">17 · Look cookbook</h2>
+<p class="muted">Concrete parameter sets for recurring moods. Mix and match — each is a starting
+point, not a law.</p>
+
+<div class="cardgrid">
+
+<div class="card">
+<h3>Hostile clinical lab</h3>
+<p class="muted">Over-lit, cold, interrogation-room. The current playground mood.</p>
+<div class="recipe">ColorGrade::CHAMBER_WHITE (or CLINICAL_COLD)
+Vignette::CINEMATIC
+DirectionalLight { intensity: 0,
+  ambient: (0.18, 0.20, 0.26) }   // cold lifted fill
+SpotLight cool (0.92,0.96,1.0)
+  intensity 28, 42°/60°, raking, shadow ON
+Fog cold thin: density 0.03,
+  scattering 0.25, color (0.05,0.06,0.08)</div>
+</div>
+
+<div class="card">
+<h3>Warm comfortable cage</h3>
+<p class="muted">The comfort side of the attitude axis — softer, amber, safe.</p>
+<div class="recipe">ColorGrade::CAGE_WARM
+Vignette::CINEMATIC (low)
+DirectionalLight intensity 0,
+  ambient warm (0.22,0.18,0.14)
+SpotLight warm (1.0,0.96,0.9)
+  intensity ~12, wider/softer cone
+Fog warm faint or off
+god_ray_intensity low (0.4)</div>
+</div>
+
+<div class="card">
+<h3>Red service corridor</h3>
+<p class="muted">Cramped, alarming, deep-machine.</p>
+<div class="recipe">ColorGrade::SERVICE_RED
+Vignette::OPPRESSIVE
+PointLight deep red (1.0,0.06,0.03)
+  intensity 6, range ≈ corridor length
+Low ambient, dark albedo walls
+Fog thin so the red point glows
+  (density ~0.05, scattering low)</div>
+</div>
+
+<div class="card">
+<h3>Volumetric hero beam</h3>
+<p class="muted">A single dramatic shaft of light through haze.</p>
+<div class="recipe">Fog: density 0.05–0.1, scattering 0.5
+SpotLight tight-ish cone
+  .with_god_ray_intensity(1.4–1.8)
+Mount high, aim down, shadow ON
+Dark surroundings + low ambient so the
+  beam is the brightest thing in frame</div>
+</div>
+
+<div class="card">
+<h3>Frosted glass pane</h3>
+<p class="muted">Clear face-on, reflective at the silhouette.</p>
+<div class="recipe">Material {
+  albedo: (0.6,0.7,0.8),
+  roughness: 0.1,
+  opacity: 0.2,
+  blend: AlphaBlend,
+  fresnel: 1.0,
+  ..DEFAULT }</div>
+</div>
+
+<div class="card">
+<h3>Raked panel relief (walls/floor)</h3>
+<p class="muted">Real-feeling architecture from flat boxes.</p>
+<div class="recipe">Material {
+  albedo_texture: Some(metal),
+  normal_texture: Some(metal_n),
+  normal_strength: 0.6,   // low!
+  roughness: 0.2–0.35,
+  triplanar: true,
+  uv_scale: splat(1/2.0),  // tile/2m
+  ..DEFAULT }
++ a hard raking spot to carve it</div>
+</div>
+
+<div class="card">
+<h3>Foggy dread / dissolve to distance</h3>
+<p class="muted">The room swallowed by haze beyond a few metres.</p>
+<div class="recipe">Fog {
+  color: cool grey (0.55,0.58,0.62),
+  density: 0.2, falloff: 0.4,
+  scattering: 0.6,
+  base_height: floor y }
+Vignette::OPPRESSIVE
+emissive lamps dim into haze automatically</div>
+</div>
+
+<div class="card">
+<h3>Glowing emissive object</h3>
+<p class="muted">Food gel, lamp, the eye — light that survives shadow.</p>
+<div class="recipe">Material {
+  emissive: (1.0, 0.3, 0.1),
+  emissive_intensity: 2.0,  // past 1 → ACES bloom-roll
+  ..DEFAULT }
+// reads as a hot source even in shadow,
+// dims correctly behind fog</div>
+</div>
+
+</div>
+
+<!-- ============================================================ -->
+<h2 id="interactions">18 · How the knobs interact (the gotchas)</h2>
+<ul class="tight">
+<li><b>Ambient lives on the DirectionalLight</b>, and is read even at <code>intensity 0</code>. To
+light an indoor room with “fill,” spawn a zero-intensity sun carrying ambient.</li>
+<li><b>Lights need high intensity</b> because of <code>1/(1+d²)</code> falloff. Dim ≠ broken — raise
+intensity first.</li>
+<li><b>Emissive ignores shadows and ambient</b> (it’s the surface’s own light) but <b>does dim
+through fog</b> (fog mixes before tonemap). A lamp behind haze reads as a haze-coloured smudge.</li>
+<li><b>Fog gates god-rays.</b> No density → no rays, whatever <code>scattering</code> or
+<code>god_ray_intensity</code> say.</li>
+<li><b>Grade is post-tonemap, fog is pre-tonemap.</b> Cold grade + warm fog will fight; match them.</li>
+<li><b>opacity only matters under AlphaBlend.</b> An Opaque material with <code>opacity 0.2</code>
+still renders solid (REPLACE blend ignores alpha).</li>
+<li><b>fresnel is a combo, not a switch.</b> It needs low opacity + low roughness + AlphaBlend to
+read as glass; alone it just lifts edge specular.</li>
+<li><b>normal_strength wants to be low (0.3–0.6).</b> 1.0 reads as a bump demo. The look is subtle
+relief + hard raking light.</li>
+<li><b>triplanar reinterprets <code>uv_scale.x</code></b> as world repeats/metre — the other UV
+fields are ignored in that mode.</li>
+<li><b>Color textures sRGB, normal maps linear.</b> Wrong path = silently wrong shading.</li>
+<li><b>Only spots cast shadows</b>, max 4, and only with the <code>Shadowcaster</code> marker.
+Points never shadow.</li>
+<li><b>Raking beats overhead.</b> A near-vertical lamp gives dull short shadows and flat relief;
+offset + angle it to rake.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="debugkeys">19 · Debug keys (live tuning)</h2>
+<p>All on the F-row. Use these to A/B a look against the running scene before committing values.</p>
+<table>
+<tr><th>Key</th><th>Cycles</th><th>Through</th></tr>
+<tr><td><span class="kbd">F1</span></td><td>Shadow PCF kernel</td><td>Single → Soft3x3 → Wide5x5</td></tr>
+<tr><td><span class="kbd">F2</span></td><td>ColorGrade preset</td><td>Default → ChamberWhite → CageWarm → ServiceRed</td></tr>
+<tr><td><span class="kbd">F3</span></td><td>Vignette preset</td><td>Default → Cinematic → Oppressive</td></tr>
+<tr><td><span class="kbd">F4</span></td><td>Fog preset</td><td>Off → Light → Medium → Heavy</td></tr>
+<tr><td><span class="kbd">F5</span></td><td>Reload disk assets</td><td>Re-reads every mesh/texture from disk in place</td></tr>
+<tr><td><span class="kbd">F6</span></td><td>PostOverlay preset</td><td>Off → Alpha → Multiply → Additive (keeps your texture)</td></tr>
+<tr><td><span class="kbd">F12</span></td><td>Debug overlay</td><td>FPS / frame-ms / entities / camera pos / profiler</td></tr>
+</table>
+<div class="note"><b>Workflow:</b> rough a look in with F2–F4 against the live scene, read the numbers
+off the matching preset constants, then write final values into the scene’s <code>build</code>
+(<code>world.insert_resource(...)</code>) and the material/light spawns. F5 lets you iterate textures
+on disk without restarting.</div>
+
+<!-- ============================================================ -->
+<h2 id="reference">20 · One-screen reference card</h2>
+<pre><code>SURFACE  Material { albedo, roughness(0.05 tight→1 matte), emissive+intensity,
+                    fresnel(glass), opacity+AlphaBlend, depth_bias(decals),
+                    albedo/normal_texture, normal_strength(0.3-0.6),
+                    triplanar(arch: uv_scale.x = repeats/m), uv_scale/offset }
+
+SUN/FILL DirectionalLight { direction, color, intensity(0 = ambient-only),
+                            ambient(read always — indoor fill carrier) }
+
+BEAMS    SpotLight::new(color, intensity(~10-30!), range(~2× room h),
+                        inner°, outer°).with_god_ray_intensity(0..1.8)
+                        + Shadowcaster marker  (max 4, 1024², F1 softness)
+
+ACCENTS  PointLight::new(color, intensity, range)   // no shadows
+
+ATMO     Fog { color, density(0 off), base_height, falloff(floor-hug),
+               scattering(god-ray) }   // height fog + cone god-rays
+
+POST     ACES tonemap → ColorGrade(lift/gamma/gain ASC-CDL) → Vignette
+         → Overlay(alpha/multiply/additive) → clamp
+
+ORDER    shadow → forward[ surface→light→(ambient+lit+emissive)→fog mix
+         →+god-rays ] → post[ tonemap→grade→vignette→overlay ]</code></pre>
+
+<hr>
+<p class="toc-foot">Sources: <code>material.rs</code>, <code>render/light.rs</code>,
+<code>render/fog.rs</code>, <code>render/grade.rs</code>, <code>render/vignette.rs</code>,
+<code>render/post_overlay.rs</code>, <code>render/uniforms.rs</code>, <code>render/shadow.rs</code>,
+<code>camera/projection.rs</code>, <code>debug.rs</code>, <code>shaders/forward.wgsl</code>,
+<code>shaders/post.wgsl</code>, and the playground scene
+(<code>crates/game/src/scene/playground.rs</code>, <code>assets.rs</code>).
+Industry references named in-source: Narkowicz ACES (2015), ASC CDL, Schlick (1994),
+Wenzel / GPU Gems 2 (2007), Toth (2009), Golus triplanar whiteout (2017), Sylvan/Holbert
+normal-offset shadow bias, Eberly ray-cone, UE4/Frostbite windowed inverse-square.</p>
+
+</main>
+</div>
+</body>
+</html>
