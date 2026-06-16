@@ -10,13 +10,15 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::debug::{DebugState, ProfilerView, debug_input_system, f5_reload_system};
+use crate::debug::{
+    DebugState, ProfilerView, bloom_input_system, debug_input_system, f5_reload_system,
+};
 use crate::ecs::{IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::Input;
 use crate::render::{
-    ColorGrade, DebugOverlay, Fog, ForwardPipeline, HDR_FORMAT, MeshRegistry, PostOverlay,
-    PostPipeline, RenderContext, ShadowMaps, ShadowPipeline, TextureRegistry, Vignette,
-    render_frame,
+    AutoExposure, Bloom, BloomPipeline, ColorGrade, DebugOverlay, ExposurePipeline, Fog,
+    ForwardPipeline, HDR_FORMAT, MeshRegistry, PostOverlay, PostPipeline, RenderContext,
+    ShadowMaps, ShadowPipeline, TextureRegistry, Vignette, render_frame,
 };
 use crate::time::Time;
 use crate::window::WindowConfig;
@@ -84,6 +86,9 @@ impl App {
         // F1 toggle runs in Update so the visibility flip is
         // observable to render_frame the same frame.
         schedule.add_system(&mut world, Stage::Update, debug_input_system);
+        // F7 bloom cycle — its own system because debug_input_system is
+        // at the 6-SystemParam arity ceiling (see bloom_input_system).
+        schedule.add_system(&mut world, Stage::Update, bloom_input_system);
         Self {
             window_config: WindowConfig::default(),
             window: None,
@@ -315,6 +320,17 @@ impl ApplicationHandler for App {
                 // group is built lazily in render_frame the first
                 // time it's needed (and rebuilt after every resize).
                 let post_pipeline = PostPipeline::new(ctx.device(), ctx.surface_format());
+                // BloomPipeline builds the HDR bright-pass pyramid the
+                // post pass composites in before tonemap. It renders in
+                // HDR_FORMAT (same space as the forward output); its mip
+                // chain is allocated lazily in render_frame on the first
+                // frame and rebuilt on resize.
+                let bloom_pipeline = BloomPipeline::new(ctx.device(), HDR_FORMAT);
+                // ExposurePipeline meters the HDR target's average luminance
+                // and adapts the exposure scalar the post pass applies before
+                // the tone curve (eye adaptation). Its luma chain is
+                // allocated lazily in render_frame and rebuilt on resize.
+                let exposure_pipeline = ExposurePipeline::new(ctx.device());
                 self.world.insert_resource(ctx);
                 self.world.insert_resource(registry);
                 self.world.insert_resource(texture_registry);
@@ -322,6 +338,17 @@ impl ApplicationHandler for App {
                 self.world.insert_resource(shadow_pipeline);
                 self.world.insert_resource(shadow_maps);
                 self.world.insert_resource(post_pipeline);
+                self.world.insert_resource(bloom_pipeline);
+                self.world.insert_resource(exposure_pipeline);
+                // Auto-exposure seeded ON with the general interior default.
+                // Games swap the resource (e.g. AutoExposure::CHAMBER) to
+                // tune the adaptation, or AutoExposure::OFF to disable.
+                self.world.insert_resource(AutoExposure::DEFAULT);
+                // Bloom seeded with the restrained FAINT default — only
+                // genuinely over-bright sources glow, gently. F7 cycles
+                // it up through ERA_GLOW to EVERYTHING_GLOWS; the
+                // bloom_preset in DebugState starts at Faint to match.
+                self.world.insert_resource(Bloom::DEFAULT);
                 // Default ColorGrade = identity (no-op) and default
                 // Vignette = off. Games swap the resource values to
                 // drive per-scene mood.

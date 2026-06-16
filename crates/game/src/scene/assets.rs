@@ -83,10 +83,10 @@ fn texture_path(k: TextureAsset) -> &'static str {
             "/assets/rusty.png"
         ),
         TextureAsset::IronWall => {
-            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/metal-wall/iron-wall_albedo.png")
+            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/metal-wall/wall1_albedo.png")
         }
         TextureAsset::IronWallNormal => {
-            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/metal-wall/iron-wall_normal.png")
+            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/metal-wall/wall1_normal.png")
         }
         TextureAsset::MetalFloor => concat!(
             env!("CARGO_MANIFEST_DIR"),

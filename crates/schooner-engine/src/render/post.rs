@@ -79,6 +79,24 @@ pub struct PostPipeline {
     /// per-frame writes. `None` until the first frame.
     cached_overlay_bind_group: Option<BindGroup>,
     cached_overlay_handle: Option<TextureHandle>,
+    /// BGL for `@group(3)` — the bloom pyramid's mip 0 + sampler. Same
+    /// shape as the HDR group (filterable float 2D + filtering sampler).
+    pub bloom_bgl: BindGroupLayout,
+    /// Cached bloom bind group; rebuilt when `cached_bloom_generation` no
+    /// longer matches the context's HDR generation. The bloom mip-0 view
+    /// is recreated on resize alongside the HDR view, so they share a
+    /// rebuild cadence. `None` until the first frame.
+    cached_bloom_bind_group: Option<BindGroup>,
+    cached_bloom_generation: u64,
+    /// BGL for `@group(4)` — the 1x1 auto-exposure texture + sampler. Same
+    /// shape as the HDR group (filterable float 2D + filtering sampler).
+    pub exposure_bgl: BindGroupLayout,
+    /// Cached exposure bind group. Unlike the others this is rebuilt every
+    /// frame: the exposure pipeline ping-pongs between two 1x1 textures, so
+    /// the "current" view alternates each frame. Rebuilding one tiny bind
+    /// group per frame is cheaper than tracking the alternation. `None` until
+    /// the first frame.
+    cached_exposure_bind_group: Option<BindGroup>,
 }
 
 impl PostPipeline {
@@ -89,6 +107,8 @@ impl PostPipeline {
         let bgl = create_bgl(device);
         let params_bgl = create_params_bgl(device);
         let overlay_bgl = create_overlay_bgl(device);
+        let bloom_bgl = create_bloom_bgl(device);
+        let exposure_bgl = create_exposure_bgl(device);
 
         // Seed the params buffer with the identity grade so the first
         // frame — which runs *before* the per-frame write in
@@ -112,7 +132,13 @@ impl PostPipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("post-pipeline-layout"),
-            bind_group_layouts: &[Some(&bgl), Some(&params_bgl), Some(&overlay_bgl)],
+            bind_group_layouts: &[
+                Some(&bgl),
+                Some(&params_bgl),
+                Some(&overlay_bgl),
+                Some(&bloom_bgl),
+                Some(&exposure_bgl),
+            ],
             immediate_size: 0,
         });
 
@@ -202,6 +228,13 @@ impl PostPipeline {
             // None so the first `ensure_overlay_bind_group` call always
             // builds — no handle has been bound yet.
             cached_overlay_handle: None,
+            bloom_bgl,
+            cached_bloom_bind_group: None,
+            // MAX so the first `ensure_bloom_bind_group` call always
+            // rebuilds against whatever generation the context reports.
+            cached_bloom_generation: u64::MAX,
+            exposure_bgl,
+            cached_exposure_bind_group: None,
         }
     }
 
@@ -280,6 +313,78 @@ impl PostPipeline {
             .as_ref()
             .expect("overlay bind group present")
     }
+
+    /// Lazily rebuild the bloom bind group when the bloom pyramid's mip-0
+    /// view has been recreated (resize bumps the context's HDR generation,
+    /// which is also when the bloom chain is rebuilt). `bloom_view` is
+    /// `BloomPipeline::mip0_view`. Called once per frame from
+    /// `render_frame`; steady state is a generation compare + early return.
+    pub fn ensure_bloom_bind_group(
+        &mut self,
+        device: &Device,
+        bloom_view: &TextureView,
+        bloom_generation: u64,
+    ) -> &BindGroup {
+        if self.cached_bloom_generation != bloom_generation
+            || self.cached_bloom_bind_group.is_none()
+        {
+            self.cached_bloom_bind_group = Some(device.create_bind_group(&BindGroupDescriptor {
+                label: Some("post-bloom-bind-group"),
+                layout: &self.bloom_bgl,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(bloom_view),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        // Reuse the HDR linear-clamp sampler — bloom is
+                        // sampled at the same 1:1 screen UV.
+                        resource: BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            }));
+            self.cached_bloom_generation = bloom_generation;
+        }
+        self.cached_bloom_bind_group
+            .as_ref()
+            .expect("bloom bind group present")
+    }
+
+    /// Rebuild the exposure bind group for the current frame's exposure
+    /// texture. `exposure_view` is
+    /// [`ExposurePipeline::current_exposure_view`]. Rebuilt unconditionally
+    /// each frame because the exposure pipeline ping-pongs its 1x1 textures,
+    /// so the bound view changes every frame — there is no stable generation
+    /// to compare against. The cost is one tiny bind group per frame.
+    ///
+    /// [`ExposurePipeline::current_exposure_view`]: crate::render::exposure::ExposurePipeline::current_exposure_view
+    pub fn ensure_exposure_bind_group(
+        &mut self,
+        device: &Device,
+        exposure_view: &TextureView,
+    ) -> &BindGroup {
+        self.cached_exposure_bind_group = Some(device.create_bind_group(&BindGroupDescriptor {
+            label: Some("post-exposure-bind-group"),
+            layout: &self.exposure_bgl,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(exposure_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    // Reuse the HDR linear-clamp sampler — the 1x1 exposure
+                    // is point-sampled at the texel centre, so the filter
+                    // mode is irrelevant.
+                    resource: BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        }));
+        self.cached_exposure_bind_group
+            .as_ref()
+            .expect("exposure bind group present")
+    }
 }
 
 fn create_bgl(device: &Device) -> BindGroupLayout {
@@ -313,6 +418,60 @@ fn create_overlay_bgl(device: &Device) -> BindGroupLayout {
     // sampler for tiling noise) doesn't force a shared-layout split.
     device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("post-overlay-bgl"),
+        entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Float { filterable: true },
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+fn create_bloom_bgl(device: &Device) -> BindGroupLayout {
+    // Same shape as the HDR group: a filterable float 2D texture plus a
+    // filtering sampler. Its own layout so the binding labels read "bloom"
+    // and a later divergence stays clean.
+    device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("post-bloom-bgl"),
+        entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Float { filterable: true },
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+fn create_exposure_bgl(device: &Device) -> BindGroupLayout {
+    // Same shape as the HDR group: a filterable float 2D texture plus a
+    // filtering sampler. The bound texture is the exposure pipeline's 1x1
+    // R16Float ping-pong target.
+    device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("post-exposure-bgl"),
         entries: &[
             BindGroupLayoutEntry {
                 binding: 0,

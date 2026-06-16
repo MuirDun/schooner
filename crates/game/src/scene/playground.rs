@@ -1,8 +1,8 @@
 use bitflags::bitflags;
 use glam::{Quat, Vec2, Vec3};
 use schooner_engine::{
-    BlendMode, ColorGrade, DirectionalLight, EntityId, Fog, Material, MeshHandle, PointLight,
-    Shadowcaster, SpotLight, Transform, Vignette, World,
+    AutoExposure, BlendMode, Bloom, ColorGrade, DirectionalLight, EntityId, Fog, Material,
+    MeshHandle, PointLight, Shadowcaster, SpotLight, Transform, Vignette, World,
 };
 
 use crate::scene::{
@@ -124,12 +124,23 @@ fn spawn_box(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
 
 fn spawn_lab_wall(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
     let wall = spawn_box(world, center, size);
+    let (albedo, normal) = world
+        .resource::<Assets>()
+        .map(|a| {
+            (
+                a.texture(TextureAsset::IronWall),
+                a.texture(TextureAsset::IronWallNormal),
+            )
+        })
+        .unwrap();
 
     world.insert(
         wall,
         Material {
-            albedo: Vec3::splat(0.02),
-            roughness: 1.0,
+            roughness: 0.2,
+            albedo_texture: Some(albedo),
+            normal_texture: Some(normal),
+            normal_strength: 0.6,
             ..Material::default()
         },
     );
@@ -181,11 +192,50 @@ fn spawn_cube(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
         cube,
         Material {
             albedo_texture: Some(texture),
-            roughness: 0.5,
+            roughness: 0.1,
             ..Material::DEFAULT
         },
     );
     cube
+}
+
+/// The food gel-brick (`design/assets.md` §Food). A wet, semi-translucent
+/// sulfur gel glowing faintly from within, pressed into a crude brick — the
+/// one beacon of warm vivid colour in the cold room, the "thing you want."
+///
+/// Engine fit, straight from the design doc:
+/// - **Inner glow** = `emissive` in sulfur-gold, pushed past 1.0 via
+///   `emissive_intensity` so it reads as a light source and trips the bloom
+///   bright-pass (Part 2's hunger system will drive this intensity up as the
+///   player starves — the gel glows brighter the hungrier you are).
+/// - **Wet glassy translucency** = the same `AlphaBlend` + low-`roughness` +
+///   `fresnel` glass material the window uses, so the surface glistens and
+///   the rim catches light at grazing angles.
+fn spawn_food(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
+    let gel = spawn_box(world, center, size);
+
+    world.insert(
+        gel,
+        Material {
+            // Murky sulfur body — dim on its own; the inner glow carries it.
+            albedo: Vec3::new(0.5, 0.45, 0.12),
+            // Sulfur-gold inner glow. Intensity past 1.0 makes it a beacon
+            // that blooms against the dim red tunnel (the scene runs
+            // `Bloom::ERA_GLOW`, threshold 0.9).
+            emissive: Vec3::new(0.95, 0.85, 0.25),
+            emissive_intensity: 2.5,
+            // Wet glassy gel: glossy, translucent, fresnel rim — same
+            // language as `spawn_window`, tuned more substantial (higher
+            // opacity) since it's a solid brick, not a thin pane.
+            roughness: 0.15,
+            opacity: 0.8,
+            fresnel: 1.0,
+            blend: BlendMode::AlphaBlend,
+            ..Material::DEFAULT
+        },
+    );
+
+    gel
 }
 
 /// The chamber floor: the AmbientCG metal albedo + OpenGL normal, tiled to
@@ -248,6 +298,57 @@ fn spawn_window(world: &mut World, center: Vec3, size: Vec3) {
             fresnel: 1.0,
             ..Material::DEFAULT
         },
+    );
+}
+
+fn spawn_lamp(world: &mut World, pos: Vec3, target: Vec3, lamp_range: f32) {
+    let shell = spawn_box(
+        world,
+        pos + Vec3::new(0.0, 0.05, 0.0),
+        Vec3::new(0.35, 0.6, 0.35),
+    );
+    let shell_albedo = world
+        .resource::<Assets>()
+        .map(|a| a.texture(TextureAsset::MetalFloor))
+        .unwrap();
+    world.insert(
+        shell,
+        Material {
+            albedo_texture: Some(shell_albedo),
+            roughness: 0.15,
+            ..Material::DEFAULT
+        },
+    );
+
+    let lamp = spawn_box(world, pos, Vec3::new(0.3, 0.6, 0.3));
+    world.insert(
+        lamp,
+        Material {
+            albedo: Vec3::new(0.92, 0.96, 1.0),
+            // Searing HDR emissive — far over 1.0 so it survives the
+            // auto-exposure crush and slams the bloom bright-pass: the lamp
+            // stays blinding white and glares hard when you face it, while
+            // the room around it goes black. This is the "hostile light"
+            // cue. Dial up for more pain, down for a calmer fixture.
+            emissive: Vec3::new(0.92, 0.96, 1.0),
+            emissive_intensity: 14.0,
+            roughness: 0.15,
+            opacity: 0.8,
+            fresnel: 1.0,
+            blend: BlendMode::AlphaBlend,
+            ..Material::DEFAULT
+        },
+    );
+
+    spawn_spot(
+        world,
+        pos + Vec3::new(0.0, -0.2, 0.0),
+        target,
+        // Cool fluorescent white — faintly blue, the interrogation-lamp
+        // tone. Pairs with the cold ambient and CLINICAL_COLD grade.
+        SpotLight::new(Vec3::new(0.92, 0.96, 1.0), 28.0, lamp_range, 42.0, 60.0)
+            .with_god_ray_intensity(1.4),
+        true,
     );
 }
 
@@ -329,11 +430,39 @@ pub fn build(world: &mut World) {
     world.insert_resource(ColorGrade::CHAMBER_WHITE);
     world.insert_resource(Vignette::CINEMATIC);
     world.insert_resource(Fog {
-        color: Vec3::new(0.05, 0.06, 0.08),
+        color: Vec3::new(0.02, 0.03, 0.05),
         base_height: 0.0,
-        density: 0.03,
+        density: 0.02,
         falloff: 0.3,
-        scattering: 0.25,
+        scattering: 0.09,
+    });
+    world.insert_resource(Bloom::ERA_GLOW);
+    // Eye adaptation tuned for the chamber: low key + tight exposure ceiling
+    // keep the room gloomy, fast darken speed so facing the lamp (or its
+    // god-ray) stops the image down and deepens the surrounding dark.
+    world.insert_resource(AutoExposure {
+        enabled: true,
+        // Roughly the centre-weighted luminance that maps to exposure 1.0.
+        // Lower => the room reveals/brightens more in the dark and crushes
+        // sooner when light enters; raise if the adapted dark reads too
+        // bright.
+        key: 0.15,
+        min_luma: 0.005,
+        max_luma: 8.0,
+        // Crush floor — facing the lamp drops the room toward black (you're
+        // blinded) while the un-exposed bloom halo stays searing.
+        min_exposure: 0.2,
+        // Ceiling well ABOVE 1.0 so the eye opens up in the dark: stand away
+        // from the light and over a couple of seconds the walls reveal. This
+        // is the "see more once your eyes adjust" half of eye adaptation.
+        // Lower toward 1.5 to keep the dark gloomier; raise for a stronger
+        // reveal.
+        max_exposure: 1.0,
+        // Asymmetric, like a real eye: opening up in the dark is SLOW (the
+        // reveal takes a couple seconds — the immersive beat), stopping down
+        // when light hits is FAST (the blind is near-instant).
+        speed_brighten: 0.5,
+        speed_darken: 6.0,
     });
 
     let chamber_size_x = 11.0;
@@ -404,34 +533,31 @@ pub fn build(world: &mut World) {
     // Tunnel
     let tunnel_length = 4.0;
     let t_p_z = h_p_z - tunnel_length / 2.0 - h_t;
-    spawn_box(
+    spawn_chamber_wall(
         world,
         Vec3::new(-(h_hs_x + h_t), h_cs_y, t_p_z),
         Vec3::new(t, hole_size_y, tunnel_length),
     ); // left tunnel wall
-    spawn_box(
+    spawn_chamber_wall(
         world,
         Vec3::new(h_hs_x + h_t, h_cs_y, t_p_z),
         Vec3::new(t, hole_size_y, tunnel_length),
     ); // right tunnel wall
-    spawn_box(
+    spawn_chamber_wall(
         world,
         Vec3::new(0.0, h_cs_y - h_hs_y - h_t, t_p_z),
         Vec3::new(hole_size_x, t, tunnel_length),
     ); // top tunnel wall
-    spawn_box(
+    spawn_chamber_wall(
         world,
         Vec3::new(0.0, h_cs_y + h_hs_y + h_t, t_p_z),
         Vec3::new(hole_size_x, t, tunnel_length),
     ); // bottom tunnel wall
-    spawn_box(
+    spawn_chamber_wall(
         world,
         Vec3::new(0.0, h_cs_y, h_p_z - tunnel_length - h_t),
         Vec3::new(hole_size_x, hole_size_y, t),
     ); // end of tunnel
-    // spawn_box(world, Vec3::new(1.0, 1.5, -5.0), Vec3::new(t, 1.0, 4.0));
-    // spawn_box(world, Vec3::new(0.0, 1.0, -5.0), Vec3::new(1.6, t, 4.0)); // sill (below)
-    // spawn_box(world, Vec3::new(0.0, 2.0, -5.0), Vec3::new(1.6, t, 4.0)); // sill (top)
 
     // East window
     spawn_window(
@@ -441,18 +567,12 @@ pub fn build(world: &mut World) {
     );
 
     // Light
-
-    // Ambient — cold and lifted. A hostile lab is over-lit: brighter than
-    // the moody warm default and pushed blue-grey, so shadows read as cold
-    // fill rather than black. This is the main "birch → clinical" move; it
-    // lifts the whole room toward aggressive white without flattening the
-    // raking hero spot (which still carves the normal-map relief).
     let sun = world.spawn();
     world.insert(
         sun,
         DirectionalLight {
             intensity: 0.0,
-            ambient: Vec3::new(0.18, 0.20, 0.26),
+            ambient: Vec3::new(0.03, 0.04, 0.05),
             ..DirectionalLight::default()
         },
     );
@@ -462,38 +582,35 @@ pub fn build(world: &mut World) {
 
     // Hero: surgical white, offset to a corner so it RAKES across the
     // floor → long hard shadows. Intensity is high on purpose (1/d²).
-    let lamp_y = chamber_size_y * 0.92;
-    let lamp_range = chamber_size_y * 2.0;
+    let lamp_y = chamber_size_y * 0.96;
 
     // ONE functional lamp: mounted slightly off-center over the subject,
     // aimed near-straight-down. Reads as equipment, not cinematography.
-    spawn_spot(
+    let lamp_pos = Vec3::new(-h_cs_x * 0.15, lamp_y, -h_cs_z * 0.10);
+    spawn_lamp(
         world,
-        Vec3::new(-h_cs_x * 0.15, lamp_y, -h_cs_z * 0.10),
-        Vec3::new(h_cs_x * 0.05, 0.0, h_cs_z * 0.05), // nearly below itself
-        // Cool fluorescent white — faintly blue, the interrogation-lamp
-        // tone. Pairs with the cold ambient and CLINICAL_COLD grade.
-        SpotLight::new(Vec3::new(0.92, 0.96, 1.0), 28.0, lamp_range, 42.0, 60.0)
-            .with_god_ray_intensity(1.4),
-        true,
+        lamp_pos,
+        lamp_pos * Vec3::new(1.0, 0.0, 1.0), // nearly below itself
+        chamber_size_y * 2.0,
     );
-
-    // Fill: dimmer, faintly warm, opposite corner — keeps the room legible
-    // without flattening the hero's shadows. No shadow (cost), low god-ray.
-    // spawn_spot(
-    //     world,
-    //     Vec3::new(h_cs_x * 0.4, lamp_y, h_cs_z * 0.35),
-    //     Vec3::ZERO,
-    //     SpotLight::new(Vec3::new(1.0, 0.96, 0.9), 10.0, lamp_range, 40.0, 60.0)
-    //         .with_god_ray_intensity(0.4),
-    //     false,
-    // );
 
     // Red service light, deep in the tunnel.
     spawn_point(
         world,
         Vec3::new(0.0, chamber_size_y * 0.5, h_p_z - tunnel_length * 0.8),
         PointLight::new(Vec3::new(1.0, 0.06, 0.03), 6.0, tunnel_length),
+    );
+
+    let tunnel_floor_y = h_cs_y - h_hs_y;
+    let gel_size = Vec3::new(0.6, 0.4, 0.5);
+    spawn_food(
+        world,
+        Vec3::new(
+            0.0,
+            tunnel_floor_y + gel_size.y / 2.0,
+            h_p_z - tunnel_length * 0.7,
+        ),
+        gel_size,
     );
 
     spawn_cube(world, Vec3::new(h_cs_x * 0.1, 0.4, 0.0), Vec3::splat(0.8));
@@ -514,7 +631,7 @@ pub fn build(world: &mut World) {
     spawn_room(
         world,
         Vec3::new(20.0, 0.0, 0.0),
-        Vec3::new(40.0, 40.0, 60.0),
+        Vec3::new(80.0, 50.0, 80.0),
         0.1,
         Walls::all() & !Walls::WEST,
         spawn_lab_wall,
@@ -522,7 +639,7 @@ pub fn build(world: &mut World) {
 
     spawn_point(
         world,
-        Vec3::new(39.99, 19.99, -29.99),
-        PointLight::new(Vec3::new(1.0, 0.06, 0.03), 2.0, 20.0),
+        Vec3::new(59.0, 19.0, -29.0),
+        PointLight::new(Vec3::new(1.0, 0.06, 0.03), 10.0, 30.0),
     );
 }

@@ -115,7 +115,7 @@
   <a href="#lights">2 · Lights</a>
   <a href="#shadows">3 · Shadows</a>
   <a href="#fog">4 · Fog &amp; god-rays</a>
-  <a href="#post">5 · Post / grade</a>
+  <a href="#post">5 · Post / bloom / grade</a>
   <a href="#srgb">6 · Color space</a>
   <a href="#cookbook">7 · Cookbook</a>
   <a href="#debug">8 · Debug keys</a>
@@ -189,7 +189,7 @@ out = clamp( overlay( vignette( grade( <b>aces</b>(final) ) ) ) )
   <tr><td class="p">albedo</td><td>Vec3, <b>linear</b> 0–1 (can exceed)</td><td class="d">1,1,1</td><td>Base surface colour. <i>Multiplied</i> into the sampled texture — so with a texture it tints, without one it <i>is</i> the colour. Linear values: <code>0.02</code> is near-black paint, <code>0.5</code> mid-grey.</td></tr>
   <tr><td class="p">roughness</td><td>f32, 0–1</td><td class="d">0.5</td><td>Specular lobe width (a Blinn–Phong analogue, <span class="tag lock">not PBR</span>). <b>Low = tight bright highlight</b> (polished), high = broad dim (matte). Maps to shininess <code>2^(10·(1−r))</code>: r0→1024, r0.5→32, r1→1.</td></tr>
   <tr><td class="p">emissive</td><td>Vec3, linear</td><td class="d">0,0,0</td><td>The surface's own light. Added <i>outside</i> lighting — survives shadow, ignores ambient. Lamps, gel, the eye behind glass.</td></tr>
-  <tr><td class="p">emissive_intensity</td><td>f32, ≥0</td><td class="d">0.0</td><td>Multiplier on <code>emissive</code>. Push past 1 for a hot glow that ACES rolls off softly. Glow only — it does not light neighbours (no GI).</td></tr>
+  <tr><td class="p">emissive_intensity</td><td>f32, ≥0</td><td class="d">0.0</td><td>Multiplier on <code>emissive</code>. Push past 1 for a hot glow that ACES rolls off softly <i>and</i> trips the bloom bright-pass (§5.4) — brighter = bigger halo. Glow only — it does not light neighbours (no GI).</td></tr>
   <tr><td class="p">blend</td><td>Opaque / AlphaBlend</td><td class="d">Opaque</td><td>Selects the pipeline. <code>Opaque</code> uses REPLACE (ignores alpha). <code>AlphaBlend</code> uses the over-operator and is double-sided (no back-face cull).</td></tr>
   <tr><td class="p">opacity</td><td>f32, 0–1</td><td class="d">1.0</td><td>Coverage, multiplied into texture alpha. <b>Only meaningful under AlphaBlend</b> — an Opaque material stays solid whatever this says. Lets a flat-tinted pane fade without an alpha texture.</td></tr>
   <tr><td class="p">fresnel</td><td>f32, 0–1</td><td class="d">0.0</td><td>Schlick rim. 0 = matte dielectric. Above 0, lifts <i>both</i> specular and alpha toward 1 at grazing angles via <code>(1−n·v)^5</code>. <b>The single knob that turns a translucent pane into glass:</b> clear face-on, reflective &amp; opaque at the silhouette.</td></tr>
@@ -270,11 +270,21 @@ out = clamp( overlay( vignette( grade( <b>aces</b>(final) ) ) ) )
   <div class="body">
 <pre>Material {
   emissive: Vec3::new(1.0, 0.1, 0.05),
-  emissive_intensity: 3.0,  <span class="c">// past 1 → ACES rolloff</span>
+  emissive_intensity: 3.0,  <span class="c">// past threshold → blooms (§5.4)</span>
   roughness: 0.5,
   ..Material::DEFAULT
+}
+
+<span class="c">// wet glowing food gel: glow + glassy translucency</span>
+Material {
+  albedo: Vec3::new(0.5, 0.45, 0.12),
+  emissive: Vec3::new(0.95, 0.85, 0.25),  <span class="c">// sulfur-gold</span>
+  emissive_intensity: 2.5,
+  roughness: 0.15, opacity: 0.8, fresnel: 1.0,
+  blend: BlendMode::AlphaBlend,
+  ..Material::DEFAULT
 }</pre>
-<p class="footnote">Glow only — it will <i>not</i> light the wall beside it (no GI). To actually illuminate, pair the emissive mesh with a co-located <code>PointLight</code> of the same colour.</p>
+<p class="footnote">Glow only — it will <i>not</i> light the wall beside it (no GI). To actually illuminate, pair the emissive mesh with a co-located <code>PointLight</code> of the same colour. The higher the <code>emissive_intensity</code>, the bigger the bloom halo (§5.4).</p>
   </div>
 </div>
 
@@ -395,10 +405,12 @@ out = clamp( overlay( vignette( grade( <b>aces</b>(final) ) ) ) )
 <p>God-rays are computed analytically (ray–cone intersection, single midpoint sample — no raymarch, ~10 instructions/spot/fragment). They're <b>additive</b> on top of the foggy scene. To get a visible beam you need <b>all three</b>: fog <code>density &gt; 0</code>, fog <code>scattering &gt; 0</code>, and the spot's <code>god_ray_intensity &gt; 0</code>. The playground's hero lamp uses <code>.with_god_ray_intensity(1.4)</code> against a thin cold <code>scattering: 0.25</code> medium.</p>
 <div class="callout warn"><b>Known limitation.</b> God-rays don't yet respect <i>volumetric</i> shadow occlusion — a wall in front of the cone clips the beam (via the view-ray length), but a wall <i>inside</i> the cone won't carve a shadow notch out of the beam. That's deferred to Game 2A+. Keep beams in open cone volumes for now.</div>
 
-<h2 id="post"><span class="num">5</span>Post — tonemap, grade, vignette, overlay</h2>
-<p>The post pass is the per-scene "mood" layer: three resources plus a fixed tonemap, applied in a locked order to the HDR frame.</p>
+<h2 id="post"><span class="num">5</span>Post — bloom, tonemap, grade, vignette, overlay</h2>
+<p>The post pass is the per-scene "mood" layer: four resources plus a fixed tonemap, applied in a locked order to the HDR frame.</p>
 
 <div class="pipe">
+  <div class="stage"><div class="lbl">resource</div><div class="ttl">Bloom</div><div class="desc">Faint highlight glow, added in HDR <em>before</em> tonemap so it rolls through the shoulder. Off-to-faint by default.</div></div>
+  <div class="arrow">→</div>
   <div class="stage"><div class="lbl">fixed</div><div class="ttl">ACES tonemap</div><div class="desc">Narkowicz fit. HDR→LDR with soft highlight shoulder + gentle toe. <span class="tag lock">not a parameter</span> — the curve is locked.</div></div>
   <div class="arrow">→</div>
   <div class="stage"><div class="lbl">resource</div><div class="ttl">ColorGrade</div><div class="desc">ASC CDL lift/gamma/gain, post-tonemap. The scene's colour identity.</div></div>
@@ -453,6 +465,20 @@ out = clamp( overlay( vignette( grade( <b>aces</b>(final) ) ) ) )
   <tr><td class="p">Multiply</td><td><code>mix(scene, scene·tex.rgb, i)</code></td><td>Hunger warm-tint — modulates the whole frame.</td></tr>
   <tr><td class="p">Additive</td><td><code>scene + tex.rgb·i</code></td><td>Flashes — may blow past white before the final clamp.</td></tr>
 </table>
+
+<h3>5.4 Bloom — the faint highlight glow <span class="tag scene">resource</span></h3>
+<p>A soft glow around the over-bright parts of the frame, added back into the HDR image <b>before</b> the tonemap (unlike grade/vignette/overlay, which run after). Modern dual-filter pyramid (COD:AW 2014) tuned for the <b>2005–2009</b> look it references — HL2, Witcher 1 — so it's a wide warm halation, not a tight modern flare. <b>Faint by default</b>; the full "everything glows" end of the dial exists for one scene, never as the resting state.</p>
+<div class="callout why"><b>What blooms is brightness, not identity.</b> The bright-pass keeps only pixels whose HDR radiance exceeds <code>threshold</code> — there's no per-object bloom flag. To make a thing glow more, make it brighter: raise its <code>emissive_intensity</code> (or a light's <code>intensity</code>) past the threshold. That's how the era authored it. Because the add is pre-tonemap, the glow rolls through the same ACES shoulder as every other highlight.</div>
+<table>
+  <tr><th>Field</th><th>Default</th><th>Effect</th></tr>
+  <tr><td class="p">enabled</td><td class="d">true</td><td>Master gate. Off skips the GPU pyramid build entirely and adds nothing.</td></tr>
+  <tr><td class="p">strength</td><td class="d">0.04</td><td>Master "how much." Additive, so small: <code>0.04</code> faint, <code>0.4+</code> everything glows.</td></tr>
+  <tr><td class="p">threshold</td><td class="d">1.1</td><td>HDR cutoff. <code>≥1</code> = only genuinely over-bright pixels; below 1 hazes midtones.</td></tr>
+  <tr><td class="p">knee</td><td class="d">0.5</td><td>Soft ramp into the threshold (fraction of it) so surfaces fade into bloom instead of popping.</td></tr>
+  <tr><td class="p">filter_radius</td><td class="d">2.0</td><td>Blur spread. 1 = tight, 2–3 = the wide soft era halo.</td></tr>
+  <tr><td class="p">tint</td><td class="d">1,.95,.85</td><td>Warm cast multiplied into the glow — the golden-hour feel.</td></tr>
+</table>
+<p class="footnote">Presets: <code>OFF</code> · <code>FAINT</code> (the restrained default) · <code>ERA_GLOW</code> (pronounced HL2/Witcher halation) · <code>EVERYTHING_GLOWS</code> (deliberate white-out). Cycle live with <span class="kbd">F7</span>.</p>
 
 <h2 id="srgb"><span class="num">6</span>Colour space — the one rule that bites</h2>
 <div class="callout danger"><b>Albedo/colour textures are sRGB. Normal maps (and any data texture) are linear.</b> Load them down the right path or the look breaks:
@@ -538,6 +564,8 @@ spawn_spot(.., SpotLight::new((1.0,0.98,0.92), 30.0, range, 8.0, 16.0)  <span cl
   <tr><td><span class="kbd">F3</span></td><td>Vignette preset</td><td>how much edge-crush the scene wants.</td></tr>
   <tr><td><span class="kbd">F4</span></td><td>Fog preset</td><td>haze density / beam visibility balance.</td></tr>
   <tr><td><span class="kbd">F5</span></td><td>Reload disk assets</td><td>iterate on a texture/normal map without restarting.</td></tr>
+  <tr><td><span class="kbd">F6</span></td><td>PostOverlay preset</td><td>which fullscreen composite (alpha/multiply/additive) the beat wants.</td></tr>
+  <tr><td><span class="kbd">F7</span></td><td>Bloom preset (Off / Faint / EraGlow / EverythingGlows)</td><td>how much highlight glow the scene wants.</td></tr>
   <tr><td><span class="kbd">F12</span></td><td>Debug overlay</td><td>frame stats / profiler.</td></tr>
 </table>
 <p class="footnote">Workflow: pick the zone's grade with F2, dial fog with F4 and the spot's <code>god_ray_intensity</code> in code, set shadow softness with F1, then bake the winning values into the scene's <code>build()</code> resources. Camera is fixed at 60° vertical FOV, 0.1 m near, 1 km far — widen the FOV in <code>Projection</code> if a room should feel more expansive.</p>
@@ -550,6 +578,7 @@ spawn_spot(.., SpotLight::new((1.0,0.98,0.92), 30.0, range, 8.0, 16.0)  <span cl
 <li><b>Whole room too dark</b> → raise <code>DirectionalLight.ambient</code> (the master fill).</li>
 <li><b>Lit pool too small/dim</b> → raise spot <code>intensity</code> (think 10–30) or <code>range</code>.</li>
 <li><b>Highlights blown / muddy</b> → it's ACES rolling off; lower intensity, or accept the soft shoulder.</li>
+<li><b>Want a thing to glow more</b> → raise its <code>emissive_intensity</code> (or a light's <code>intensity</code>) past the bloom <code>threshold</code>. Brighter = bigger halo.</li>
 </ul>
 </div>
 <div class="panel tight">
@@ -576,6 +605,7 @@ spawn_spot(.., SpotLight::new((1.0,0.98,0.92), 30.0, range, 8.0, 16.0)  <span cl
 <li><b>Want a visible beam</b> → fog <code>scattering</code> &gt; 0 <i>and</i> spot <code>god_ray_intensity</code> &gt; 0.</li>
 <li><b>Beam too washed out</b> → lower fog <code>density</code>, lower ambient.</li>
 <li><b>Tense framing</b> → <code>Vignette::OPPRESSIVE</code> (F3).</li>
+<li><b>Soft dreamy glow / "too sterile"</b> → raise <code>Bloom</code> (F7: Faint → EraGlow). Too hazy → lower <code>strength</code> or raise <code>threshold</code>.</li>
 </ul>
 </div>
 </div>

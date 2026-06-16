@@ -117,6 +117,7 @@
   <a href="#shadows">Shadows</a>
   <a href="#fog">Fog &amp; god-rays</a>
   <a href="#grade">Tonemap &amp; color grade</a>
+  <a href="#bloom">Highlight bloom</a>
   <a href="#vignette">Vignette</a>
   <a href="#overlay">Post overlay</a>
   <a href="#camera">Camera</a>
@@ -191,8 +192,19 @@ a vignette.</p>
   <div class="stage"><span class="n">B5</span><span class="t">Fog + god-rays</span><span class="d"><code>mix(fog, scene, T)</code> then <b>+</b> additive god-ray in-scatter.</span></div>
 </div>
 
+<div class="lane">Pass B½ — Bloom (HDR bright-pass pyramid, optional) → writes a blur of the over-bright pixels</div>
+<div class="pipe">
+  <div class="stage"><span class="n">D1</span><span class="t">Prefilter</span><span class="d">Threshold the HDR (keep only what exceeds <code>~1.0</code>) + firefly suppression, downsampled to half-res.</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">D2</span><span class="t">Downsample</span><span class="d">A ~6-level mip pyramid, each level a 13-tap box of the one above. Spread = width.</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><span class="n">D3</span><span class="t">Upsample</span><span class="d">Tent-filter back up, accumulating additively into a single wide soft glow.</span></div>
+</div>
+
 <div class="lane">Pass C — Post (one full-screen triangle) → writes final sRGB</div>
 <div class="pipe">
+  <div class="stage"><span class="n">C0</span><span class="t">Bloom add</span><span class="d"><code>hdr += bloom · tint · strength</code>, in HDR linear <em>before</em> tonemap. Skipped when bloom is off.</span></div>
+  <div class="arrow">→</div>
   <div class="stage"><span class="n">C1</span><span class="t">Tonemap</span><span class="d">Narkowicz ACES. HDR → ~[0,1] with filmic shoulder/toe.</span></div>
   <div class="arrow">→</div>
   <div class="stage"><span class="n">C2</span><span class="t">Color grade</span><span class="d">ASC&nbsp;CDL lift/gamma/gain. The zone’s color cast.</span></div>
@@ -204,7 +216,7 @@ a vignette.</p>
   <div class="stage"><span class="n">C5</span><span class="t">Clamp</span><span class="d">To [0,1]; swap-chain does sRGB encode on present.</span></div>
 </div>
 
-<div class="key"><b>Two consequences worth memorising.</b>
+<div class="key"><b>Three consequences worth memorising.</b>
 <ul class="tight">
 <li><b>Fog is pre-tonemap, grade is post-tonemap.</b> Fog mixes in HDR linear against the lit
 color, so a glowing red lamp behind thick fog correctly dims to a red haze. The grade then shapes
@@ -212,6 +224,10 @@ the already-foggy frame — your color cast is coherent with the fog, not fighti
 <li><b>God-rays are added <em>after</em> the fog mix but <em>before</em> tonemap.</b> They’re extra
 radiance scattered into the view ray, so they can blow past white and get rolled off by the ACES
 shoulder like any other highlight.</li>
+<li><b>Bloom is pre-tonemap too</b> (step C0), so the glow rolls into the same ACES highlight
+shoulder rather than sitting flat on the LDR image — this is why it reads as soft 2005-era HDR
+halation, not a sticker. What blooms is decided by HDR brightness, not by which object it is: push a
+surface’s emissive or a light’s intensity past the threshold and it glows. See §13b.</li>
 </ul></div>
 
 <h4>Bind-group map (where each knob lives on the GPU)</h4>
@@ -581,6 +597,38 @@ shadow. ColorGrade tints the <em>finished image</em> uniformly. For a cold room 
 both: cold ambient so shadows read cold in 3D, plus a cold grade so the whole frame agrees.</div>
 
 <!-- ============================================================ -->
+<h2 id="bloom">13b · Highlight bloom — the faint glow</h2>
+<p>An optional, <b>faint-by-default</b> glow around the over-bright parts of the frame. Built as a
+half-res bright-pass pyramid (the modern dual-filter technique from <em>Call&nbsp;of&nbsp;Duty:
+Advanced Warfare</em>, 2014) but <b>tuned for the 2005–2009 look it references</b> — Half-Life 2,
+Witcher 1 — so it reads as a wide, soft, warm halation, not a tight modern lens flare. It composites
+into the HDR image <em>before</em> the tonemap (step C0), so the glow rolls through the ACES shoulder
+like any other highlight.</p>
+<div class="note"><b>What blooms is decided by brightness, not by object.</b> The bright-pass keeps
+only pixels whose HDR radiance exceeds <code>threshold</code>. Nothing is a "bloom source" by
+identity — a lamp whose surface isn’t bright enough won’t glow, and an emissive gel pushed past 1.0
+will. <b>To make something glow more, make it brighter:</b> raise its <code>emissive_intensity</code>
+(or a light’s <code>intensity</code>) so it pushes further past the threshold. That’s exactly how
+the era authored it — there was no per-object bloom mask, you just made the thing bright.</div>
+<table>
+<tr><th>Field</th><th>Range</th><th>Effect</th></tr>
+<tr><td><code>enabled</code></td><td>bool</td><td>Master gate. Off skips the whole pyramid build (zero GPU cost) and contributes nothing.</td></tr>
+<tr><td><code>strength</code></td><td>~0.0 – 0.5</td><td>The master "how much glow." Additive, so values are small: <code>0.04</code> = faint highlight lift, <code>0.4+</code> = everything glows.</td></tr>
+<tr><td><code>threshold</code></td><td>~0.5 – 1.5</td><td>HDR cutoff. <code>≥ 1.0</code> blooms only genuinely over-bright pixels; below 1.0 starts hazing midtones (the aggressive end).</td></tr>
+<tr><td><code>knee</code></td><td>0 – 1</td><td>Soft ramp into the threshold, as a fraction of it. Stops surfaces popping in/out of bloom as they brighten.</td></tr>
+<tr><td><code>filter_radius</code></td><td>1.0 – 3.0</td><td>Blur spread in source texels. <code>1.0</code> = tight/crisp, <code>2–3</code> = the wide soft era halo.</td></tr>
+<tr><td><code>tint</code></td><td>linear RGB</td><td>Warm cast multiplied into the glow at composite. Slightly amber by default — the golden-hour / Witcher feel. Keep channels near 1.0 so it colours without darkening.</td></tr>
+</table>
+<p>Presets: <b>OFF</b> · <b>FAINT</b> (strength 0.04, threshold 1.1 — the restrained shipping default)
+· <b>ERA_GLOW</b> (strength 0.15, threshold 0.9, wider + warmer — pronounced HL2/Witcher halation)
+· <b>EVERYTHING_GLOWS</b> (strength 0.45, threshold 0.5 — the far end of the dial, a deliberate
+white-out for one scene). <span class="kbd">F7</span> cycles Off → Faint → EraGlow → EverythingGlows.</p>
+<div class="key"><b>Bloom on a translucent surface.</b> An emissive AlphaBlend surface (like the food
+gel) reaches the framebuffer as <code>emissive · opacity</code>, so <code>opacity</code> and
+<code>emissive_intensity</code> jointly set how hard it blooms. The gel at opacity 0.8 ×
+emissive_intensity 2.5 peaks around 1.9 — comfortably over ERA_GLOW’s 0.9 threshold.</div>
+
+<!-- ============================================================ -->
 <h2 id="vignette">14 · Vignette</h2>
 <p>Radial corner darkening + optional tint, applied after the grade. A separate resource from
 ColorGrade on purpose: the grade is the <em>look</em> (colorist territory, film-portable); the
@@ -721,13 +769,28 @@ emissive lamps dim into haze automatically</div>
 
 <div class="card">
 <h3>Glowing emissive object</h3>
-<p class="muted">Food gel, lamp, the eye — light that survives shadow.</p>
+<p class="muted">Food gel, lamp, the eye — light that survives shadow, and blooms.</p>
 <div class="recipe">Material {
   emissive: (1.0, 0.3, 0.1),
-  emissive_intensity: 2.0,  // past 1 → ACES bloom-roll
+  emissive_intensity: 2.0,  // past threshold → blooms (§13b)
   ..DEFAULT }
 // reads as a hot source even in shadow,
-// dims correctly behind fog</div>
+// dims correctly behind fog. Raise intensity
+// for a bigger, brighter glow halo.</div>
+</div>
+
+<div class="card">
+<h3>Wet glowing food gel</h3>
+<p class="muted">The sulfur beacon — emissive glow + glassy translucency.</p>
+<div class="recipe">Material {
+  albedo: (0.5, 0.45, 0.12),       // murky sulfur
+  emissive: (0.95, 0.85, 0.25),    // sulfur-gold
+  emissive_intensity: 2.5,         // beacon → blooms
+  roughness: 0.15, opacity: 0.8,
+  fresnel: 1.0,
+  blend: AlphaBlend, ..DEFAULT }
+// glassy wet rim + inner glow that
+// haloes under ERA_GLOW bloom</div>
 </div>
 
 </div>
@@ -770,6 +833,7 @@ offset + angle it to rake.</li>
 <tr><td><span class="kbd">F4</span></td><td>Fog preset</td><td>Off → Light → Medium → Heavy</td></tr>
 <tr><td><span class="kbd">F5</span></td><td>Reload disk assets</td><td>Re-reads every mesh/texture from disk in place</td></tr>
 <tr><td><span class="kbd">F6</span></td><td>PostOverlay preset</td><td>Off → Alpha → Multiply → Additive (keeps your texture)</td></tr>
+<tr><td><span class="kbd">F7</span></td><td>Bloom preset</td><td>Off → Faint → EraGlow → EverythingGlows</td></tr>
 <tr><td><span class="kbd">F12</span></td><td>Debug overlay</td><td>FPS / frame-ms / entities / camera pos / profiler</td></tr>
 </table>
 <div class="note"><b>Workflow:</b> rough a look in with F2–F4 against the live scene, read the numbers
@@ -796,16 +860,21 @@ ACCENTS  PointLight::new(color, intensity, range)   // no shadows
 ATMO     Fog { color, density(0 off), base_height, falloff(floor-hug),
                scattering(god-ray) }   // height fog + cone god-rays
 
-POST     ACES tonemap → ColorGrade(lift/gamma/gain ASC-CDL) → Vignette
-         → Overlay(alpha/multiply/additive) → clamp
+GLOW     Bloom { enabled, strength(~0.04 faint→0.4 everything),
+               threshold(≥1 = only over-bright), knee, filter_radius,
+               tint(warm) }   // F7; brighter emissive → more glow
+
+POST     +Bloom(pre-tonemap) → ACES tonemap → ColorGrade(lift/gamma/gain
+         ASC-CDL) → Vignette → Overlay(alpha/multiply/additive) → clamp
 
 ORDER    shadow → forward[ surface→light→(ambient+lit+emissive)→fog mix
-         →+god-rays ] → post[ tonemap→grade→vignette→overlay ]</code></pre>
+         →+god-rays ] → bloom[ prefilter→down→up ]
+         → post[ +bloom→tonemap→grade→vignette→overlay ]</code></pre>
 
 <hr>
 <p class="toc-foot">Sources: <code>material.rs</code>, <code>render/light.rs</code>,
 <code>render/fog.rs</code>, <code>render/grade.rs</code>, <code>render/vignette.rs</code>,
-<code>render/post_overlay.rs</code>, <code>render/uniforms.rs</code>, <code>render/shadow.rs</code>,
+<code>render/post_overlay.rs</code>, <code>render/bloom.rs</code>, <code>render/uniforms.rs</code>, <code>render/shadow.rs</code>,
 <code>camera/projection.rs</code>, <code>debug.rs</code>, <code>shaders/forward.wgsl</code>,
 <code>shaders/post.wgsl</code>, and the playground scene
 (<code>crates/game/src/scene/playground.rs</code>, <code>assets.rs</code>).

@@ -30,6 +30,7 @@ use puffin::{FrameSinkId, FrameView, GlobalProfiler, MergeScope, ScopeCollection
 
 use crate::ecs::{Res, ResMut};
 use crate::input::{Input, KeyCode};
+use crate::render::bloom::Bloom;
 use crate::render::fog::Fog;
 use crate::render::grade::ColorGrade;
 use crate::render::post_overlay::{OverlayBlend, PostOverlay};
@@ -125,6 +126,11 @@ pub struct DebugState {
     /// reshape this enum into the four per-zone presets matching
     /// the `ColorGrade` zones.
     pub fog_preset: FogPreset,
+    /// Active bloom preset for the F7 debug cycle. Defaults to `Faint`
+    /// so the cycle agrees with the `Bloom` resource seeded in
+    /// `App::resumed` — first F7 press steps to `EraGlow`. See
+    /// [`BloomPreset`].
+    pub bloom_preset: BloomPreset,
     /// Active overlay preset for the F6 debug cycle. Drives the
     /// `PostOverlay` resource's intensity + blend mode; the texture
     /// itself is supplied game-side (the engine ships no overlay
@@ -142,6 +148,7 @@ impl Default for DebugState {
             grade_preset: GradePreset::Default,
             vignette_preset: VignettePreset::Default,
             fog_preset: FogPreset::Medium,
+            bloom_preset: BloomPreset::Faint,
             overlay_preset: OverlayPreset::Off,
             frame_stats: FrameStats::new(),
         }
@@ -336,6 +343,53 @@ impl FogPreset {
     }
 }
 
+/// Active bloom preset for the F7 debug cycle.
+///
+/// Steps the [`Bloom`] resource across the whole expressive range so the
+/// developer can A/B the glow live: from off, through the restrained
+/// shipping default, up to the deliberate "everything glows." Lives next
+/// to `DebugState` (not on `Bloom`) so the cycle order is debug-owned —
+/// same pattern as [`GradePreset`] / [`FogPreset`].
+///
+/// `Faint` is kept equivalent to the `Bloom` resource seeded in
+/// `App::resumed`, so the cycle's starting state matches the rendered
+/// scene; if either drifts, "press F7 and nothing changes" catches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BloomPreset {
+    /// Bloom disabled — `Bloom::OFF`. Skips the pyramid build; verifies
+    /// the unbloomed path is a true no-op.
+    Off,
+    /// Restrained highlight bloom — the shipping default, `Bloom::FAINT`.
+    Faint,
+    /// Pronounced HL2 / Witcher-1 halation — `Bloom::ERA_GLOW`.
+    EraGlow,
+    /// The far end of the dial — `Bloom::EVERYTHING_GLOWS`.
+    EverythingGlows,
+}
+
+impl BloomPreset {
+    /// Cycle Off → Faint → EraGlow → EverythingGlows → Off.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::Faint,
+            Self::Faint => Self::EraGlow,
+            Self::EraGlow => Self::EverythingGlows,
+            Self::EverythingGlows => Self::Off,
+        }
+    }
+
+    /// Resolve to the corresponding `Bloom` value to write into the
+    /// resource.
+    pub fn value(self) -> Bloom {
+        match self {
+            Self::Off => Bloom::OFF,
+            Self::Faint => Bloom::FAINT,
+            Self::EraGlow => Bloom::ERA_GLOW,
+            Self::EverythingGlows => Bloom::EVERYTHING_GLOWS,
+        }
+    }
+}
+
 /// Active overlay preset for the F6 debug cycle.
 ///
 /// Drives the [`PostOverlay`] resource's `intensity` + `blend` so the
@@ -413,7 +467,12 @@ impl OverlayPreset {
 /// - **F4**  cycle `Fog` preset
 /// - **F5**  reload disk assets — see [`f5_reload_system`]
 /// - **F6**  cycle `PostOverlay` preset (intensity + blend)
+/// - **F7**  cycle `Bloom` preset — see [`bloom_input_system`]
 /// - **F12** toggle the debug overlay
+///
+/// F7's bloom cycle lives in its own [`bloom_input_system`] rather than
+/// here: this system is already at the 6-`SystemParam` arity ceiling, and
+/// `Bloom` needs a seventh `ResMut`.
 pub fn debug_input_system(
     input: Res<Input>,
     mut debug: ResMut<DebugState>,
@@ -450,6 +509,24 @@ pub fn debug_input_system(
         // (if any) is preserved across the cycle.
         debug.overlay_preset.apply(&mut overlay);
         log::info!("debug: PostOverlay → {:?}", debug.overlay_preset);
+    }
+}
+
+/// System: F7 cycles the [`Bloom`] preset.
+///
+/// Split out from [`debug_input_system`] because that system already
+/// holds six `SystemParam`s (the arity ceiling) and `Bloom` needs a
+/// seventh `ResMut`. Same `Stage::Update` cadence so the flip is visible
+/// to `render_frame` in the same frame.
+pub fn bloom_input_system(
+    input: Res<Input>,
+    mut debug: ResMut<DebugState>,
+    mut bloom: ResMut<Bloom>,
+) {
+    if input.just_pressed(KeyCode::F7) {
+        debug.bloom_preset = debug.bloom_preset.cycle();
+        *bloom = debug.bloom_preset.value();
+        log::info!("debug: Bloom → {:?}", debug.bloom_preset);
     }
 }
 

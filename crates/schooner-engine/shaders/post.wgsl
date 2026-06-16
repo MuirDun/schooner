@@ -40,12 +40,26 @@ struct PostParams {
     vignette_tint: vec4<f32>,   // xyz = tint, w = intensity
     vignette_radii: vec4<f32>,  // x = inner, y = outer
     overlay: vec4<f32>,         // x = intensity, y = blend index
+    bloom_tint: vec4<f32>,      // xyz = tint, w = effective strength
 };
 
 @group(1) @binding(0) var<uniform> post_params: PostParams;
 
 @group(2) @binding(0) var overlay_tex: texture_2d<f32>;
 @group(2) @binding(1) var overlay_sampler: sampler;
+
+// Bloom pyramid mip 0 (accumulated bright-pass blur), sampled at the same
+// screen UV and added to the HDR colour *before* tonemap — see fs_main.
+@group(3) @binding(0) var bloom_tex: texture_2d<f32>;
+@group(3) @binding(1) var bloom_sampler: sampler;
+
+// Auto-exposure scalar (1x1 R16Float), produced by the exposure pipeline
+// from the frame's average luminance and adapted over time. Multiplied into
+// the composited HDR *before* the ACES curve — the eye-adaptation gain that
+// makes facing a bright source stop the image down and crush the darks. A
+// disabled `AutoExposure` writes 1.0 here, so the multiply is a no-op.
+@group(4) @binding(0) var exposure_tex: texture_2d<f32>;
+@group(4) @binding(1) var exposure_sampler: sampler;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -181,7 +195,33 @@ fn apply_overlay(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let hdr_color = textureSample(hdr, hdr_sampler, in.uv).rgb;
+    var hdr_color = textureSample(hdr, hdr_sampler, in.uv).rgb;
+
+    // Composite bloom in HDR-linear, *before* tonemap, so the glow rolls
+    // into the ACES highlight shoulder the way the 2005–2009 era's HDR
+    // bloom did (rather than sitting flat on top of an LDR image). The
+    // branch is on the uniform `w` (effective strength) — every fragment
+    // takes the same path, no divergence — so a disabled bloom (w == 0)
+    // skips the sample entirely. Tint × strength shapes warmth + amount.
+    // Eye-adaptation exposure — the gain stage in front of the tone curve.
+    // Sampled from the 1x1 exposure texture (any UV maps to the lone texel)
+    // and applied to the *scene* before bloom. The luminance it was metered
+    // from is this same pre-exposure HDR, so there's no feedback loop.
+    // Disabled auto-exposure writes 1.0 (no-op).
+    let exposure = textureSample(exposure_tex, exposure_sampler, vec2<f32>(0.5, 0.5)).r;
+    hdr_color *= exposure;
+
+    // Bloom composited *after* exposure, deliberately un-exposed. When the
+    // eye stops down on a bright source (exposure << 1) the scene crushes to
+    // black but the bloom halo stays at full strength — the searing glare of
+    // a hostile light that doesn't dim just because you squint. In a normal
+    // view (exposure ~ 1) this is identical to compositing before. The bloom
+    // pyramid is built from the pre-exposure HDR, so a genuinely over-bright
+    // source (the lamp) still drives a strong, painful halo here.
+    if (post_params.bloom_tint.w > 0.0) {
+        let bloom = textureSample(bloom_tex, bloom_sampler, in.uv).rgb;
+        hdr_color += bloom * post_params.bloom_tint.rgb * post_params.bloom_tint.w;
+    }
 
     // Tonemap is per-channel. Per-channel ACES is the industry-
     // default trade: chroma can shift slightly in saturated regions

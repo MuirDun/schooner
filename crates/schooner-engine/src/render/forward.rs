@@ -49,7 +49,9 @@ use crate::debug::{
 };
 use crate::ecs::World;
 use crate::material::{BlendMode, Material};
+use crate::render::bloom::{Bloom, BloomParamsUniform, BloomPipeline};
 use crate::render::context::RenderContext;
+use crate::render::exposure::{AdaptParamsUniform, AutoExposure, ExposurePipeline};
 use crate::render::fog::Fog;
 use crate::render::light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
 use crate::render::mesh::MeshHandle;
@@ -675,6 +677,74 @@ pub fn render_frame(world: &mut World) {
         }
     }
 
+    // Bloom pass — build the HDR bright-pass pyramid the post pass
+    // composites back in before tonemap. Runs in the same HDR-linear
+    // space as the forward output. When disabled, the GPU pyramid build
+    // is skipped and the composite contributes nothing (effective
+    // strength 0), but the targets are still ensured so the post pass has
+    // a valid mip-0 view to bind. The mip-0 view is cloned out for the
+    // post block — `TextureView` is `Arc`-backed, so the clone is cheap.
+    let bloom = world.resource::<Bloom>().copied().unwrap_or(Bloom::OFF);
+    let bloom_mip0_view = {
+        puffin::profile_scope!("bloom_pass");
+        let Some(bloom_pipeline) = world.resource_mut::<BloomPipeline>() else {
+            warn!("render_frame: BloomPipeline missing");
+            return;
+        };
+        bloom_pipeline.ensure_targets(
+            &device,
+            surface_size.0,
+            surface_size.1,
+            &hdr_view,
+            hdr_generation,
+        );
+        queue.write_buffer(
+            &bloom_pipeline.params_buffer,
+            0,
+            bytemuck::bytes_of(&BloomParamsUniform::from_bloom(&bloom)),
+        );
+        if bloom.enabled {
+            bloom_pipeline.record(&mut encoder);
+        }
+        bloom_pipeline.mip0_view().clone()
+    };
+
+    // Auto-exposure pass — reduce the HDR target to its mean luminance and
+    // adapt the exposure scalar the post pass applies before the tone curve.
+    // Reads the *unexposed* HDR (no feedback loop) and reuses the same delta
+    // the overlay block reads below. The reduction runs even when disabled
+    // (the adapt shader forces exposure = 1.0), keeping the ping-pong parity
+    // consistent; the cost is a handful of tiny fullscreen passes.
+    let auto_exposure = world
+        .resource::<AutoExposure>()
+        .copied()
+        .unwrap_or(AutoExposure::OFF);
+    let exposure_dt = world
+        .resource::<Time>()
+        .map(|t| t.delta_secs)
+        .unwrap_or(0.0);
+    let exposure_view = {
+        puffin::profile_scope!("exposure_pass");
+        let Some(exposure_pipeline) = world.resource_mut::<ExposurePipeline>() else {
+            warn!("render_frame: ExposurePipeline missing");
+            return;
+        };
+        exposure_pipeline.ensure_targets(
+            &device,
+            surface_size.0,
+            surface_size.1,
+            &hdr_view,
+            hdr_generation,
+        );
+        queue.write_buffer(
+            &exposure_pipeline.params_buffer,
+            0,
+            bytemuck::bytes_of(&AdaptParamsUniform::new(&auto_exposure, exposure_dt)),
+        );
+        exposure_pipeline.record(&mut encoder);
+        exposure_pipeline.current_exposure_view().clone()
+    };
+
     // Post-process pass — single fullscreen triangle samples the
     // HDR target and writes the swap chain. ACES tonemap + color
     // grade live in the fragment shader; vignette and overlay stack
@@ -697,7 +767,7 @@ pub fn render_frame(world: &mut World) {
             .resource::<PostOverlay>()
             .copied()
             .unwrap_or(PostOverlay::DEFAULT);
-        let params = PostParamsUniform::pack(&grade, &vignette, &overlay);
+        let params = PostParamsUniform::pack(&grade, &vignette, &overlay, &bloom);
 
         // Resolve the overlay texture to a view under a shared borrow,
         // then drop it before taking the mutable PostPipeline borrow —
@@ -739,6 +809,16 @@ pub fn render_frame(world: &mut World) {
         let overlay_bind_group = post
             .ensure_overlay_bind_group(&device, overlay_handle, &overlay_view)
             .clone();
+        // Bloom group rebuilds on the same cadence as the HDR group — the
+        // bloom mip-0 view is recreated alongside the HDR view on resize.
+        let bloom_bind_group = post
+            .ensure_bloom_bind_group(&device, &bloom_mip0_view, hdr_generation)
+            .clone();
+        // Exposure group rebuilds every frame — the exposure pipeline
+        // ping-pongs its 1x1 textures, so the current view alternates.
+        let exposure_bind_group = post
+            .ensure_exposure_bind_group(&device, &exposure_view)
+            .clone();
         queue.write_buffer(&post.params_buffer, 0, bytemuck::bytes_of(&params));
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -765,6 +845,8 @@ pub fn render_frame(world: &mut World) {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.set_bind_group(1, &post.params_bind_group, &[]);
         pass.set_bind_group(2, &overlay_bind_group, &[]);
+        pass.set_bind_group(3, &bloom_bind_group, &[]);
+        pass.set_bind_group(4, &exposure_bind_group, &[]);
         // Three verts, one instance — fullscreen triangle covers the
         // whole viewport; positions and UVs come from `vertex_index`.
         pass.draw(0..3, 0..1);

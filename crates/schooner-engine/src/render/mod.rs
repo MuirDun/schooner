@@ -18,7 +18,9 @@
 //! buffer, and the `render_frame` system arrive in subsequent
 //! Phase F chunks.
 
+pub mod bloom;
 pub mod context;
+pub mod exposure;
 pub mod fog;
 pub mod forward;
 pub mod grade;
@@ -34,7 +36,9 @@ pub mod texture;
 pub mod uniforms;
 pub mod vignette;
 
+pub use bloom::{Bloom, BloomParamsUniform, BloomPipeline};
 pub use context::{DEPTH_FORMAT, HDR_FORMAT, RenderContext, RenderContextError};
+pub use exposure::{AdaptParamsUniform, AutoExposure, ExposurePipeline};
 pub use fog::Fog;
 pub use forward::render_frame;
 pub use grade::ColorGrade;

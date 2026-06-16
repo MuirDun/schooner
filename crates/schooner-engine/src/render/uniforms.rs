@@ -15,6 +15,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
 use crate::material::Material;
+use crate::render::bloom::Bloom;
 use crate::render::fog::Fog;
 use crate::render::grade::ColorGrade;
 use crate::render::post_overlay::PostOverlay;
@@ -346,13 +347,23 @@ pub struct PostParamsUniform {
     ///
     /// [`OverlayBlend`]: crate::render::post_overlay::OverlayBlend
     pub overlay: [f32; 4],
+    /// `xyz` = bloom tint, `w` = effective composite strength (0 when
+    /// bloom is disabled). The post shader adds `bloom * xyz * w` to the
+    /// HDR colour *before* tonemap, and skips the sample entirely when
+    /// `w == 0`. See [`Bloom`](crate::render::bloom::Bloom).
+    pub bloom_tint: [f32; 4],
 }
 
 impl PostParamsUniform {
-    /// Pack [`ColorGrade`] + [`Vignette`] + [`PostOverlay`] into the
-    /// GPU layout. Each resource is independently optional at the call
-    /// site — see `forward.rs` for the fallback-to-identity pattern.
-    pub fn pack(grade: &ColorGrade, vignette: &Vignette, overlay: &PostOverlay) -> Self {
+    /// Pack [`ColorGrade`] + [`Vignette`] + [`PostOverlay`] + [`Bloom`]
+    /// into the GPU layout. Each resource is independently optional at the
+    /// call site — see `forward.rs` for the fallback-to-identity pattern.
+    pub fn pack(
+        grade: &ColorGrade,
+        vignette: &Vignette,
+        overlay: &PostOverlay,
+        bloom: &Bloom,
+    ) -> Self {
         Self {
             lift: [grade.lift.x, grade.lift.y, grade.lift.z, 0.0],
             gamma: [grade.gamma.x, grade.gamma.y, grade.gamma.z, 0.0],
@@ -370,6 +381,12 @@ impl PostParamsUniform {
                 0.0,
                 0.0,
             ],
+            bloom_tint: [
+                bloom.tint.x,
+                bloom.tint.y,
+                bloom.tint.z,
+                bloom.effective_strength(),
+            ],
         }
     }
 
@@ -378,6 +395,11 @@ impl PostParamsUniform {
     /// runs) renders an unchanged image instead of a zero-gamma
     /// black screen.
     pub fn identity() -> Self {
-        Self::pack(&ColorGrade::DEFAULT, &Vignette::DEFAULT, &PostOverlay::DEFAULT)
+        Self::pack(
+            &ColorGrade::DEFAULT,
+            &Vignette::DEFAULT,
+            &PostOverlay::DEFAULT,
+            &Bloom::OFF,
+        )
     }
 }

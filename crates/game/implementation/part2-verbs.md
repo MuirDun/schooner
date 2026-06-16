@@ -20,6 +20,7 @@ Telekinesis grab/throw/repulse is the game's mechanical voice — every chamber'
 
 ## In scope
 
+- FPS walking and jumping
 - Rapier integration; physics ↔ ECS bridge
 - Force application (directional + impulse)
 - Hands mode (Mode 1) — close-range push/pull/hold

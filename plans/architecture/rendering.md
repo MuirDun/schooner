@@ -74,10 +74,11 @@ A global wind field resource modulates vertex positions in the vegetation shader
 
 A single post-pass, in this order, every frame:
 
-1. **Tone mapping.** Custom filmic curve with a shadow lift — pure black never appears on screen. This is the single most "dreamy" parameter.
-2. **Colour grading.** Desaturate slightly, warm shift, shadow tint. Implemented as an LUT or a parametric grade.
-3. **Warm height fog.** Exponential-by-height, warm-tinted (not white, not grey). The fog is the atmosphere.
-4. **Vignette.** Subtle, warm, darkens edges to focus the eye.
+1. **Highlight bloom.** Optional, faint by default. A bright-pass + wide soft blur of the over-bright parts of the HDR image, composited back *before* the tone curve so the glow rolls through the highlight shoulder rather than sitting flat on top. Off-to-faint is the discipline (see below); the effect exists, it is just restrained.
+2. **Tone mapping.** Custom filmic curve with a shadow lift — pure black never appears on screen. This is the single most "dreamy" parameter.
+3. **Colour grading.** Desaturate slightly, warm shift, shadow tint. Implemented as an LUT or a parametric grade.
+4. **Warm height fog.** Exponential-by-height, warm-tinted (not white, not grey). The fog is the atmosphere.
+5. **Vignette.** Subtle, warm, darkens edges to focus the eye.
 
 That is the post pipeline. Not a stack the artist can rearrange. Not a flexible graph. The composition is the aesthetic; making it flexible would invite drift away from the look we have committed to.
 
@@ -101,7 +102,7 @@ Locked exclusions. Each is a feature whose cost the engine cannot justify and wh
 - **No screen-space reflections.** Water and other reflective surfaces use cheaper tricks (planar reflections at most).
 - **No TAA, no temporal upsampling.** Aesthetic incompatibility.
 - **No film grain.** A screenshot trick that becomes noise in motion. The shadow lift and colour grade do the dreamy work.
-- **No bloom by default.** Bloom on a warm-graded image quickly becomes "everything glows." Optional faint highlight bloom for specific scenes; off otherwise.
+- **No *aggressive* bloom.** Bloom itself ships — a faint, optional highlight glow (see the post-process pipeline above), warm-tinted and tuned for the 2005–2009 era it references. What we refuse is the modern over-bloom failure mode: a warm-graded image where everything hazes. The default is restrained — only genuinely over-bright sources (an emissive food gel, a lamp filament, a hot specular) glow. The full "everything glows" end of the dial exists so the effect stays a real art instrument for a specific scene, but it is never the resting state.
 
 These exclusions are pillar 2 — every tool tailored, no general-purpose features for a general-purpose engine. Refusing to build them is how we ship.
 

@@ -30,7 +30,7 @@ pub use input::{Input, KeyCode, MouseButton};
 pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
 pub use render::{
-    ColorGrade, DebugOverlay, DirectionalLight, Fog, ForwardPipeline, MeshData, MeshHandle,
+    AutoExposure, ColorGrade, DebugOverlay, Bloom, DirectionalLight, Fog, ForwardPipeline, MeshData, MeshHandle,
     MeshRegistry, OverlayBlend, PointLight, PostOverlay, ReloadReport, RenderContext, ShadowMaps,
     ShadowPipeline, Shadowcaster, SpotLight, TextureData, TextureGpu, TextureHandle,
     TextureRegistry, Vignette, render_frame,
