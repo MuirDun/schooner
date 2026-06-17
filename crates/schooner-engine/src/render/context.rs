@@ -50,6 +50,24 @@ pub const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 /// encodes linear → sRGB on present.
 pub const HDR_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
 
+/// Multisample count for the forward pass — coverage anti-aliasing on
+/// geometry silhouettes.
+///
+/// MSAA shades once per *pixel* but evaluates triangle *coverage* per
+/// sample, so it cleans up the jagged silhouettes this game is full of
+/// (hard-edged steel panels, weld seams, the tool meshes against the
+/// dark) for a small bandwidth cost. It does **not** touch shading
+/// aliasing (specular sparkle) — that is a separate problem.
+///
+/// `4` is the desktop sweet spot: the resolve is a 4-sample box filter,
+/// and 8× rarely earns its extra bandwidth for a scene like this. The
+/// resolve runs in **linear HDR, before the tone curve** — the forward
+/// target is `Rgba16Float` and tonemapping lives in the post pass, so
+/// the multisampled samples are averaged in linear light and only then
+/// rolled through the curve. Resolving after tonemap would average
+/// nonlinear values and reintroduce the aliasing MSAA is meant to fix.
+pub const MSAA_SAMPLE_COUNT: u32 = 4;
+
 /// Errors produced while standing up a `RenderContext`.
 ///
 /// Anything that fails here is fatal — we cannot draw without a
@@ -84,8 +102,16 @@ pub struct RenderContext {
     surface: Surface<'static>,
     config: SurfaceConfiguration,
     depth_view: TextureView,
-    /// HDR offscreen target the forward pass writes into. Recreated
-    /// alongside the depth attachment on resize.
+    /// Multisampled HDR target the forward pass *renders* into (one
+    /// color sample per coverage sample). Never sampled — it is
+    /// resolved into `hdr_view` at the end of the forward pass, so it
+    /// carries `RENDER_ATTACHMENT` only. Recreated on resize.
+    hdr_ms_view: TextureView,
+    /// Single-sample HDR target the forward pass *resolves* into and
+    /// the post chain (bloom, exposure, tonemap) samples. This is the
+    /// view post bind groups reference; the multisampled `hdr_ms_view`
+    /// stays private to the forward pass. Recreated alongside the depth
+    /// attachment on resize.
     hdr_view: TextureView,
     /// Monotonically bumped each time `hdr_view` is recreated. The
     /// post pipeline reads this to decide whether its cached
@@ -165,11 +191,12 @@ impl RenderContext {
         surface.configure(&device, &config);
 
         let depth_view = create_depth_attachment(&device, config.width, config.height);
+        let hdr_ms_view = create_hdr_ms_attachment(&device, config.width, config.height);
         let hdr_view = create_hdr_attachment(&device, config.width, config.height);
 
         info!(
-            "render context ready: {}x{} {:?}",
-            config.width, config.height, config.format
+            "render context ready: {}x{} {:?} ({}x MSAA)",
+            config.width, config.height, config.format, MSAA_SAMPLE_COUNT
         );
 
         // `instance` and `adapter` drop here — see struct comment.
@@ -182,6 +209,7 @@ impl RenderContext {
             surface,
             config,
             depth_view,
+            hdr_ms_view,
             hdr_view,
             hdr_generation: 0,
         })
@@ -207,8 +235,15 @@ impl RenderContext {
         &self.depth_view
     }
 
-    /// The HDR offscreen view the forward pass writes into and the
-    /// post pass samples from. See [`HDR_FORMAT`] for format choice.
+    /// The multisampled HDR view the forward pass renders into. Bound
+    /// as the forward color attachment with [`Self::hdr_view`] as its
+    /// resolve target; never sampled directly.
+    pub fn hdr_ms_view(&self) -> &TextureView {
+        &self.hdr_ms_view
+    }
+
+    /// The single-sample HDR view the forward pass resolves into and
+    /// the post pass samples from. See [`HDR_FORMAT`] for format choice.
     pub fn hdr_view(&self) -> &TextureView {
         &self.hdr_view
     }
@@ -251,6 +286,7 @@ impl RenderContext {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_attachment(&self.device, width, height);
+        self.hdr_ms_view = create_hdr_ms_attachment(&self.device, width, height);
         self.hdr_view = create_hdr_attachment(&self.device, width, height);
         self.hdr_generation = self.hdr_generation.wrapping_add(1);
         info!("surface reconfigured: {width}x{height}");
@@ -341,9 +377,37 @@ fn create_depth_attachment(device: &Device, width: u32, height: u32) -> TextureV
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: 1,
+        // Multisampled to match the forward color attachment — a render
+        // pass requires every attachment to share a sample count. The
+        // depth buffer is consumed entirely within the forward pass
+        // (nothing samples it afterward), so it is never resolved.
+        sample_count: MSAA_SAMPLE_COUNT,
         dimension: TextureDimension::D2,
         format: DEPTH_FORMAT,
+        usage: TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&TextureViewDescriptor::default())
+}
+
+/// The multisampled HDR color target the forward pass renders into.
+///
+/// `RENDER_ATTACHMENT` only — a multisampled texture cannot be bound as
+/// a normal sampled texture, and it never needs to be: the pass resolves
+/// it down into the single-sample [`create_hdr_attachment`] target, and
+/// that resolved view is what the post chain samples.
+fn create_hdr_ms_attachment(device: &Device, width: u32, height: u32) -> TextureView {
+    let texture = device.create_texture(&TextureDescriptor {
+        label: Some("schooner-hdr-ms"),
+        size: Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: MSAA_SAMPLE_COUNT,
+        dimension: TextureDimension::D2,
+        format: HDR_FORMAT,
         usage: TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });

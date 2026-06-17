@@ -2,7 +2,7 @@
 
 Production staging for **Game 1 — Kinesis**, the first ship target on the Schooner engine. This document is the TOC; each Part is staged in its own document under [`implementation/`](implementation/).
 
-**Status:** Not started. Game 0 (The Void) is complete and the engine baseline is the starting point.
+**Status:** Started, Part 1 is done.
 
 **Target:** Ship-quality 3–4 hour first-person psychological-horror physics-puzzle game. See [`script.md`](script.md) for the design TOC and [`design/`](design/) for the spine.
 

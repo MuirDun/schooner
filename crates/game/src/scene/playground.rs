@@ -170,7 +170,7 @@ fn spawn_chamber_wall(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
             albedo_texture: Some(albedo),
             normal_texture: Some(normal),
             normal_strength: 0.6,
-            roughness: 0.7,
+            roughness: 0.3,
             triplanar: true,
             uv_scale: triplanar_scale(),
             ..Material::DEFAULT
@@ -307,6 +307,9 @@ fn spawn_lamp(world: &mut World, pos: Vec3, target: Vec3, lamp_range: f32) {
         pos + Vec3::new(0.0, 0.05, 0.0),
         Vec3::new(0.35, 0.6, 0.35),
     );
+
+    let lamp_light = Vec3::new(0.85, 0.9, 1.0);
+
     let shell_albedo = world
         .resource::<Assets>()
         .map(|a| a.texture(TextureAsset::MetalFloor))
@@ -324,13 +327,13 @@ fn spawn_lamp(world: &mut World, pos: Vec3, target: Vec3, lamp_range: f32) {
     world.insert(
         lamp,
         Material {
-            albedo: Vec3::new(0.92, 0.96, 1.0),
+            albedo: lamp_light,
             // Searing HDR emissive — far over 1.0 so it survives the
             // auto-exposure crush and slams the bloom bright-pass: the lamp
             // stays blinding white and glares hard when you face it, while
             // the room around it goes black. This is the "hostile light"
             // cue. Dial up for more pain, down for a calmer fixture.
-            emissive: Vec3::new(0.92, 0.96, 1.0),
+            emissive: lamp_light,
             emissive_intensity: 14.0,
             roughness: 0.15,
             opacity: 0.8,
@@ -344,9 +347,7 @@ fn spawn_lamp(world: &mut World, pos: Vec3, target: Vec3, lamp_range: f32) {
         world,
         pos + Vec3::new(0.0, -0.2, 0.0),
         target,
-        // Cool fluorescent white — faintly blue, the interrogation-lamp
-        // tone. Pairs with the cold ambient and CLINICAL_COLD grade.
-        SpotLight::new(Vec3::new(0.92, 0.96, 1.0), 28.0, lamp_range, 42.0, 60.0)
+        SpotLight::new(lamp_light, 80.0, lamp_range, 42.0, 60.0)
             .with_god_ray_intensity(1.4),
         true,
     );
@@ -467,7 +468,7 @@ pub fn build(world: &mut World) {
 
     let chamber_size_x = 11.0;
     let chamber_size_z = 8.0;
-    let chamber_size_y = 5.0;
+    let chamber_size_y = 7.0;
 
     let h_cs_x = chamber_size_x / 2.0;
     let h_cs_y = chamber_size_y / 2.0;
@@ -500,62 +501,86 @@ pub fn build(world: &mut World) {
     // North Wall with a hole
     // hole position z
     let h_p_z = -h_cs_z - h_t;
-    let hole_size_y = 1.2;
+    let hole_size_y = 1.9;
     let hole_size_x = 2.0;
 
     let h_hs_x = hole_size_x / 2.0;
     let h_hs_y = hole_size_y / 2.0;
-    let panel_horizontal_size = h_cs_x - h_hs_x;
-    let panel_vertical_size = h_cs_y - h_hs_y;
+
+    // Hole centre on the north-wall plane. (0, h_cs_y) is dead-centre; nudge
+    // `hole_cx` negative to slide it left (toward -x — your left when facing
+    // the north wall) and raise `hole_cy` to lift it up. The tunnel, gel, and
+    // red service light all hang off this point, so the whole passage moves
+    // with the hole.
+    let hole_cx = -1.5;
+    let hole_cy = h_cs_y + 1.0;
+
+    // Four panels framing the hole: full-height left/right flanks plus short
+    // top/bottom fillers spanning just the hole width. Each size is the gap
+    // between the hole edge and the chamber edge, so they stay flush as the
+    // hole centre moves.
+    let left_w = (hole_cx - h_hs_x) + h_cs_x;
+    let right_w = h_cs_x - (hole_cx + h_hs_x);
+    let top_h = chamber_size_y - (hole_cy + h_hs_y);
+    let bottom_h = hole_cy - h_hs_y;
 
     // North wall is part of the chamber shell — iron material too.
     spawn_chamber_wall(
         world,
-        Vec3::new(-h_cs_x + panel_horizontal_size / 2.0, h_cs_y, h_p_z),
-        Vec3::new(panel_horizontal_size, chamber_size_y, t),
+        Vec3::new(-h_cs_x + left_w / 2.0, h_cs_y, h_p_z),
+        Vec3::new(left_w, chamber_size_y, t),
     ); // left panel
     spawn_chamber_wall(
         world,
-        Vec3::new(h_cs_x - panel_horizontal_size / 2.0, h_cs_y, h_p_z),
-        Vec3::new(panel_horizontal_size, chamber_size_y, t),
+        Vec3::new(h_cs_x - right_w / 2.0, h_cs_y, h_p_z),
+        Vec3::new(right_w, chamber_size_y, t),
     ); // right panel
     spawn_chamber_wall(
         world,
-        Vec3::new(0.0, chamber_size_y - panel_vertical_size / 2.0, h_p_z),
-        Vec3::new(hole_size_x, panel_vertical_size, t),
+        Vec3::new(hole_cx, chamber_size_y - top_h / 2.0, h_p_z),
+        Vec3::new(hole_size_x, top_h, t),
     ); // top panel
     spawn_chamber_wall(
         world,
-        Vec3::new(0.0, 0.0 + panel_vertical_size / 2.0, h_p_z),
-        Vec3::new(hole_size_x, panel_vertical_size, t),
+        Vec3::new(hole_cx, bottom_h / 2.0, h_p_z),
+        Vec3::new(hole_size_x, bottom_h, t),
     ); // bottom panel
+
+    let platform_length = 2.0;
+    spawn_chamber_wall(
+        world,
+        Vec3::new(hole_cx, hole_cy - h_hs_y - h_t, h_p_z + platform_length / 2.0 - h_t),
+        Vec3::new(hole_size_x, t, platform_length),
+    ); // top tunnel wall
+
 
     // Tunnel
     let tunnel_length = 4.0;
     let t_p_z = h_p_z - tunnel_length / 2.0 - h_t;
+
     spawn_chamber_wall(
         world,
-        Vec3::new(-(h_hs_x + h_t), h_cs_y, t_p_z),
+        Vec3::new(hole_cx - (h_hs_x + h_t), hole_cy, t_p_z),
         Vec3::new(t, hole_size_y, tunnel_length),
     ); // left tunnel wall
     spawn_chamber_wall(
         world,
-        Vec3::new(h_hs_x + h_t, h_cs_y, t_p_z),
+        Vec3::new(hole_cx + h_hs_x + h_t, hole_cy, t_p_z),
         Vec3::new(t, hole_size_y, tunnel_length),
     ); // right tunnel wall
     spawn_chamber_wall(
         world,
-        Vec3::new(0.0, h_cs_y - h_hs_y - h_t, t_p_z),
-        Vec3::new(hole_size_x, t, tunnel_length),
-    ); // top tunnel wall
-    spawn_chamber_wall(
-        world,
-        Vec3::new(0.0, h_cs_y + h_hs_y + h_t, t_p_z),
+        Vec3::new(hole_cx, hole_cy - h_hs_y - h_t, t_p_z),
         Vec3::new(hole_size_x, t, tunnel_length),
     ); // bottom tunnel wall
     spawn_chamber_wall(
         world,
-        Vec3::new(0.0, h_cs_y, h_p_z - tunnel_length - h_t),
+        Vec3::new(hole_cx, hole_cy + h_hs_y + h_t, t_p_z),
+        Vec3::new(hole_size_x, t, tunnel_length),
+    ); // top tunnel wall
+    spawn_chamber_wall(
+        world,
+        Vec3::new(hole_cx, hole_cy, h_p_z - tunnel_length - h_t),
         Vec3::new(hole_size_x, hole_size_y, t),
     ); // end of tunnel
 
@@ -597,16 +622,16 @@ pub fn build(world: &mut World) {
     // Red service light, deep in the tunnel.
     spawn_point(
         world,
-        Vec3::new(0.0, chamber_size_y * 0.5, h_p_z - tunnel_length * 0.8),
+        Vec3::new(hole_cx, hole_cy, h_p_z - tunnel_length * 0.8),
         PointLight::new(Vec3::new(1.0, 0.06, 0.03), 6.0, tunnel_length),
     );
 
-    let tunnel_floor_y = h_cs_y - h_hs_y;
+    let tunnel_floor_y = hole_cy - h_hs_y;
     let gel_size = Vec3::new(0.6, 0.4, 0.5);
     spawn_food(
         world,
         Vec3::new(
-            0.0,
+            hole_cx,
             tunnel_floor_y + gel_size.y / 2.0,
             h_p_z - tunnel_length * 0.7,
         ),

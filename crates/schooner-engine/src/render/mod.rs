@@ -37,7 +37,9 @@ pub mod uniforms;
 pub mod vignette;
 
 pub use bloom::{Bloom, BloomParamsUniform, BloomPipeline};
-pub use context::{DEPTH_FORMAT, HDR_FORMAT, RenderContext, RenderContextError};
+pub use context::{
+    DEPTH_FORMAT, HDR_FORMAT, MSAA_SAMPLE_COUNT, RenderContext, RenderContextError,
+};
 pub use exposure::{AdaptParamsUniform, AutoExposure, ExposurePipeline};
 pub use fog::Fog;
 pub use forward::render_frame;

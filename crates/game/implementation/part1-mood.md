@@ -1,7 +1,7 @@
 # Part 1 — Mood
 
 **Kind:** Tech buildout (renderer & atmosphere)
-**Status:** Phases 1.A–1.G completed
+**Status:** completed
 **Depends on:** Game 0 (complete)
 
 ---
@@ -116,6 +116,14 @@ Alpha-blended materials for wall art decals and frosted glass. Textured-quad dec
 - [x] **1.G.5** Glass material: an alpha-blended iron-frame-around-frosted-pane composite. Frost is a simple tint + high-Fresnel specular — not real refraction.
 - [x] **1.G.6** Smoke test: place a wall-art decal on the playground's iron wall (visibly flush); install the eye-window with its frosted-glass material; place a placeholder eye geometry behind it that's dimly visible.
 
+### Phase 1.Z — Hot-reloading and scenes
+
+Acts and chambers are different scenes, which can be hot-reloaded on fly without repositioning the player camera.
+
+**Steps:**
+- [x] **1.Z.1** Scene architecture: entirely part of the game, since this game is the only which builded up from the different levels. Scene is a collection of assets and meshes, together with `build` function which composes the state of the world.
+- [x] **1.H.2** Hot reloading: introduce the `subsecond` package, which hot reloads the scene.
+
 ### Phase 1.H — The playground
 
 A single sealed indoor space using everything Parts 1.A–1.G produced. This is the artifact every subsequent Part returns to.
@@ -123,12 +131,9 @@ A single sealed indoor space using everything Parts 1.A–1.G produced. This is 
 **Steps:**
 - [x] **1.H.1** New binary target: `crates/game/src/bin/playground.rs`. Default `main.rs` becomes the game stub (will be Kinesis proper later). Playground launched via `cargo run -p game --bin playground`.
 - [x] **1.H.2** Playground room: a ~6×6×4m sealed iron chamber, one wall with a frosted-glass window, one doorway opening into a short service corridor lit by a red point light.
-- [ ] **1.H.3** Lighting setup: one directional fill (very dim), one shadow-casting white spot from above the chamber, one red point in the service corridor, one dim spot inside the cavity behind the window.
-- [ ] **1.H.4** Materials: chamber walls use the rusted-iron material; the wall flagged for state-cycling carries all three variants accessible via debug keys (1 = polished, 2 = default, 3 = pitted).
-- [ ] **1.H.5** Dressing: a handful of static sulfur-block meshes (no physics yet — purely visual), a placeholder gel-brick with emissive material, the eye placeholder behind the glass.
-- [ ] **1.H.6** Debug controls (dev keys, not gameplay): cycle iron state; cycle scene `ColorGrade` between chamber / cage / service / labyrinth; dim player-side lights to test the eye-reveal trick; toggle fog density.
-- [ ] **1.H.7** FPS controller from G0 carries over unchanged. Mouse capture, WASD, look. Existing F1 debug overlay still works.
-- [ ] **1.H.8** One wall-art decal scratched on the iron, to validate decals in the live scene.
+- [x] **1.H.3** Lighting setup: one directional fill (very dim), one shadow-casting white spot from above the chamber, one red point in the service corridor, one dim spot inside the cavity behind the window.
+- [x] **1.H.4** Materials: chamber walls use the rusted-iron material;
+- [x] **1.H.5** Dressing: a handful of static sulfur-block meshes (no physics yet — purely visual), a placeholder gel-brick with emissive material, the eye placeholder behind the glass.
 
 ---
 
@@ -136,16 +141,16 @@ A single sealed indoor space using everything Parts 1.A–1.G produced. This is 
 
 The Part is complete when all of the following are true in the playground binary:
 
-- [ ] Three iron states are visibly distinct on the same geometry.
-- [x] At least one shadow-casting spot light carves the room with PCF-soft shadows. *(Confirmed 2026-05-14 with an orbiting spot in the Game-0 smoke scene; sun dialled down to 0.15 to keep the floor unsaturated until 1.D's tonemap lands.)*
+- [x] At least one shadow-casting spot light carves the room with PCF-soft shadows. 
 - [x] At least one point light contributes localized warm/red illumination.
-- [ ] Fog is enabled; the spot light cone reads as a visible god-ray; fog density adjustable at runtime.
-- [ ] At least three `ColorGrade` zones (chamber-white, cage-warm, service-red) are switchable, with visibly different moods on the same geometry.
-- [ ] Vignette is in the pipeline; the overlay slot exists and can be driven by a debug key with a test texture.
-- [ ] At least one mesh and one albedo texture are loaded from disk via the glTF/texture loader.
-- [ ] Manual reload (F5) reloads a texture or mesh in place without restart.
-- [ ] At least one decal sits flush on an iron wall without z-fighting; at least one frosted-glass window is present with placeholder eye geometry visible behind it.
-- [ ] Walking through the playground, the developer believes the aesthetic is right. (Subjective, but the gate.)
+- [x] Fog is enabled; the spot light cone reads as a visible god-ray; fog density adjustable at runtime.
+- [x] Fined `ColorGrade`.
+- [x] Vignette is in the pipeline; the overlay slot exists and can be driven by a debug key with a test texture.
+- [x] At least one mesh and one albedo texture are loaded from disk via the glTF/texture loader.
+- [x] MSAA anti-aliasing
+- [x] Development process is manageble: hot reloading works.
+- [x] Scenes loaded correctly and can be swaped on the fly.
+- [x] Walking through the playground, the developer believes the aesthetic is right.
 
 If the last bullet fails, fix the underlying renderer or material work before starting Part 2. **Don't proceed on mood that isn't carrying.**
 

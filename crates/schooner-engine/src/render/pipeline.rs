@@ -31,7 +31,7 @@ use wgpu::{
     TextureFormat, TextureSampleType, TextureView, TextureViewDimension, VertexState,
 };
 
-use crate::render::context::DEPTH_FORMAT;
+use crate::render::context::{DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::render::mesh::Vertex;
 use crate::render::texture::TextureHandle;
 use crate::render::uniforms::{CameraUniformData, LightsUniformData, ModelUniformData};
@@ -191,7 +191,19 @@ impl ForwardPipeline {
                         stencil: StencilState::default(),
                         bias: DepthBiasState::default(),
                     }),
-                    multisample: MultisampleState::default(),
+                    // 4× MSAA — coverage anti-aliasing on geometry
+                    // silhouettes. Both pipelines (opaque + transparent)
+                    // share this builder, so both match the attachment's
+                    // sample count; a mismatch fails pipeline validation.
+                    // `mask: !0` enables every sample; alpha-to-coverage
+                    // stays off (the transparent pass is alpha-*blended*,
+                    // not alpha-tested, so it gets coverage AA on its
+                    // silhouette without it).
+                    multisample: MultisampleState {
+                        count: MSAA_SAMPLE_COUNT,
+                        mask: !0,
+                        alpha_to_coverage_enabled: false,
+                    },
                     // Replaces the old `multiview` field. `None` means
                     // single-view (no array-layer broadcast); the mask is
                     // only used when rendering into multiple layers at once.

@@ -356,7 +356,17 @@ pub fn render_frame(world: &mut World) {
     //    `Res`-style borrow on the World. The HDR view is cloned the
     //    same way; the post pipeline's bind group is rebuilt against
     //    it when `hdr_generation` differs from the cached value.
-    let (frame, device, queue, surface_size, depth_view, hdr_view, hdr_generation, aspect) = {
+    let (
+        frame,
+        device,
+        queue,
+        surface_size,
+        depth_view,
+        hdr_ms_view,
+        hdr_view,
+        hdr_generation,
+        aspect,
+    ) = {
         puffin::profile_scope!("acquire");
         let Some(ctx) = world.resource_mut::<RenderContext>() else {
             warn!("render_frame: RenderContext missing");
@@ -371,6 +381,7 @@ pub fn render_frame(world: &mut World) {
             ctx.queue().clone(),
             ctx.surface_size(),
             ctx.depth_view().clone(),
+            ctx.hdr_ms_view().clone(),
             ctx.hdr_view().clone(),
             ctx.hdr_generation(),
             ctx.aspect_ratio(),
@@ -597,22 +608,36 @@ pub fn render_frame(world: &mut World) {
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("forward-pass"),
-            // Forward writes into the HDR offscreen target; post will
-            // sample it and write the swap chain.
+            // Forward renders into the multisampled HDR target and
+            // resolves into the single-sample HDR target; post samples
+            // the resolved view and writes the swap chain. The resolve
+            // averages the coverage samples in linear HDR — before the
+            // tone curve in the post pass — which is the only ordering
+            // that actually anti-aliases.
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: &hdr_view,
+                view: &hdr_ms_view,
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: Some(&hdr_view),
                 ops: Operations {
                     load: LoadOp::Clear(CLEAR_COLOR),
-                    store: StoreOp::Store,
+                    // Discard, not Store: the resolve writes everything
+                    // downstream reads, so the raw multisampled samples
+                    // are dead after the pass. On a tiled/TBDR GPU
+                    // (Apple Silicon Metal) this keeps the 4× buffer in
+                    // tile memory and never spills it to DRAM.
+                    store: StoreOp::Discard,
                 },
             })],
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: &depth_view,
                 depth_ops: Some(Operations {
                     load: LoadOp::Clear(1.0),
-                    store: StoreOp::Store,
+                    // Nothing samples depth after the forward pass
+                    // (fog and god-rays are analytic in the forward
+                    // shader, not a depth-reading post pass), so the
+                    // multisampled depth is discarded too — avoiding a
+                    // 4×-size spill on tiled GPUs.
+                    store: StoreOp::Discard,
                 }),
                 stencil_ops: None,
             }),
