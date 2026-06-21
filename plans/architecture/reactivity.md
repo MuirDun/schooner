@@ -27,7 +27,7 @@ The fastest tier. Within a single frame, in the local simulation, when a compone
 **Granularity:** per-entity, per-component-type changes.
 **Latency:** same frame as the change, with bounded propagation depth.
 **Consumer:** ECS systems and Glyph subscriptions.
-**Substrate:** per-component change ticks already built into the sparse-set storage in Game 0.
+**Substrate:** per-component change ticks in the sparse-set storage. Game 0 built the *mutation* half — a `last_mutation_tick` per entry plus a pull-style `changed_since` query, with no consumers yet. The *add* and *remove* halves, and the push-style subscription dispatch, land in Game 1 alongside the first Tier 2 channel (collision events). The tick struct was shaped from day one to grow `added_tick` without an API break, so this is an extension, not a retrofit.
 
 This tier carries: status-effect propagation, particle spawning on component change, sound triggers, animation transitions, immediate gameplay responses.
 

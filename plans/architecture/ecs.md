@@ -24,7 +24,7 @@ The choice of sparse-set over archetype is one of the more consequential decisio
 
 **Immersive-sim status churn is the load-bearing case at 60 Hz.** Burning, Wet, Frozen, Stunned, Poisoned, MagicShield, OnFire, Bleeding — these flicker on and off across many entities every frame in the kind of game we are building. This is not LOD-scale, edge-case churn; it is the moment-to-moment behaviour of a living combat encounter. Archetype migration on this load is a real cost. Sparse-set absorbs it.
 
-**Reactive subscriptions are a first-class engine idiom.** "When Health drops below 30, do X." "On Burning added, spawn fire particles." These are the substrate of how Glyph code expresses behaviour. Per-component change tracking is cheap to build into sparse-set storage and awkward to retrofit. Doing it from Game 0 means Game 2's reactive layer is wiring, not surgery.
+**Reactive subscriptions are a first-class engine idiom.** "When Health drops below 30, do X." "On Burning added, spawn fire particles." These are the substrate of how Glyph code expresses behaviour. Per-component change tracking is cheap to build into sparse-set storage and awkward to retrofit. Game 0 built the *mutation* half of it — a per-entry mutation tick plus a pull-style `changed_since` query; the *add* and *remove* halves extend it in Game 1. Building the substrate early means the reactive layer is wiring, not surgery.
 
 **Hydration is across the boundary, not within the ECS.** This is worth naming explicitly because it eliminates an old argument that does not apply. When a character is hydrated from Layer 1 into Layer 4, the ECS entity is **spawned fresh** with all its components at once; when dehydrated, it is **despawned**. There is no in-place LOD migration of an existing ECS entity changing detail level. Both archetype and sparse-set handle spawn and despawn cleanly, so this is a wash for storage choice. The other reasons above stand without it.
 
@@ -43,6 +43,8 @@ Dense view caches are not a Game 0 concept. Naming them now is just promising th
 ## Change Detection as Substrate
 
 Every component mutation through the ECS bumps a per-entity tick. Every system can ask: which entities of component type T have changed since I last looked?
+
+Game 0 ships exactly this much — *mutation* tracking — and no more. Component *addition* and *removal* are not yet distinguished: an add records the same tick as a mutation, and a removal drops the record entirely. Add- and remove-detection are the Game 1 extension that the first Tier 2 channel and gameplay reactions require.
 
 This is the foundation of the reactive backbone. In Game 0 it is a substrate without consumers. In Game 2 it becomes the lever Glyph subscriptions pull. In Game 4 it feeds Tier 2 events that propagate to other layers.
 

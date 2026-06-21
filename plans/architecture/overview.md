@@ -66,7 +66,7 @@ Detail in `ecs.md`.
 
 Layers do not call each other. They communicate through tiered events:
 
-- **Tier 1 — component change detection.** Within Layer 4, systems react to component additions, removals, and mutations in the same frame. Built into the ECS storage.
+- **Tier 1 — component change detection.** Within Layer 4, systems react to component additions, removals, and mutations in the same frame. Built into the ECS storage. (Game 0 ships the mutation half; add/remove detection lands in Game 1.)
 - **Tier 2 — cross-layer typed queues.** Layer 4 publishes to Layer 3, Layer 3 to Layer 2, and back. Producer publishes at its own rate; consumer reads on its own tick.
 - **Tier 3 — world event accumulation.** Facts accumulate in Layer 1 over time and become queryable conditions for Chronicle rules ("three NPCs died here this month").
 
@@ -115,7 +115,7 @@ The discipline that lets us defer threading until it is needed: code is **writte
 
 The plan introduces one layer at a time. The temptation to build for Game 4 in Game 0 is the temptation to build a castle out of mud — premature, brittle, wrong by the time you reach it.
 
-- **Games 0–1.** Layer 4 only. ECS, physics, rendering, input, audio. Tier 1 events from day one because they are cheap and painful to retrofit. Tier 2 first appears in Game 1 with collision events crossing from physics into game logic.
+- **Games 0–1.** Layer 4 only. ECS, physics, rendering, input, audio. Tier 1's mutation substrate from day one because it is cheap and painful to retrofit; add/remove detection and the push-subscription dispatch complete it in Game 1, alongside Tier 2. Tier 2 first appears in Game 1 with collision events crossing from physics into game logic.
 - **Game 2A.** Glyph enters. Layer 4 grows script-driven game logic and UI. The script-engine boundary is established.
 - **Game 2B.** A primitive Layer 3 appears: blackboard, utility, HTN. The horror enemy is the proving ground for the agent architecture Game 4 will scale.
 - **Game 3.** Layer 4 grows outward — terrain, weather, vegetation, the full forward renderer. Layer 3 grows group behaviour and budgeted scheduling. **Immersive-sim foundations land here**: material reactions, environment response, the substrate Game 5's spell system will compose on.
