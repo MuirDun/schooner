@@ -181,6 +181,13 @@ impl App {
         puffin::GlobalProfiler::lock().new_frame();
         puffin::profile_scope!("frame");
 
+        // Reactive substrate: rotate the per-frame removed-component
+        // ledger at frame top so this frame's removals start fresh
+        // while last frame's stay readable — a one-frame-late reactor
+        // (e.g. physics handle cleanup) never misses one. Events<T>
+        // will swap at this same point.
+        self.world.swap_removed();
+
         let now = Instant::now();
         let real_delta = match self.last_frame.replace(now) {
             Some(prev) => now.duration_since(prev).as_secs_f32(),

@@ -60,6 +60,53 @@ impl<'w, T> DerefMut for Mut<'w, T> {
     }
 }
 
+/// Double-buffered record of component removals, keyed by
+/// [`ComponentId`].
+///
+/// Removal is the one signal that can't be recovered by querying the
+/// world after the fact — once `T` is gone, nothing in the world says
+/// it was ever there. So we capture it at the moment of removal
+/// (`World::remove` / `World::despawn`) into this ledger, which
+/// outlives the data. It is the *poll*-shaped answer to "react to a
+/// removal" — the sibling of `Changed<T>` and `Events<T>`, and the
+/// deliberate alternative to a subscribe-style on-remove callback.
+///
+/// Double-buffered so a one-frame-late reader still sees the removal:
+/// producers write `front`; readers see `front` + `back`; [`swap`] at
+/// frame top rotates `front` into `back` and clears the new `front`.
+/// Readers must be idempotent — an entity can appear in both buffers
+/// across the two-frame window.
+///
+/// [`swap`]: RemovedLedger::swap
+#[derive(Default)]
+struct RemovedLedger {
+    front: HashMap<ComponentId, Vec<EntityId>>,
+    back: HashMap<ComponentId, Vec<EntityId>>,
+}
+
+impl RemovedLedger {
+    fn record(&mut self, id: ComponentId, entity: EntityId) {
+        self.front.entry(id).or_default().push(entity);
+    }
+
+    fn swap(&mut self) {
+        std::mem::swap(&mut self.front, &mut self.back);
+        // New front = old back; clear it so this frame starts empty,
+        // keeping the Vec allocations for reuse.
+        for v in self.front.values_mut() {
+            v.clear();
+        }
+    }
+
+    fn iter_for(&self, id: Option<ComponentId>) -> impl Iterator<Item = EntityId> + '_ {
+        id.into_iter().flat_map(move |id| {
+            let front = self.front.get(&id).into_iter().flatten();
+            let back = self.back.get(&id).into_iter().flatten();
+            front.chain(back).copied()
+        })
+    }
+}
+
 /// The ECS world: the single authority over entities, components, and
 /// (later) resources.
 ///
@@ -75,6 +122,7 @@ pub struct World {
     registry: ComponentRegistry,
     storages: HashMap<ComponentId, Box<dyn ComponentStorage>>,
     resources: Resources,
+    removed: RemovedLedger,
     pub current_tick: u64,
 }
 
@@ -89,12 +137,23 @@ impl World {
 
     /// Tear down an entity: drop every component it holds, then return
     /// the slot to the allocator. Returns `true` if the entity was alive.
+    ///
+    /// Each component the entity actually carried is recorded in the
+    /// removed-ledger under its [`ComponentId`], so `removed::<T>()`
+    /// fires on whole-entity despawn, not just on an explicit
+    /// `remove::<T>`.
     pub fn despawn(&mut self, entity: EntityId) -> bool {
         if !self.entities.is_alive(entity) {
             return false;
         }
-        for storage in self.storages.values_mut() {
-            storage.remove_entity(entity);
+        // `storages` and `removed` are disjoint fields, so the loop's
+        // `&mut storages` borrow and `removed.record`'s `&mut removed`
+        // borrow don't conflict. `iter_mut` (not `values_mut`) so we
+        // have the ComponentId to key the ledger.
+        for (id, storage) in self.storages.iter_mut() {
+            if storage.remove_entity(entity) {
+                self.removed.record(*id, entity);
+            }
         }
         self.entities.free(entity)
     }
@@ -181,6 +240,48 @@ impl World {
         })
     }
 
+    /// Iterate components of type `T` whose *add* tick is strictly
+    /// greater than `since` — newly inserted (not merely mutated)
+    /// since the cursor. Same cursor idiom as [`Self::changed_since`]:
+    /// a reaction remembers its own last-run tick and passes it in. A
+    /// remove-then-reinsert re-stamps the add tick, so it resurfaces.
+    pub fn added_since<T: Component>(
+        &self,
+        since: u64,
+    ) -> impl Iterator<Item = (EntityId, &T)> + '_ {
+        self.sparse_set::<T>().into_iter().flat_map(move |s| {
+            s.iter()
+                .zip(s.iter_ticks())
+                .filter_map(move |((entity, value), (_, ticks))| {
+                    (ticks.added_tick > since).then_some((entity, value))
+                })
+        })
+    }
+
+    /// Iterate entities whose `T` was removed — by an explicit
+    /// `remove::<T>` or by a whole-entity `despawn` — within the
+    /// readable window (this frame and the previous one). Empty if `T`
+    /// was never registered.
+    ///
+    /// Readers must be **idempotent**: an entity can surface more than
+    /// once across the two-frame window (and the entity is already gone,
+    /// so only its [`EntityId`] is available, not its data). The
+    /// canonical consumer is resource cleanup keyed off a side map —
+    /// e.g. freeing a physics handle via `map.remove(entity)`, which is
+    /// a no-op the second time.
+    pub fn removed<T: Component>(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.removed.iter_for(self.registry.id_of::<T>())
+    }
+
+    /// Rotate the removed-ledger's double buffer: last frame's removals
+    /// drop out of the readable window, this frame's begin
+    /// accumulating. Call exactly once per frame, at the top of
+    /// `App::tick` — calling it mid-frame would drop removals before
+    /// their readers run.
+    pub fn swap_removed(&mut self) {
+        self.removed.swap();
+    }
+
     // --- queries ---------------------------------------------------------
 
     fn sparse_set<T: Component>(&self) -> Option<&SparseSet<T>> {
@@ -248,6 +349,25 @@ impl World {
         QueryIter::new(self, state, filter_state)
     }
 
+    /// Run a typed [`QueryData`] gated by a [`QueryFilter`], supplying a
+    /// `since` cursor to the change-detection filters (`Added<T>` /
+    /// `Changed<T>`). Presence filters ignore it.
+    ///
+    /// This is the explicit-cursor entry point for reaction systems: a
+    /// system remembers its own last-run tick (`world.current_tick()`
+    /// captured at the start of its run) and passes it as `since`, so
+    /// the filter selects only the entities whose `T` was added /
+    /// changed since that system last looked. Strict `>`: an entity
+    /// touched exactly at `since` is excluded.
+    pub fn query_filtered_since<D: QueryData, F: crate::ecs::query::filter::QueryFilter>(
+        &mut self,
+        since: u64,
+    ) -> QueryIter<'_, D, F> {
+        let state = D::init_state(self);
+        let filter_state = F::init_state_since(self, since);
+        QueryIter::new(self, state, filter_state)
+    }
+
     /// Insert (or replace) `T` on `entity`. Auto-registers `T` on first
     /// use. Returns the previous value if one existed; returns `None`
     /// silently when the entity is not alive.
@@ -268,6 +388,7 @@ impl World {
     }
 
     /// Remove `T` from `entity`, returning the prior value if present.
+    /// Records the removal in the ledger so `removed::<T>()` reports it.
     pub fn remove<T: Component>(&mut self, entity: EntityId) -> Option<T> {
         if !self.entities.is_alive(entity) {
             return None;
@@ -278,7 +399,11 @@ impl World {
             .as_any_mut()
             .downcast_mut::<SparseSet<T>>()
             .expect("storage for ComponentId always holds SparseSet<T>");
-        set.remove(entity)
+        let removed = set.remove(entity);
+        if removed.is_some() {
+            self.removed.record(id, entity);
+        }
+        removed
     }
 
     pub fn contains<T: Component>(&self, entity: EntityId) -> bool {
@@ -720,6 +845,169 @@ mod tests {
         }
         let changed = collect_changed::<i32>(&world, 0);
         assert_eq!(changed, vec![(b, 20)]);
+    }
+
+    // --- add detection ---------------------------------------------------
+
+    fn collect_added<T: Component + Clone>(world: &World, since: u64) -> Vec<(EntityId, T)> {
+        let mut out: Vec<_> = world
+            .added_since::<T>(since)
+            .map(|(e, v)| (e, v.clone()))
+            .collect();
+        out.sort_by_key(|(e, _)| e.index);
+        out
+    }
+
+    #[test]
+    fn added_since_reports_new_inserts_strictly_after_cursor() {
+        let mut world = World::new();
+        world.increment_tick(); // tick 1
+        let e = world.spawn();
+        world.insert::<i32>(e, 1); // added_tick = 1
+        assert_eq!(collect_added::<i32>(&world, 0), vec![(e, 1)]);
+        // Strict >: an add exactly at the cursor is excluded.
+        assert_eq!(collect_added::<i32>(&world, 1), vec![]);
+    }
+
+    #[test]
+    fn mutation_does_not_resurface_as_added() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert::<i32>(e, 1); // added_tick = 0, mutation = 0
+        world.increment_tick(); // tick 1
+        {
+            let mut m = world.get_mut::<i32>(e).unwrap();
+            *m = 99; // last_mutation_tick = 1, added_tick untouched
+        }
+        // It changed since tick 0, but it was not *added* since tick 0.
+        assert_eq!(collect_changed::<i32>(&world, 0), vec![(e, 99)]);
+        assert_eq!(collect_added::<i32>(&world, 0), vec![]);
+    }
+
+    #[test]
+    fn reinsert_after_remove_counts_as_a_fresh_add() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert::<i32>(e, 1); // added_tick = 0
+        world.increment_tick(); // tick 1
+        world.remove::<i32>(e);
+        world.insert::<i32>(e, 2); // new dense entry → added_tick = 1
+        assert_eq!(collect_added::<i32>(&world, 0), vec![(e, 2)]);
+    }
+
+    // --- change-cursor convention ----------------------------------------
+
+    #[test]
+    fn change_cursor_is_robust_across_fixed_step_stride() {
+        // The pinned convention: a reaction anchors on *its own last-run
+        // tick* (not a frame counter) and compares strict `>`. Because
+        // `current_tick` is monotonic across every stage, the
+        // FixedUpdate 0..N stride never over- or under-counts — the
+        // reaction catches exactly the changes since it last ran,
+        // however many stage bumps elapsed in between.
+        let mut world = World::new();
+        let x = world.spawn();
+        let y = world.spawn();
+        world.insert::<i32>(x, 0);
+        world.insert::<i32>(y, 0);
+
+        // Reaction's cursor starts at the current tick — nothing prior.
+        let mut last_run = world.current_tick();
+
+        // Frame 1: three fixed steps then update, mutating x mid-stride.
+        world.increment_tick(); // fixed step 1
+        world.increment_tick(); // fixed step 2
+        {
+            let mut p = world.get_mut::<i32>(x).unwrap();
+            *p = 1;
+        }
+        world.increment_tick(); // fixed step 3
+        world.increment_tick(); // update — the reaction "runs" here
+
+        let changed: Vec<_> = world.changed_since::<i32>(last_run).map(|(e, _)| e).collect();
+        assert_eq!(changed, vec![x]); // only x, despite four tick bumps
+        last_run = world.current_tick();
+
+        // Frame 2: nothing mutates. The advanced cursor must not
+        // re-report x (no double-count across frames).
+        world.increment_tick();
+        world.increment_tick();
+        let changed: Vec<_> = world.changed_since::<i32>(last_run).map(|(e, _)| e).collect();
+        assert!(changed.is_empty());
+    }
+
+    // --- removal ledger --------------------------------------------------
+
+    // Collect as `Vec<EntityId>`, not `Vec<u32>`: a transitive `gltf`
+    // dep adds a second `PartialEq` impl for `u32`, which makes an
+    // empty `vec![]` comparison against `Vec<u32>` ambiguous. `EntityId`
+    // has a single `PartialEq`, so the empty case infers cleanly.
+    fn collect_removed<T: Component>(world: &World) -> Vec<EntityId> {
+        let mut out: Vec<EntityId> = world.removed::<T>().collect();
+        out.sort_by_key(|e| e.index);
+        out
+    }
+
+    #[test]
+    fn removed_of_unregistered_type_is_empty() {
+        let world = World::new();
+        assert_eq!(collect_removed::<i32>(&world), vec![]);
+    }
+
+    #[test]
+    fn remove_records_entity_in_removed_reader() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert::<i32>(e, 1);
+        assert_eq!(collect_removed::<i32>(&world), vec![]);
+        world.remove::<i32>(e);
+        assert_eq!(collect_removed::<i32>(&world), vec![e]);
+    }
+
+    #[test]
+    fn remove_of_absent_component_records_nothing() {
+        let mut world = World::new();
+        let e = world.spawn();
+        // i32 never inserted on e.
+        assert_eq!(world.remove::<i32>(e), None);
+        assert_eq!(collect_removed::<i32>(&world), vec![]);
+    }
+
+    #[test]
+    fn despawn_records_under_every_component_the_entity_had() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert::<i32>(e, 1);
+        world.insert::<String>(e, "x".into());
+        world.despawn(e);
+        assert_eq!(collect_removed::<i32>(&world), vec![e]);
+        assert_eq!(collect_removed::<String>(&world), vec![e]);
+    }
+
+    #[test]
+    fn despawn_does_not_record_components_the_entity_lacked() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert::<i32>(e, 1);
+        // f64 storage exists (another entity has it) but e never did.
+        let other = world.spawn();
+        world.insert::<f64>(other, 2.0);
+        world.despawn(e);
+        assert_eq!(collect_removed::<i32>(&world), vec![e]);
+        assert_eq!(collect_removed::<f64>(&world), vec![]);
+    }
+
+    #[test]
+    fn swap_removed_keeps_prior_frame_then_drops_it() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert::<i32>(e, 1);
+        world.remove::<i32>(e); // lands in front
+        assert_eq!(collect_removed::<i32>(&world), vec![e]);
+        world.swap_removed(); // front -> back, still readable
+        assert_eq!(collect_removed::<i32>(&world), vec![e]);
+        world.swap_removed(); // back dropped, window closes
+        assert_eq!(collect_removed::<i32>(&world), vec![]);
     }
 
     // --- queries ---------------------------------------------------------

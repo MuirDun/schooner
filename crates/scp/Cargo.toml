@@ -1,0 +1,34 @@
+[package]
+name = "scp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+[[bin]]
+name = "scp-client"
+path = "src/bin/client.rs"
+required-features = ["client"]
+
+[features]
+default = []
+server = ["dep:schooner-engine", "dep:tokio", "dep:axum"]
+client = ["dep:reqwest", "dep:rustyline"]
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+schooner-engine = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# server only
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
+axum = { version = "0.8", optional = true }
+
+# client only
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"], optional = true }
+rustyline = { version = "15", optional = true }
+

@@ -42,6 +42,15 @@ pub trait QueryFilter {
     /// filter probes.
     fn init_state(world: &mut crate::ecs::World) -> Self::State;
 
+    /// Cursor-aware setup for the change-detection filters
+    /// (`Added<T>` / `Changed<T>`), threaded in by
+    /// [`World::query_filtered_since`](crate::ecs::World::query_filtered_since).
+    /// Presence filters (`()`, `Without<T>`) ignore the cursor, so the
+    /// default just forwards to [`init_state`](Self::init_state).
+    fn init_state_since(world: &mut crate::ecs::World, _since: u64) -> Self::State {
+        Self::init_state(world)
+    }
+
     /// Read-only component access. Feeds the alias check alongside
     /// `QueryData::access` — filters that read `T` block any data
     /// write of `T` in the same query.
@@ -145,6 +154,145 @@ impl<T: Component> QueryFilter for Without<T> {
     }
 }
 
+// --- Added<T> ------------------------------------------------------------
+
+/// Filter that keeps only entities whose `T` was added after the
+/// query's since-cursor (`added_tick > since`).
+///
+/// The cursor is supplied explicitly through
+/// [`World::query_filtered_since`](crate::ecs::World::query_filtered_since):
+/// a reaction system owns its own last-run tick and passes it in.
+/// Built through the plain (cursor-less) path — e.g. as a bare
+/// `Query<_, Added<T>>` system param — the cursor is `0` (every add so
+/// far), because scheduler-tracked per-system cursors are a later
+/// part's work. For per-run semantics today, drive it from
+/// `query_filtered_since` or use [`World::added_since`](crate::ecs::World::added_since).
+pub struct Added<T: Component>(PhantomData<fn() -> T>);
+
+/// Resolved fetch for [`Added<T>`]: the typed read handle (or `None`
+/// when the storage doesn't exist — then nothing was added, so no
+/// entity passes) plus the since-cursor to compare add ticks against.
+pub struct AddedFetch<'w, T: Component> {
+    storage: Option<&'w SparseSet<T>>,
+    since: u64,
+}
+
+impl<T: Component> QueryFilter for Added<T> {
+    type State = (Option<ComponentId>, u64);
+    type Fetch<'w> = AddedFetch<'w, T>;
+
+    fn init_state(world: &mut crate::ecs::World) -> Self::State {
+        (Some(world.register_component::<T>()), 0)
+    }
+
+    fn init_state_since(world: &mut crate::ecs::World, since: u64) -> Self::State {
+        (Some(world.register_component::<T>()), since)
+    }
+
+    fn access(state: &Self::State) -> QueryAccess {
+        let mut access = QueryAccess::new();
+        if let Some(id) = state.0 {
+            access.push(ComponentAccess {
+                component_id: id,
+                mutable: false,
+            });
+        }
+        access
+    }
+
+    fn init_fetch<'w, I>(state: &Self::State, handles: &mut I) -> Self::Fetch<'w>
+    where
+        I: Iterator<Item = Option<StorageHandle<'w>>>,
+    {
+        let slot = handles
+            .next()
+            .expect("filter init_fetch ran out of slots (framework bug)");
+        AddedFetch {
+            storage: slot.map(handle_as_read::<T>),
+            since: state.1,
+        }
+    }
+
+    fn matches<'w>(fetch: &Self::Fetch<'w>, entity: EntityId) -> bool {
+        match fetch.storage {
+            // No `T` for this entity → not added; missing storage →
+            // nothing was added at all. Both exclude.
+            Some(s) => s.ticks(entity).is_some_and(|t| t.added_tick > fetch.since),
+            None => false,
+        }
+    }
+}
+
+// --- Changed<T> ----------------------------------------------------------
+
+/// Filter that keeps only entities whose `T` was mutated (through the
+/// tick-bumping path) after the query's since-cursor
+/// (`last_mutation_tick > since`).
+///
+/// A fresh insert stamps the mutation tick too, so `Changed<T>` also
+/// matches newly-added entities — "an add is a change," the standard
+/// convention. Use [`Added<T>`] when you want *only* adds.
+///
+/// The cursor is supplied through
+/// [`World::query_filtered_since`](crate::ecs::World::query_filtered_since),
+/// exactly as for [`Added<T>`]; see that type for the cursor rules and
+/// the cursor-less fallback.
+pub struct Changed<T: Component>(PhantomData<fn() -> T>);
+
+/// Resolved fetch for [`Changed<T>`]: the typed read handle (or `None`
+/// when the storage doesn't exist — then nothing changed, so no entity
+/// passes) plus the since-cursor to compare mutation ticks against.
+pub struct ChangedFetch<'w, T: Component> {
+    storage: Option<&'w SparseSet<T>>,
+    since: u64,
+}
+
+impl<T: Component> QueryFilter for Changed<T> {
+    type State = (Option<ComponentId>, u64);
+    type Fetch<'w> = ChangedFetch<'w, T>;
+
+    fn init_state(world: &mut crate::ecs::World) -> Self::State {
+        (Some(world.register_component::<T>()), 0)
+    }
+
+    fn init_state_since(world: &mut crate::ecs::World, since: u64) -> Self::State {
+        (Some(world.register_component::<T>()), since)
+    }
+
+    fn access(state: &Self::State) -> QueryAccess {
+        let mut access = QueryAccess::new();
+        if let Some(id) = state.0 {
+            access.push(ComponentAccess {
+                component_id: id,
+                mutable: false,
+            });
+        }
+        access
+    }
+
+    fn init_fetch<'w, I>(state: &Self::State, handles: &mut I) -> Self::Fetch<'w>
+    where
+        I: Iterator<Item = Option<StorageHandle<'w>>>,
+    {
+        let slot = handles
+            .next()
+            .expect("filter init_fetch ran out of slots (framework bug)");
+        ChangedFetch {
+            storage: slot.map(handle_as_read::<T>),
+            since: state.1,
+        }
+    }
+
+    fn matches<'w>(fetch: &Self::Fetch<'w>, entity: EntityId) -> bool {
+        match fetch.storage {
+            Some(s) => s
+                .ticks(entity)
+                .is_some_and(|t| t.last_mutation_tick > fetch.since),
+            None => false,
+        }
+    }
+}
+
 // --- (F1, F2) : two-filter AND ------------------------------------------
 
 impl<F1, F2> QueryFilter for (F1, F2)
@@ -158,6 +306,12 @@ where
     fn init_state(world: &mut crate::ecs::World) -> Self::State {
         let s1 = F1::init_state(world);
         let s2 = F2::init_state(world);
+        (s1, s2)
+    }
+
+    fn init_state_since(world: &mut crate::ecs::World, since: u64) -> Self::State {
+        let s1 = F1::init_state_since(world, since);
+        let s2 = F2::init_state_since(world, since);
         (s1, s2)
     }
 
@@ -281,6 +435,73 @@ mod tests {
             .count();
         // Only `bare` survives both filters.
         assert_eq!(got_count, 1);
+    }
+
+    #[test]
+    fn added_filter_selects_only_entities_added_after_cursor() {
+        let mut world = World::new();
+        let early = world.spawn();
+        world.insert(early, Pos(1)); // added_tick = 0
+        world.increment_tick(); // tick 1
+        let cursor = 0; // "since tick 0"
+        let late = world.spawn();
+        world.insert(late, Pos(2)); // added_tick = 1 > 0
+
+        // `&Pos` data + `Added<Pos>` filter both read Pos — two reads,
+        // no alias conflict. Only `late` was added after the cursor.
+        let got: Vec<i32> = world
+            .query_filtered_since::<&Pos, Added<Pos>>(cursor)
+            .map(|p| p.0)
+            .collect();
+        assert_eq!(got, vec![2]);
+    }
+
+    #[test]
+    fn added_filter_excludes_everyone_when_storage_absent() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Pos(1));
+        // Tag never inserted: Added<Tag> sees no storage → nobody passes.
+        let got = world
+            .query_filtered_since::<&Pos, Added<Tag>>(0)
+            .count();
+        assert_eq!(got, 0);
+    }
+
+    #[test]
+    fn changed_filter_selects_only_entities_mutated_after_cursor() {
+        let mut world = World::new();
+        let a = world.spawn();
+        let b = world.spawn();
+        world.insert(a, Pos(1)); // mutation tick 0
+        world.insert(b, Pos(2)); // mutation tick 0
+        world.increment_tick(); // tick 1
+        {
+            let mut p = world.get_mut::<Pos>(b).unwrap();
+            p.0 = 20; // last_mutation_tick = 1
+        }
+        // a was last touched at tick 0 (== cursor, strict > excludes it);
+        // b was mutated at tick 1.
+        let got: Vec<i32> = world
+            .query_filtered_since::<&Pos, Changed<Pos>>(0)
+            .map(|p| p.0)
+            .collect();
+        assert_eq!(got, vec![20]);
+    }
+
+    #[test]
+    fn changed_filter_includes_fresh_adds() {
+        let mut world = World::new();
+        world.increment_tick(); // tick 1
+        let e = world.spawn();
+        world.insert(e, Pos(5)); // added & mutated at tick 1
+        // An insert stamps the mutation tick too, so the fresh add
+        // reads as changed since tick 0.
+        let got: Vec<i32> = world
+            .query_filtered_since::<&Pos, Changed<Pos>>(0)
+            .map(|p| p.0)
+            .collect();
+        assert_eq!(got, vec![5]);
     }
 
     #[test]

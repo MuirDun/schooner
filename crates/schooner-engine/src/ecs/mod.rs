@@ -11,7 +11,7 @@ pub mod world;
 pub use component::{Component, ComponentId, ComponentRegistry};
 pub use entity::{EntityAllocator, EntityId};
 pub use query::data::{ComponentAccess, QueryAccess, QueryData, WriteOnly};
-pub use query::filter::{QueryFilter, Without};
+pub use query::filter::{Added, Changed, QueryFilter, Without};
 pub use query::iter::QueryIter;
 pub use query::param::Query;
 pub use resource::Resources;

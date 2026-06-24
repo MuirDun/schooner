@@ -1,16 +1,27 @@
 use crate::ecs::EntityId;
 
 /// Per-instance change-detection bookkeeping, stored parallel to dense
-/// values. Struct-shape (not raw `u64`) leaves room for future fields
-/// like `added_tick` without an API break.
+/// values. Carries the add tick and the last-mutation tick so the
+/// `Added<T>` / `Changed<T>` consumers can tell "newly added" apart
+/// from "mutated in place."
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ChangeTicks {
+    /// Tick at which this instance became a *new* dense entry. A later
+    /// value replacement on the same entity leaves it untouched; a
+    /// remove-then-reinsert is a new entry, so the add tick is
+    /// re-stamped — re-adding a component reads as a fresh add.
+    pub added_tick: u64,
+    /// Tick of the most recent mutation through the tick-bumping path
+    /// (`Mut<T>` on `DerefMut`, or an `insert` that replaces a value).
     pub last_mutation_tick: u64,
 }
 
 impl ChangeTicks {
+    /// A fresh add at `tick`: the add and the implicit initial write
+    /// both happen now.
     pub fn new(tick: u64) -> Self {
         Self {
+            added_tick: tick,
             last_mutation_tick: tick,
         }
     }
