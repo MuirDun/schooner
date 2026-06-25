@@ -111,10 +111,10 @@ verbs, and the first gameplay rules. Non-visual but the riskiest to get wrong.
   `changed_since` scan exists). **Pin the change-tick cursor convention** against
   a concrete reaction before committing — the per-stage tick stride (FixedUpdate
   runs 0..N times/frame) makes a naive "since last frame" cursor over/under-count.
-- [ ] **2.A.4** `Events<T>` — a generic double-buffered discrete-event queue
+- [x] **2.A.4** `Events<T>` — a generic double-buffered discrete-event queue
   resource: `send`, drain-by-poll, buffer swapped exactly once per frame at a
   defined point in `App::tick` so a one-frame-late reader still sees the event.
-- [ ] **2.A.5** `Commands` — a deferred spawn / despawn / insert / remove buffer a
+- [x] **2.A.5** `Commands` — a deferred spawn / despawn / insert / remove buffer a
   non-exclusive system can hold, applied at a defined sync point after the systems
   that queue them. Shape it so an out-of-process actor (scp, [bridge.md]) could
   enqueue into the same path later — it is one more producer, not a parallel path.
@@ -177,10 +177,10 @@ the 2.B input API. Confirmed coupling to remove: `render::forward` reads
   `overlay_visible` / `show_profiler`. Engine keeps `f5_reload_system` and the
   profiler toggle. Remove the `*Preset` enums, `debug_input_system`, and
   `bloom_input_system` from the engine.
-- [ ] **2.C.4** Move the game's episodic render-mood cycles game-side: the
-  grade / vignette / fog / bloom / overlay / PCF cycles become game-owned, registered
+- [x] **2.C.4** Move the game's episodic render-mood cycles game-side: the
+  grade / vignette / fog / bloom / overlay become game-owned, registered
   as action bindings (2.C.1) in the game setup. They poke the same engine render
-  resources, just from the game crate.
+  resources, just from the game crate. PCF cycles no more needed
 - [ ] **2.C.5** Overlay extensibility (keep minimal): give the game a small hook to
   contribute to the egui overlay if it wants a dev readout, or let it render its own
   — whichever is lighter. Don't over-build; the binding API is the main surface.

@@ -11,9 +11,9 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::debug::{
-    DebugState, ProfilerView, bloom_input_system, debug_input_system, f5_reload_system,
+    DebugState, ProfilerView, debug_input_system, f5_reload_system,
 };
-use crate::ecs::{Events, IntoSystem, Schedule, Stage, World, exclusive};
+use crate::ecs::{CommandQueue, Events, IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::Input;
 use crate::render::{
     AutoExposure, Bloom, BloomPipeline, ColorGrade, DebugOverlay, ExposurePipeline, Fog,
@@ -77,6 +77,11 @@ impl App {
         // / `Res<Input>` without a separate setup step.
         world.insert_resource(Time::default());
         world.insert_resource(Input::new());
+        // CommandQueue is engine-intrinsic: any system taking a
+        // `Commands` param drains into it, and the schedule applies it
+        // at every stage boundary. Insert it up front so the first
+        // Commands-using system has a queue to write to.
+        world.insert_resource(CommandQueue::default());
         // DebugState rides along — visible by default, F1 toggles.
         // The overlay's wgpu plumbing (DebugOverlay) lands later in
         // `resumed` once the device exists.
@@ -90,9 +95,6 @@ impl App {
         // F1 toggle runs in Update so the visibility flip is
         // observable to render_frame the same frame.
         schedule.add_system(&mut world, Stage::Update, debug_input_system);
-        // F7 bloom cycle — its own system because debug_input_system is
-        // at the 6-SystemParam arity ceiling (see bloom_input_system).
-        schedule.add_system(&mut world, Stage::Update, bloom_input_system);
         Self {
             window_config: WindowConfig::default(),
             window: None,

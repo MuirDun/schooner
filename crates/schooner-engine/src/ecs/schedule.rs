@@ -36,6 +36,7 @@
 //! - Systems return `()`; a panicking system aborts the stage.
 //!   Fallible systems are out of scope for Game 0.
 
+use crate::ecs::command::CommandQueue;
 use crate::ecs::system::{IntoSystem, System, check_param_conflicts};
 use crate::ecs::world::World;
 
@@ -147,6 +148,7 @@ impl Schedule {
         puffin::profile_scope!("update_stage");
         world.increment_tick();
         self.update.run(world);
+        CommandQueue::apply(world);
     }
 
     /// Advance `world.current_tick` by one, then run every
@@ -156,6 +158,7 @@ impl Schedule {
         puffin::profile_scope!("fixed_stage");
         world.increment_tick();
         self.fixed_update.run(world);
+        CommandQueue::apply(world);
     }
 
     /// Advance `world.current_tick` by one, then run every
@@ -166,6 +169,7 @@ impl Schedule {
         puffin::profile_scope!("render_stage");
         world.increment_tick();
         self.render.run(world);
+        CommandQueue::apply(world);
     }
 
     /// Advance `world.current_tick` once.
@@ -174,6 +178,7 @@ impl Schedule {
         puffin::profile_scope!("startup_stage");
         world.increment_tick();
         self.startup.run(world);
+        CommandQueue::apply(world);
     }
 
     pub fn system_count(&self, stage: Stage) -> usize {

@@ -19,7 +19,7 @@ pub use camera::{
     ActiveCamera, Camera, FpsController, Projection, fps_cursor_toggle, fps_look, fps_move,
 };
 pub use debug::{
-    DebugState, FRAME_STAT_WINDOW, FrameStats, OverlayInteract, OverlayMetrics, OverlayPreset,
+    DebugState, FRAME_STAT_WINDOW, FrameStats, OverlayInteract, OverlayMetrics,
     PcfKernel, ProfilerRow, ProfilerSnapshot, ProfilerView, build_overlay_ui, build_profiler_panel,
     debug_input_system, f5_reload_system,
 };

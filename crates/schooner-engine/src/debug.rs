@@ -30,11 +30,6 @@ use puffin::{FrameSinkId, FrameView, GlobalProfiler, MergeScope, ScopeCollection
 
 use crate::ecs::{Res, ResMut};
 use crate::input::{Input, KeyCode};
-use crate::render::bloom::Bloom;
-use crate::render::fog::Fog;
-use crate::render::grade::ColorGrade;
-use crate::render::post_overlay::{OverlayBlend, PostOverlay};
-use crate::render::vignette::Vignette;
 use crate::render::{ForwardPipeline, MeshRegistry, RenderContext, TextureRegistry};
 
 /// Number of frames the FPS / ms readout averages over.
@@ -107,35 +102,6 @@ pub struct DebugState {
     /// Profiler panel visibility. Toggled by a button inside the
     /// overlay. The panel itself populates in chunk 6 with puffin.
     pub show_profiler: bool,
-    /// Shadow-map PCF kernel size. F1 cycles. Shipping default is
-    /// [`PcfKernel::Soft3x3`].
-    pub pcf_kernel: PcfKernel,
-    /// Active color-grade preset for the F2 debug cycle. The
-    /// `ColorGrade` resource is overwritten from
-    /// `grade_preset.value()` on each press; tracking the preset
-    /// enum separately keeps the cycle order owned by debug state
-    /// instead of by the production resource.
-    pub grade_preset: GradePreset,
-    /// Active vignette preset for the F3 debug cycle. Same shape
-    /// as `grade_preset`.
-    pub vignette_preset: VignettePreset,
-    /// Active fog preset for the F4 debug cycle. Defaults to
-    /// `Medium` so the cycle agrees with the `Fog` resource seeded
-    /// in [`crate::app::App::resumed`] — first F4 press steps to
-    /// the next state rather than re-applying the seed. 1.E.3 will
-    /// reshape this enum into the four per-zone presets matching
-    /// the `ColorGrade` zones.
-    pub fog_preset: FogPreset,
-    /// Active bloom preset for the F7 debug cycle. Defaults to `Faint`
-    /// so the cycle agrees with the `Bloom` resource seeded in
-    /// `App::resumed` — first F7 press steps to `EraGlow`. See
-    /// [`BloomPreset`].
-    pub bloom_preset: BloomPreset,
-    /// Active overlay preset for the F6 debug cycle. Drives the
-    /// `PostOverlay` resource's intensity + blend mode; the texture
-    /// itself is supplied game-side (the engine ships no overlay
-    /// asset). Defaults to `Off`.
-    pub overlay_preset: OverlayPreset,
     pub frame_stats: FrameStats,
 }
 
@@ -144,12 +110,6 @@ impl Default for DebugState {
         Self {
             overlay_visible: true,
             show_profiler: false,
-            pcf_kernel: PcfKernel::Soft3x3,
-            grade_preset: GradePreset::Default,
-            vignette_preset: VignettePreset::Default,
-            fog_preset: FogPreset::Medium,
-            bloom_preset: BloomPreset::Faint,
-            overlay_preset: OverlayPreset::Off,
             frame_stats: FrameStats::new(),
         }
     }
@@ -198,258 +158,6 @@ impl PcfKernel {
     }
 }
 
-/// Active color-grade preset for the F2 debug cycle.
-///
-/// Lives next to `DebugState` (not on `ColorGrade`) so the cycle
-/// order is a debug concern, not part of the production resource's
-/// API. `debug_input_system` advances this on key-press, then writes
-/// `preset.value()` into the `ColorGrade` resource.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GradePreset {
-    /// Identity grade — no visible change.
-    Default,
-    /// Cool clinical white-room — chamber zone.
-    ChamberWhite,
-    /// Warm comfortable amber — cage zone.
-    CageWarm,
-    /// Strong red bias — service-corridor zone.
-    ServiceRed,
-}
-
-impl GradePreset {
-    /// Cycle Default → ChamberWhite → CageWarm → ServiceRed → Default.
-    pub fn cycle(self) -> Self {
-        match self {
-            Self::Default => Self::ChamberWhite,
-            Self::ChamberWhite => Self::CageWarm,
-            Self::CageWarm => Self::ServiceRed,
-            Self::ServiceRed => Self::Default,
-        }
-    }
-
-    /// Resolve to the corresponding `ColorGrade` value to write into
-    /// the resource.
-    pub fn value(self) -> ColorGrade {
-        match self {
-            Self::Default => ColorGrade::DEFAULT,
-            Self::ChamberWhite => ColorGrade::CHAMBER_WHITE,
-            Self::CageWarm => ColorGrade::CAGE_WARM,
-            Self::ServiceRed => ColorGrade::SERVICE_RED,
-        }
-    }
-}
-
-/// Active vignette preset for the F3 debug cycle. Same shape as
-/// [`GradePreset`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VignettePreset {
-    /// Off — `intensity = 0`.
-    Default,
-    /// Subtle corner darkening; reads as "photographed."
-    Cinematic,
-    /// Heavy, tight; reads as tension / tunnel-vision.
-    Oppressive,
-}
-
-impl VignettePreset {
-    /// Cycle Default → Cinematic → Oppressive → Default.
-    pub fn cycle(self) -> Self {
-        match self {
-            Self::Default => Self::Cinematic,
-            Self::Cinematic => Self::Oppressive,
-            Self::Oppressive => Self::Default,
-        }
-    }
-
-    /// Resolve to the corresponding `Vignette` value to write into
-    /// the resource.
-    pub fn value(self) -> Vignette {
-        match self {
-            Self::Default => Vignette::DEFAULT,
-            Self::Cinematic => Vignette::CINEMATIC,
-            Self::Oppressive => Vignette::OPPRESSIVE,
-        }
-    }
-}
-
-/// Active fog preset for the F4 debug cycle.
-///
-/// Verification-shaped for 1.E.1 — `Off / Medium / Heavy` lets the
-/// developer A/B the height-fog math against an unfogged scene and
-/// confirm the optical-depth integral reads correctly at low and high
-/// density. 1.E.3 will replace these placeholder variants with the
-/// four per-zone presets (chamber-white, cage-warm, service-red,
-/// labyrinth) that match the [`ColorGrade`] zones.
-///
-/// `Medium` is kept literal-equivalent to the `Fog` resource seeded
-/// in `App::resumed` so the F4 cycle's starting state matches the
-/// rendered scene; if either drifts, the visible "press F4 and
-/// nothing changes" hint catches it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FogPreset {
-    /// Fog disabled — `Fog::DEFAULT`. Verifies that the unfogged
-    /// path is a true no-op (transmittance = 1, no color shift).
-    Off,
-    /// Light atmospheric dust.
-    Light,
-    /// Moderate cool-grey medium. Matches the app.rs seed value;
-    /// the cycle is coherent with the scene's starting state.
-    Medium,
-    /// Thick low-lying fog. Stresses the optical-depth integral at
-    /// high density and a stronger height falloff — useful for
-    /// confirming that horizontal vs vertical rays integrate
-    /// differently (the analytic guard at small `falloff·Δy`).
-    Heavy,
-}
-
-impl FogPreset {
-    /// Cycle Off → Medium → Heavy → Off.
-    pub fn cycle(self) -> Self {
-        match self {
-            Self::Off => Self::Light,
-            Self::Light => Self::Medium,
-            Self::Medium => Self::Heavy,
-            Self::Heavy => Self::Off,
-        }
-    }
-
-    /// Resolve to the corresponding `Fog` value to write into the
-    /// resource.
-    pub fn value(self) -> Fog {
-        match self {
-            Self::Off => Fog::DEFAULT,
-            Self::Light => Fog {
-                color: Vec3::new(0.55, 0.58, 0.62),
-                base_height: 0.0,
-                density: 0.03,
-                falloff: 0.5,
-                scattering: 0.2,
-            },
-            Self::Medium => Fog {
-                color: Vec3::new(0.55, 0.58, 0.62),
-                base_height: 0.0,
-                density: 0.08,
-                falloff: 0.5,
-                scattering: 0.5,
-            },
-            Self::Heavy => Fog {
-                color: Vec3::new(0.55, 0.58, 0.62),
-                base_height: 0.0,
-                density: 0.20,
-                falloff: 0.4,
-                scattering: 0.6,
-            },
-        }
-    }
-}
-
-/// Active bloom preset for the F7 debug cycle.
-///
-/// Steps the [`Bloom`] resource across the whole expressive range so the
-/// developer can A/B the glow live: from off, through the restrained
-/// shipping default, up to the deliberate "everything glows." Lives next
-/// to `DebugState` (not on `Bloom`) so the cycle order is debug-owned —
-/// same pattern as [`GradePreset`] / [`FogPreset`].
-///
-/// `Faint` is kept equivalent to the `Bloom` resource seeded in
-/// `App::resumed`, so the cycle's starting state matches the rendered
-/// scene; if either drifts, "press F7 and nothing changes" catches it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BloomPreset {
-    /// Bloom disabled — `Bloom::OFF`. Skips the pyramid build; verifies
-    /// the unbloomed path is a true no-op.
-    Off,
-    /// Restrained highlight bloom — the shipping default, `Bloom::FAINT`.
-    Faint,
-    /// Pronounced HL2 / Witcher-1 halation — `Bloom::ERA_GLOW`.
-    EraGlow,
-    /// The far end of the dial — `Bloom::EVERYTHING_GLOWS`.
-    EverythingGlows,
-}
-
-impl BloomPreset {
-    /// Cycle Off → Faint → EraGlow → EverythingGlows → Off.
-    pub fn cycle(self) -> Self {
-        match self {
-            Self::Off => Self::Faint,
-            Self::Faint => Self::EraGlow,
-            Self::EraGlow => Self::EverythingGlows,
-            Self::EverythingGlows => Self::Off,
-        }
-    }
-
-    /// Resolve to the corresponding `Bloom` value to write into the
-    /// resource.
-    pub fn value(self) -> Bloom {
-        match self {
-            Self::Off => Bloom::OFF,
-            Self::Faint => Bloom::FAINT,
-            Self::EraGlow => Bloom::ERA_GLOW,
-            Self::EverythingGlows => Bloom::EVERYTHING_GLOWS,
-        }
-    }
-}
-
-/// Active overlay preset for the F6 debug cycle.
-///
-/// Drives the [`PostOverlay`] resource's `intensity` + `blend` so the
-/// developer can A/B the three compositing modes against the live
-/// scene. Unlike the grade / vignette / fog presets, this one does
-/// **not** replace the whole resource: it leaves `PostOverlay.texture`
-/// untouched, because the texture is the game's to supply (the engine
-/// ships no overlay asset). [`OverlayPreset::apply`] writes only the
-/// two scalar fields.
-///
-/// The intensities are chosen to read clearly with an *opaque* test
-/// texture (e.g. `rusty.png`, whose alpha is all 1.0): AlphaBlend at
-/// `0.8` mostly replaces the frame, Multiply at full strength tints
-/// it, Additive at `0.4` brightens with the pattern. A real
-/// alpha-masked asset (the Part-3 death noise) would confine
-/// AlphaBlend to the masked region instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayPreset {
-    /// Overlay disabled — `intensity = 0`, blend mode irrelevant.
-    Off,
-    /// [`OverlayBlend::AlphaBlend`] at `0.8`.
-    Alpha,
-    /// [`OverlayBlend::Multiply`] at `1.0`.
-    Multiply,
-    /// [`OverlayBlend::Additive`] at `0.4`.
-    Additive,
-}
-
-impl OverlayPreset {
-    /// Cycle Off → Alpha → Multiply → Additive → Off.
-    pub fn cycle(self) -> Self {
-        match self {
-            Self::Off => Self::Alpha,
-            Self::Alpha => Self::Multiply,
-            Self::Multiply => Self::Additive,
-            Self::Additive => Self::Off,
-        }
-    }
-
-    /// Write this preset's intensity + blend into `overlay`, leaving
-    /// its `texture` field alone.
-    pub fn apply(self, overlay: &mut PostOverlay) {
-        match self {
-            Self::Off => overlay.intensity = 0.0,
-            Self::Alpha => {
-                overlay.intensity = 0.8;
-                overlay.blend = OverlayBlend::AlphaBlend;
-            }
-            Self::Multiply => {
-                overlay.intensity = 1.0;
-                overlay.blend = OverlayBlend::Multiply;
-            }
-            Self::Additive => {
-                overlay.intensity = 0.4;
-                overlay.blend = OverlayBlend::Additive;
-            }
-        }
-    }
-}
-
 /// System: read debug-key presses and update [`DebugState`] +
 /// downstream render resources.
 ///
@@ -462,71 +170,15 @@ impl OverlayPreset {
 /// by [`f5_reload_system`] rather than here, because it needs the
 /// render registries + pipeline that only exist after `App::resumed`:
 /// - **F1**  cycle PCF kernel (shadow softness)
-/// - **F2**  cycle `ColorGrade` preset
-/// - **F3**  cycle `Vignette` preset
-/// - **F4**  cycle `Fog` preset
 /// - **F5**  reload disk assets — see [`f5_reload_system`]
-/// - **F6**  cycle `PostOverlay` preset (intensity + blend)
-/// - **F7**  cycle `Bloom` preset — see [`bloom_input_system`]
 /// - **F12** toggle the debug overlay
 ///
-/// F7's bloom cycle lives in its own [`bloom_input_system`] rather than
-/// here: this system is already at the 6-`SystemParam` arity ceiling, and
-/// `Bloom` needs a seventh `ResMut`.
 pub fn debug_input_system(
     input: Res<Input>,
     mut debug: ResMut<DebugState>,
-    mut grade: ResMut<ColorGrade>,
-    mut vignette: ResMut<Vignette>,
-    mut fog: ResMut<Fog>,
-    mut overlay: ResMut<PostOverlay>,
 ) {
     if input.just_pressed(KeyCode::F12) {
         debug.overlay_visible = !debug.overlay_visible;
-    }
-    if input.just_pressed(KeyCode::F1) {
-        debug.pcf_kernel = debug.pcf_kernel.cycle();
-        log::info!("debug: PCF kernel → {:?}", debug.pcf_kernel);
-    }
-    if input.just_pressed(KeyCode::F2) {
-        debug.grade_preset = debug.grade_preset.cycle();
-        *grade = debug.grade_preset.value();
-        log::info!("debug: ColorGrade → {:?}", debug.grade_preset);
-    }
-    if input.just_pressed(KeyCode::F3) {
-        debug.vignette_preset = debug.vignette_preset.cycle();
-        *vignette = debug.vignette_preset.value();
-        log::info!("debug: Vignette → {:?}", debug.vignette_preset);
-    }
-    if input.just_pressed(KeyCode::F4) {
-        debug.fog_preset = debug.fog_preset.cycle();
-        *fog = debug.fog_preset.value();
-        log::info!("debug: Fog → {:?}", debug.fog_preset);
-    }
-    if input.just_pressed(KeyCode::F6) {
-        debug.overlay_preset = debug.overlay_preset.cycle();
-        // Mutates intensity + blend only; the game's overlay texture
-        // (if any) is preserved across the cycle.
-        debug.overlay_preset.apply(&mut overlay);
-        log::info!("debug: PostOverlay → {:?}", debug.overlay_preset);
-    }
-}
-
-/// System: F7 cycles the [`Bloom`] preset.
-///
-/// Split out from [`debug_input_system`] because that system already
-/// holds six `SystemParam`s (the arity ceiling) and `Bloom` needs a
-/// seventh `ResMut`. Same `Stage::Update` cadence so the flip is visible
-/// to `render_frame` in the same frame.
-pub fn bloom_input_system(
-    input: Res<Input>,
-    mut debug: ResMut<DebugState>,
-    mut bloom: ResMut<Bloom>,
-) {
-    if input.just_pressed(KeyCode::F7) {
-        debug.bloom_preset = debug.bloom_preset.cycle();
-        *bloom = debug.bloom_preset.value();
-        log::info!("debug: Bloom → {:?}", debug.bloom_preset);
     }
 }
 

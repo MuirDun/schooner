@@ -1,4 +1,6 @@
+pub mod command;
 pub mod component;
+pub mod condition;
 pub mod entity;
 pub mod event;
 pub mod query;
@@ -9,7 +11,9 @@ pub mod storage;
 pub mod system;
 pub mod world;
 
+pub use command::{CommandQueue, Commands};
 pub use component::{Component, ComponentId, ComponentRegistry};
+pub use condition::{RunIf, RunIfExt, resource_equals, resource_exists};
 pub use entity::{EntityAllocator, EntityId};
 pub use event::Events;
 pub use query::data::{ComponentAccess, QueryAccess, QueryData, WriteOnly};

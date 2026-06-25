@@ -45,7 +45,7 @@ use wgpu::{
 
 use crate::camera::{ActiveCamera, Camera};
 use crate::debug::{
-    DebugState, OverlayInteract, OverlayMetrics, PcfKernel, ProfilerView, build_overlay_ui,
+    DebugState, OverlayInteract, OverlayMetrics, ProfilerView, build_overlay_ui,
 };
 use crate::ecs::World;
 use crate::material::{BlendMode, Material};
@@ -240,6 +240,38 @@ fn build_lights_uniform(world: &mut World) -> (LightsUniformData, Vec<Mat4>) {
     (data, shadow_vps)
 }
 
+
+/// PCF kernel size for shadow sampling.
+///
+/// The default `Soft3x3` is the
+/// shipping setting — the wider option exists to validate that
+/// fewer taps don't visibly help the indoor shadow scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PcfKernel {
+    /// 1×1 — single comparison tap. Hard shadow edges. Useful as a
+    /// baseline to see what PCF is contributing.
+    Single = 0,
+    /// 3×3 — nine taps. The shipping default; soft enough at 1024²
+    /// for a 6–10 m indoor cast that the silhouette reads as
+    /// natural without obvious banding.
+    Soft3x3 = 1,
+    /// 5×5 — twenty-five taps. Wider blur; exists for the toggle
+    /// comparison, not as a recommended setting.
+    Wide5x5 = 2,
+}
+
+impl PcfKernel {
+    /// Half-kernel size as written to the shader's
+    /// `lights.counts.w` slot. `(2 × half_kernel + 1)²` taps total.
+    pub fn half_kernel(self) -> u32 {
+        match self {
+            PcfKernel::Single => 0,
+            PcfKernel::Soft3x3 => 1,
+            PcfKernel::Wide5x5 => 2,
+        }
+    }
+}
+
 pub fn render_frame(world: &mut World) {
     puffin::profile_scope!("render_frame");
 
@@ -265,10 +297,7 @@ pub fn render_frame(world: &mut World) {
         // bind group — the shader reads it inside the spot loop,
         // so co-locating with the rest of the per-frame lighting
         // payload is the cheapest path. Default is `Soft3x3`.
-        let pcf_half_kernel = world
-            .resource::<DebugState>()
-            .map(|d| d.pcf_kernel.half_kernel())
-            .unwrap_or_else(|| PcfKernel::Soft3x3.half_kernel());
+        let pcf_half_kernel = PcfKernel::Soft3x3.half_kernel();
         lights_uniform.counts[3] = pcf_half_kernel;
 
         // Two-pass collection: gather entity ids that have a mesh,
