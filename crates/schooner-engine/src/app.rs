@@ -13,7 +13,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::debug::{
     DebugState, ProfilerView, bloom_input_system, debug_input_system, f5_reload_system,
 };
-use crate::ecs::{IntoSystem, Schedule, Stage, World, exclusive};
+use crate::ecs::{Events, IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::Input;
 use crate::render::{
     AutoExposure, Bloom, BloomPipeline, ColorGrade, DebugOverlay, ExposurePipeline, Fog,
@@ -57,6 +57,10 @@ pub struct App {
     cursor_grab_pushed: bool,
     /// Last cursor-visibility we pushed; same elision purpose.
     cursor_visible_pushed: bool,
+    /// One `swap_events::<T>` per registered event type, run once per
+    /// frame at tick-top. `fn` pointers, not boxed closures — each is
+    /// a monomorphised swap with no captured state.
+    event_updaters: Vec<fn(&mut World)>,
 }
 
 impl Default for App {
@@ -99,6 +103,7 @@ impl App {
             // is not grabbed and shows the cursor.
             cursor_grab_pushed: false,
             cursor_visible_pushed: true,
+            event_updaters: Vec::new(),
         }
     }
 
@@ -117,6 +122,18 @@ impl App {
     /// state that systems read via `Res<R>` / `ResMut<R>`.
     pub fn insert_resource<R: Any + Send + Sync>(mut self, value: R) -> Self {
         self.world.insert_resource(value);
+        self
+    }
+
+    /// Register a discrete-event type `T`: insert its [`Events<T>`]
+    /// resource and arrange for the queue to be swapped once per frame
+    /// at the top of [`App::tick`]. Producers then write
+    /// `ResMut<Events<T>>`; readers poll `Res<Events<T>>`. Idempotent
+    /// only if you don't register the same `T` twice — a second call
+    /// resets the queue and adds a redundant swap.
+    pub fn add_event<T: Send + Sync + 'static>(mut self) -> Self {
+        self.world.insert_resource(Events::<T>::default());
+        self.event_updaters.push(crate::ecs::event::swap_events::<T>);
         self
     }
 
@@ -184,9 +201,17 @@ impl App {
         // Reactive substrate: rotate the per-frame removed-component
         // ledger at frame top so this frame's removals start fresh
         // while last frame's stay readable — a one-frame-late reactor
-        // (e.g. physics handle cleanup) never misses one. Events<T>
-        // will swap at this same point.
+        // (e.g. physics handle cleanup) never misses one.
         self.world.swap_removed();
+
+        // Swap every registered Events<T> queue at the same point: last
+        // frame's events stay readable, this frame's start fresh. `&f`
+        // copies the fn pointer out (Copy), so the loop's immutable
+        // borrow of `event_updaters` and the `&mut self.world` call are
+        // disjoint-field borrows.
+        for &swap in &self.event_updaters {
+            swap(&mut self.world);
+        }
 
         let now = Instant::now();
         let real_delta = match self.last_frame.replace(now) {

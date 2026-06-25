@@ -1,7 +1,7 @@
 # Part 2 — Verbs
 
 **Kind:** Tech buildout (physics & player abilities)
-**Status:** Planned — phases laid out 2026-06-21
+**Status:** In progress — 2.A
 **Depends on:** Part 1 (Mood) complete
 
 ---
@@ -100,14 +100,14 @@ primitives. **Do this first** — it is the shared spine of physics events,
 verbs, and the first gameplay rules. Non-visual but the riskiest to get wrong.
 
 **Steps:**
-- [ ] **2.A.1** `added_tick` on the change ledger + a composable `Added<T>` query
+- [x] **2.A.1** `added_tick` on the change ledger + a composable `Added<T>` query
   filter. Distinguishes "newly added" from "mutated" (lazy handle creation,
   on-add reactions). The tick struct was shaped to grow this without an API break.
-- [ ] **2.A.2** Removal / despawn signal. Today despawn drops the record; capture
+- [x] **2.A.2** Removal / despawn signal. Today despawn drops the record; capture
   it instead: a per-frame removed-ledger (component-keyed list of entities whose
   `T` was removed, plus whole-entity despawn), drained once per frame, exposed as
   a `Removed<T>` reader. Needed for event-driven Rapier handle cleanup.
-- [ ] **2.A.3** `Changed<T>` composable query *filter* (today only the standalone
+- [x] **2.A.3** `Changed<T>` composable query *filter* (today only the standalone
   `changed_since` scan exists). **Pin the change-tick cursor convention** against
   a concrete reaction before committing — the per-stage tick stride (FixedUpdate
   runs 0..N times/frame) makes a naive "since last frame" cursor over/under-count.

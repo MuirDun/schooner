@@ -1,5 +1,6 @@
 pub mod component;
 pub mod entity;
+pub mod event;
 pub mod query;
 pub mod resource;
 pub mod schedule;
@@ -10,6 +11,7 @@ pub mod world;
 
 pub use component::{Component, ComponentId, ComponentRegistry};
 pub use entity::{EntityAllocator, EntityId};
+pub use event::Events;
 pub use query::data::{ComponentAccess, QueryAccess, QueryData, WriteOnly};
 pub use query::filter::{Added, Changed, QueryFilter, Without};
 pub use query::iter::QueryIter;
