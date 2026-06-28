@@ -233,6 +233,14 @@ impl MeshRegistry {
         report
     }
 
+    /// Remove the handle from the registry
+    ///
+    /// An accociated entry would be removed automatically
+    /// once last reference removed
+    pub fn unload(&mut self, handle: MeshHandle) {
+        self.meshes.remove(&handle);
+    }
+
     pub fn get(&self, handle: MeshHandle) -> Option<&MeshGpu> {
         self.meshes.get(&handle).map(|entry| &entry.gpu)
     }
@@ -462,6 +470,14 @@ impl TextureRegistry {
             }
         }
         report
+    }
+
+    /// Remove the handle from the registry
+    ///
+    /// An accociated entry would be removed automatically
+    /// once last reference removed
+    pub fn unload(&mut self, handle: TextureHandle) {
+        self.textures.remove(&handle);
     }
 
     pub fn get(&self, handle: TextureHandle) -> Option<&TextureGpu> {

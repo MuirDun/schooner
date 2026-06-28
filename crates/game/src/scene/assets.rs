@@ -1,6 +1,5 @@
 use schooner_engine::{
-    MeshHandle, MeshRegistry, RenderContext, TextureHandle, TextureRegistry, World,
-    load_gltf_model,
+    MeshHandle, MeshRegistry, RenderContext, TextureHandle, TextureRegistry, World, load_gltf_model,
 };
 use std::collections::HashMap;
 
@@ -68,25 +67,23 @@ impl Assets {
             .get(&k)
             .unwrap_or_else(|| panic!("model {k:?} not resident - missing from manifest"))
     }
-
-    pub fn clean(&mut self) {
-        self.textures.clear();
-        self.models.clear();
-    }
 }
 
 fn texture_path(k: TextureAsset) -> &'static str {
     match k {
         TextureAsset::Glass => concat!(env!("CARGO_MANIFEST_DIR"), "/assets/steel-window2.png"),
-        TextureAsset::MetalCube => concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/assets/rusty.png"
-        ),
+        TextureAsset::MetalCube => concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rusty.png"),
         TextureAsset::IronWall => {
-            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/metal-wall/wall1_albedo.png")
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/metal-wall/wall1_albedo.png"
+            )
         }
         TextureAsset::IronWallNormal => {
-            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/metal-wall/wall1_normal.png")
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/metal-wall/wall1_normal.png"
+            )
         }
         TextureAsset::MetalFloor => concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -118,16 +115,31 @@ fn ensure_inner(world: &mut World, need: SceneAssets) {
         None => return,
     };
 
-    let missing: Vec<TextureAsset> = {
-        let a = world.resource::<Assets>().unwrap();
-        need.texture
+    // Find assets which are not presented in the next scene
+    // and the ones that no more needed
+    let (missing, redundant): (Vec<TextureAsset>, Vec<TextureAsset>) = {
+        let assets = world.resource::<Assets>().unwrap();
+
+        let missing = need
+            .texture
             .iter()
             .copied()
-            .filter(|k| !a.textures.contains_key(k))
-            .collect()
+            .filter(|k| !assets.textures.contains_key(k))
+            .collect();
+
+        let redundant = assets
+            .textures
+            .keys()
+            .copied()
+            .filter(|k| !need.texture.contains(k))
+            .collect();
+
+        (missing, redundant)
     };
+
     let loaded: Vec<(TextureAsset, TextureHandle)> = {
         let reg = world.resource_mut::<TextureRegistry>().unwrap();
+
         missing
             .iter()
             .filter_map(|&k| {
@@ -150,22 +162,48 @@ fn ensure_inner(world: &mut World, need: SceneAssets) {
             })
             .collect()
     };
+    let dead: Vec<TextureHandle> = if !redundant.is_empty() {
+        let assets = world.resource::<Assets>().unwrap();
+        redundant.iter().map(|k| assets.textures[k]).collect() // TextureHandle is Copy
+    } else {
+        vec![]
+    };
 
-    {
-        let a = world.resource_mut::<Assets>().unwrap();
-        for (k, h) in loaded {
-            a.textures.insert(k, h);
+    if !dead.is_empty() {
+        let reg = world.resource_mut::<TextureRegistry>().unwrap();
+        for handle in dead {
+            reg.unload(handle);
         }
     }
 
+    {
+        let assets = world.resource_mut::<Assets>().unwrap();
+        for (k, h) in loaded {
+            assets.textures.insert(k, h);
+        }
+        for k in redundant {
+            assets.textures.remove(&k);
+        }
+    }
 
-    let missing: Vec<MeshAsset> = {
-        let a = world.resource::<Assets>().unwrap();
-        need.mesh
+    let (missing, redundant): (Vec<MeshAsset>, Vec<MeshAsset>) = {
+        let assets = world.resource::<Assets>().unwrap();
+
+        let missing = need
+            .mesh
             .iter()
             .copied()
-            .filter(|k| !a.models.contains_key(k))
-            .collect()
+            .filter(|k| !assets.models.contains_key(k))
+            .collect();
+
+        let redundant = assets
+            .models
+            .keys()
+            .copied()
+            .filter(|k| !need.mesh.contains(k))
+            .collect();
+
+        (missing, redundant)
     };
 
     // Parse first (pure CPU, holds no registry borrow), then upload mesh
@@ -174,13 +212,15 @@ fn ensure_inner(world: &mut World, need: SceneAssets) {
     // types on purpose.
     let parsed: Vec<(MeshAsset, schooner_engine::GltfModel)> = missing
         .iter()
-        .filter_map(|&k| match load_gltf_model(std::path::Path::new(mesh_path(k))) {
-            Ok(model) => Some((k, model)),
-            Err(e) => {
-                log::warn!("model {k:?} failed: {e}");
-                None
-            }
-        })
+        .filter_map(
+            |&k| match load_gltf_model(std::path::Path::new(mesh_path(k))) {
+                Ok(model) => Some((k, model)),
+                Err(e) => {
+                    log::warn!("model {k:?} failed: {e}");
+                    None
+                }
+            },
+        )
         .collect();
 
     let loaded: Vec<(MeshAsset, ModelHandle)> = parsed
@@ -215,10 +255,37 @@ fn ensure_inner(world: &mut World, need: SceneAssets) {
         })
         .collect();
 
+    let dead: Vec<ModelHandle> = if !redundant.is_empty() {
+        let assets = world.resource::<Assets>().unwrap();
+        redundant.iter().map(|k| assets.models[k]).collect()
+    } else {
+        vec![]
+    };
+
+    if !dead.is_empty() {
+        let reg = world.resource_mut::<MeshRegistry>().unwrap();
+        for handle in &dead {
+            reg.unload(handle.mesh);
+        }
+
+        let reg = world.resource_mut::<TextureRegistry>().unwrap();
+        for handle in dead {
+            if let Some(albedo) = handle.albedo_texture {
+                reg.unload(albedo);
+            }
+            if let Some(normal) = handle.normal_texture {
+                reg.unload(normal);
+            }
+        }
+    }
+
     {
-        let a = world.resource_mut::<Assets>().unwrap();
+        let assets = world.resource_mut::<Assets>().unwrap();
         for (k, h) in loaded {
-            a.models.insert(k, h);
+            assets.models.insert(k, h);
+        }
+        for k in redundant {
+            assets.models.remove(&k);
         }
     }
 }

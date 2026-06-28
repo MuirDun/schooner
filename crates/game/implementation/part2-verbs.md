@@ -118,7 +118,7 @@ verbs, and the first gameplay rules. Non-visual but the riskiest to get wrong.
   non-exclusive system can hold, applied at a defined sync point after the systems
   that queue them. Shape it so an out-of-process actor (scp, [bridge.md]) could
   enqueue into the same path later — it is one more producer, not a parallel path.
-- [ ] **2.A.6** Run-conditions: `system.run_if(cond)` (a predicate over `World`,
+- [x] **2.A.6** Run-conditions: `system.run_if(cond)` (a predicate over `World`,
   e.g. `in_mode(Telekinesis)`) so per-mode verb systems run only when active.
   Minimal — replaces the early-return idiom.
 - [ ] **2.A.7** Smoke test (throwaway unit reactions): mutate via `Mut` and assert

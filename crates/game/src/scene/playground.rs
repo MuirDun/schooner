@@ -180,7 +180,7 @@ fn spawn_chamber_wall(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
     wall
 }
 
-fn spawn_cube(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
+pub fn spawn_cube(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
     let cube = spawn_box(world, center, size);
 
     let texture = world
@@ -430,13 +430,7 @@ pub fn build(world: &mut World) {
     // Zone mood — hostile clinical lab: cold grade + cold thin haze.
     world.insert_resource(ColorGrade::CHAMBER_WHITE);
     world.insert_resource(Vignette::CINEMATIC);
-    world.insert_resource(Fog {
-        color: Vec3::new(0.02, 0.03, 0.05),
-        base_height: 0.0,
-        density: 0.02,
-        falloff: 0.3,
-        scattering: 0.09,
-    });
+    world.insert_resource(Fog::SCARSE_CHAMBER);
     world.insert_resource(Bloom::ERA_GLOW);
     // Eye adaptation tuned for the chamber: low key + tight exposure ceiling
     // keep the room gloomy, fast darken speed so facing the lamp (or its

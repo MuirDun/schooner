@@ -1,10 +1,13 @@
 use game::scene::assets::Assets;
+use game::scene::playground::spawn_cube;
 use game::scene::{self, PendingTransition, Player, SceneId};
 use glam::{Quat, Vec3};
-use schooner_engine::ecs::exclusive;
+use log::logger;
+use schooner_engine::ecs::{Commands, Events, Query, Res, ResMut, exclusive};
 use schooner_engine::{
-    ActiveCamera, App, AppError, Camera, FpsController, LogConfig, Stage, Transform, WindowConfig,
-    World, fps_cursor_toggle, fps_look, fps_move, logging,
+    ActiveCamera, App, AppError, Camera, EntityId, FpsController, Input, KeyCode, LogConfig,
+    MouseButton, Stage, Transform, WindowConfig, World, fps_cursor_toggle, fps_look, fps_move,
+    logging,
 };
 
 #[cfg(feature = "hot")]
@@ -33,24 +36,115 @@ mod hot {
                 .map(|a| a.0)
                 .unwrap_or(SceneId::Playground);
             let assets = world.resource_mut::<Assets>().unwrap();
-            assets.clean();
             scene::load_scene(world, id);
             log::info!("hot-reloaded {id:?}");
         }
     }
 }
 
+fn mode_select(input: Res<Input>, mut mode: ResMut<EditModeResource>) {
+    if input.just_pressed(KeyCode::KeyE) {
+        log::info!("Edit mode now is: ADD");
+        mode.0 = EditMode::Add
+    }
+    if input.just_pressed(KeyCode::KeyQ) {
+        log::info!("Edit mode now is: REMOVE");
+        mode.0 = EditMode::Remove
+    }
+}
+
+fn edit_input(
+    input: Res<Input>,
+    mode: Res<EditModeResource>,
+    mut spawns: ResMut<Events<SpawnRequest>>,
+    mut despawns: ResMut<Events<DespawnRequest>>,
+) {
+    if input.mouse_button_just_pressed(MouseButton::Left) {
+        match mode.0 {
+            EditMode::Add => {
+                spawns.send(SpawnRequest);
+                log::info!("Send Spawn Event");
+            }
+            EditMode::Remove => {
+                despawns.send(DespawnRequest);
+                log::info!("Send Despawn Event");
+            }
+        }
+    }
+}
+
+fn apply_spawns(
+    mut spawns: ResMut<Events<SpawnRequest>>,
+    player: Query<(&Transform, &Player)>,
+    mut commands: Commands,
+) {
+    if spawns.is_empty() {
+        return;
+    }
+
+    let pose = player
+        .into_iter()
+        .next()
+        .map(|(t, _)| (t.translation, t.rotation));
+
+    for _ in spawns.drain() {
+        log::info!("SPAWN Scheduled");
+        let Some((pos, rot)) = pose else { continue };
+
+        let forward = rot * Vec3::NEG_Z;
+        let center = pos + forward * 2.0;
+
+        commands.queue(move |world| {
+            log::info!("SPAWNED A CUBE");
+            let id = spawn_cube(world, center, Vec3::splat(1.0));
+            world.resource_mut::<CubeStack>().unwrap().0.push(id);
+        })
+    }
+}
+
+fn apply_despawns(
+    despawn: Res<Events<DespawnRequest>>,
+    mut stack: ResMut<CubeStack>,
+    mut commands: Commands,
+) {
+    for _ in despawn.iter() {
+        if let Some(id) = stack.0.pop() {
+            log::info!("DESPAWN Scheduled");
+            commands.despawn(id);
+        }
+    }
+}
+
+struct SpawnRequest;
+struct DespawnRequest;
+enum EditMode {
+    Add,
+    Remove,
+}
+struct EditModeResource(EditMode);
+
+#[derive(Default)]
+struct CubeStack(Vec<EntityId>);
+
 fn main() -> anyhow::Result<(), AppError> {
     logging::init(LogConfig::default()).unwrap();
 
     let mut app = App::new()
         .with_window_config(WindowConfig::new("Playground", 1280, 720))
+        .add_event::<SpawnRequest>()
+        .add_event::<DespawnRequest>()
         .insert_resource(Assets::default())
         .insert_resource(PendingTransition::default())
+        .insert_resource(EditModeResource(EditMode::Add))
+        .insert_resource(CubeStack::default())
         .add_system(Stage::Update, fps_cursor_toggle)
         .add_system(Stage::Update, fps_look)
         .add_system(Stage::Update, fps_move)
         .add_system(Stage::Update, exclusive(scene::run_transition))
+        .add_system(Stage::Update, mode_select)
+        .add_system(Stage::Update, edit_input)
+        .add_system(Stage::Update, apply_spawns)
+        .add_system(Stage::Update, apply_despawns)
         .add_system(Stage::Startup, exclusive(setup));
 
     // in main(), after building the App:

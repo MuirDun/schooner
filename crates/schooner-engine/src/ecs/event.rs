@@ -23,6 +23,21 @@
 //! `App::tick` (registered via `App::add_event`): it drops the
 //! two-frame-old set, slides this frame's into the readable window,
 //! and opens a fresh buffer.
+//!
+//! ## `iter` vs `drain` — fan-out or exactly-once
+//!
+//! [`iter`](Events::iter) is non-consuming: it leaves events in place,
+//! so a reader that polls each frame sees a given event on *two* frames
+//! (the send frame and the one after, until the swap drops it). That is
+//! the right shape for **fan-out** — several independent readers — as
+//! long as each tolerates the two-frame window.
+//!
+//! [`drain`](Events::drain) consumes: it empties both buffers and hands
+//! the events to one caller. When a single system owns the queue,
+//! draining each frame gives **exactly-once** delivery — nothing
+//! survives for the next swap to re-expose. There is no per-reader
+//! cursor yet (the general N-reader exactly-once primitive); until there
+//! is, `drain` is the sole-owner answer and `iter` is the fan-out one.
 
 use crate::ecs::World;
 
@@ -60,9 +75,23 @@ impl<T> Events<T> {
     }
 
     /// Iterate every readable event, oldest first: last frame's events,
-    /// then this frame's.
+    /// then this frame's. Non-consuming — see the module docs for when
+    /// to prefer [`drain`](Self::drain).
     pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
         self.back.iter().chain(self.front.iter())
+    }
+
+    /// Consume every readable event, oldest first, emptying both
+    /// buffers. For a **single owning reader**: draining each frame
+    /// yields exactly-once delivery, since nothing survives to be
+    /// re-exposed by the next [`update`](Self::update) swap. Prefer
+    /// [`iter`](Self::iter) when several independent readers must each
+    /// see the events (fan-out).
+    ///
+    /// `Vec::drain` clears its range on drop, so the queue is emptied
+    /// even if the returned iterator is only partially consumed.
+    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+        self.back.drain(..).chain(self.front.drain(..))
     }
 
     /// Number of events currently readable across both buffers.
@@ -139,6 +168,29 @@ mod tests {
         e.update(); // 1 -> back
         e.send(Ping(2)); // frame 1 -> front
         assert_eq!(drained(&e), vec![1, 2]); // back (older) then front
+    }
+
+    #[test]
+    fn drain_empties_both_buffers_oldest_first() {
+        let mut e = Events::new();
+        e.send(Ping(1)); // frame 0 -> front
+        e.update(); // 1 -> back
+        e.send(Ping(2)); // frame 1 -> front
+        let got: Vec<u32> = e.drain().map(|p| p.0).collect();
+        assert_eq!(got, vec![1, 2]); // back (older) then front
+        assert!(e.is_empty());
+        // Exactly-once: the next swap has nothing to re-expose.
+        e.update();
+        assert!(e.is_empty());
+    }
+
+    #[test]
+    fn drain_clears_even_when_not_consumed() {
+        let mut e = Events::new();
+        e.send(Ping(1));
+        e.send(Ping(2));
+        let _ = e.drain(); // dropped without iterating; Drain still clears
+        assert!(e.is_empty());
     }
 
     #[test]

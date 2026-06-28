@@ -111,6 +111,14 @@ impl Fog {
         falloff: 0.0,
         scattering: 0.0,
     };
+
+    pub const SCARSE_CHAMBER: Self = Self {
+        color: Vec3::new(0.02, 0.03, 0.05),
+        base_height: 0.0,
+        density: 0.02,
+        falloff: 0.3,
+        scattering: 0.09,
+    };
 }
 
 impl Default for Fog {

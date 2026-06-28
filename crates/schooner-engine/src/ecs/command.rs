@@ -103,6 +103,7 @@ impl<'w> Commands<'w> {
     /// removal ledger captures it for `removed::<T>()` readers.
     pub fn despawn(&mut self, entity: EntityId) {
         self.queue.push(Box::new(move |world| {
+            log::info!("DESPAWNED");
             world.despawn(entity);
         }));
     }
