@@ -121,7 +121,7 @@ verbs, and the first gameplay rules. Non-visual but the riskiest to get wrong.
 - [x] **2.A.6** Run-conditions: `system.run_if(cond)` (a predicate over `World`,
   e.g. `in_mode(Telekinesis)`) so per-mode verb systems run only when active.
   Minimal — replaces the early-return idiom.
-- [ ] **2.A.7** Smoke test (throwaway unit reactions): mutate via `Mut` and assert
+- [x] **2.A.7** Smoke test (throwaway unit reactions): mutate via `Mut` and assert
   `Changed`/`Added` fire; `send` an `Events<Ping>` and drain it next frame; queue
   a `Commands::despawn` and assert the entity is gone after apply and that
   `Removed` reports it.

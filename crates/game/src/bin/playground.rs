@@ -103,11 +103,11 @@ fn apply_spawns(
 }
 
 fn apply_despawns(
-    despawn: Res<Events<DespawnRequest>>,
+    mut despawn: ResMut<Events<DespawnRequest>>,
     mut stack: ResMut<CubeStack>,
     mut commands: Commands,
 ) {
-    for _ in despawn.iter() {
+    for _ in despawn.drain() {
         if let Some(id) = stack.0.pop() {
             log::info!("DESPAWN Scheduled");
             commands.despawn(id);
