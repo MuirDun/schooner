@@ -135,22 +135,22 @@ substrate. Keep action IDs as interned symbols (not a Rust enum) so the future
 Glyph action registration is a translation, not a rewrite.
 
 **Steps:**
-- [ ] **2.B.1** Mouse-wheel delta in Layer 1 `Input` (record from winit
+- [x] **2.B.1** Mouse-wheel delta in Layer 1 `Input` (record from winit
   `MouseWheel`; accumulate per frame; cleared by `end_frame` like the motion
   delta). Telekinesis distance and the throw launch need it.
-- [ ] **2.B.2** Action map (Layer 2): a binding-table resource mapping
+- [x] **2.B.2** Action map (Layer 2): a binding-table resource mapping
   interned-symbol action IDs → one-or-many physical triggers (key / mouse button /
   wheel sign), recomputed once per frame from Layer 1 on Update. Read helpers:
   `pressed`, `just_pressed`, `just_released`, `axis(neg, pos)`, `wheel`.
-- [ ] **2.B.3** Resolve the **FixedUpdate input hazard** (the convention, written
+- [x] **2.B.3** Resolve the **FixedUpdate input hazard** (the convention, written
   down): edge reads stay on Update and write *state/intent* resources; FixedUpdate
   systems read state, never edges. The once-per-frame action resolve makes this the
   natural path. (Edges are frame-scoped and cleared once/frame — reading them from
   a 0..N-step fixed stage double-fires or misses.)
-- [ ] **2.B.4** Convenience surface: register the gameplay actions (move axes,
+- [x] **2.B.4** Convenience surface: register the gameplay actions (move axes,
   jump, mode 1/2/3, push/pull/grip/throw, repulse) through the table at game setup,
   with an ergonomic binding API (builder or simple insert).
-- [ ] **2.B.5** Smoke test: rebind "jump" to a different key at setup and confirm;
+- [x] **2.B.5** Smoke test: rebind "jump" to a different key at setup and confirm;
   log an action's `just_pressed`; read wheel delta in a system. (Migrating the FPS
   controller onto this is deferred to 2.F, where the KCC replaces `fps_move`.)
 

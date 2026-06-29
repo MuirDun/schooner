@@ -2,12 +2,11 @@ use game::scene::assets::Assets;
 use game::scene::playground::spawn_cube;
 use game::scene::{self, PendingTransition, Player, SceneId};
 use glam::{Quat, Vec3};
-use log::logger;
 use schooner_engine::ecs::{Commands, Events, Query, Res, ResMut, exclusive};
 use schooner_engine::{
-    ActiveCamera, App, AppError, Camera, EntityId, FpsController, Input, KeyCode, LogConfig,
-    MouseButton, Stage, Transform, WindowConfig, World, fps_cursor_toggle, fps_look, fps_move,
-    logging,
+    Actions, ActiveCamera, App, AppError, Camera, EntityId, FpsController, Input, KeyCode,
+    LogConfig, MouseButton, Stage, Symbol, Transform, Trigger, WindowConfig, World,
+    fps_cursor_toggle, fps_look, fps_move, logging, sym,
 };
 
 #[cfg(feature = "hot")]
@@ -45,24 +44,25 @@ mod hot {
     }
 }
 
-fn mode_select(input: Res<Input>, mut mode: ResMut<EditModeResource>) {
-    if input.just_pressed(KeyCode::KeyE) {
+fn mode_select(actions: Res<Actions>, acts: Res<Acts>, mut mode: ResMut<EditModeResource>) {
+    if actions.just_pressed(acts.mode_spawn) {
         log::info!("Edit mode now is: ADD");
         mode.0 = EditMode::Add
     }
-    if input.just_pressed(KeyCode::KeyQ) {
+    if actions.just_pressed(acts.mode_despawn) {
         log::info!("Edit mode now is: REMOVE");
         mode.0 = EditMode::Remove
     }
 }
 
 fn edit_input(
-    input: Res<Input>,
+    actions: Res<Actions>,
+    acts: Res<Acts>,
     mode: Res<EditModeResource>,
     mut spawns: ResMut<Events<SpawnRequest>>,
     mut despawns: ResMut<Events<DespawnRequest>>,
 ) {
-    if input.mouse_button_just_pressed(MouseButton::Left) {
+    if actions.just_pressed(acts.spawn) {
         match mode.0 {
             EditMode::Add => {
                 spawns.send(SpawnRequest);
@@ -118,6 +118,34 @@ fn apply_despawns(
     }
 }
 
+/// 2.B.5 smoke: prove the action pipeline end to end. Reads the resolved
+/// `Actions` (not raw `Input`) via the cached `Acts` symbols. Discrete
+/// edges log once per press (no per-frame spam); the wheel logs while
+/// scrolling. Throwaway — retired when the verbs/controller consume the
+/// map in Parts 2.F–2.G.
+fn action_smoke(actions: Res<Actions>, acts: Res<Acts>) {
+    for (name, action) in [
+        ("jump", acts.jump),
+        ("mode_hands", acts.mode_hands),
+        ("mode_telekinesis", acts.mode_telekinesis),
+        ("mode_repulsion", acts.mode_repulsion),
+        ("push", acts.push),
+        ("pull", acts.pull),
+        ("throw", acts.throw),
+    ] {
+        if actions.just_pressed(action) {
+            log::info!("ACTION {name} pressed");
+        }
+        if actions.just_released(action) {
+            log::info!("ACTION {name} released");
+        }
+    }
+    let wheel = actions.wheel();
+    if wheel != 0.0 {
+        log::info!("ACTION wheel = {wheel:.2}");
+    }
+}
+
 struct SpawnRequest;
 struct DespawnRequest;
 enum EditMode {
@@ -125,6 +153,77 @@ enum EditMode {
     Remove,
 }
 struct EditModeResource(EditMode);
+
+/// Kinesis action names. Defined once here so the `.bind` calls and the
+/// cached [`Acts`] symbols can't drift apart on a typo (a mismatch would
+/// silently bind an action no system ever reads).
+mod act {
+    pub const MOVE_FORWARD: &str = "move_forward";
+    pub const MOVE_BACK: &str = "move_back";
+    pub const MOVE_LEFT: &str = "move_left";
+    pub const MOVE_RIGHT: &str = "move_right";
+    pub const JUMP: &str = "jump";
+    pub const MODE_HANDS: &str = "mode_hands";
+    pub const MODE_TELEKINESIS: &str = "mode_telekinesis";
+    pub const MODE_REPULSION: &str = "mode_repulsion";
+    pub const PUSH: &str = "push";
+    pub const PULL: &str = "pull";
+    pub const THROW: &str = "throw";
+    pub const REPULSE: &str = "repulse";
+
+    pub const SPAWN: &str = "spawn";
+    pub const MODE_SPAWN: &str = "mode_spawn";
+    pub const MODE_DESPAWN: &str = "mode_despawn";
+
+}
+
+/// Action symbols interned once at setup so per-frame systems read action
+/// state without taking the interner lock. Most fields are consumed by
+/// the verbs / controller in Parts 2.F–2.G; 2.B.5 reads `jump` to prove
+/// the binding pipeline.
+#[allow(dead_code)] // fields wired up as the verbs land (2.F / 2.G)
+#[derive(Debug)]
+struct Acts {
+    move_forward: Symbol,
+    move_back: Symbol,
+    move_left: Symbol,
+    move_right: Symbol,
+    jump: Symbol,
+    mode_hands: Symbol,
+    mode_telekinesis: Symbol,
+    mode_repulsion: Symbol,
+    push: Symbol,
+    pull: Symbol,
+    throw: Symbol,
+    repulse: Symbol,
+
+    spawn: Symbol,
+    mode_spawn: Symbol,
+    mode_despawn: Symbol,
+}
+
+impl Acts {
+    fn new() -> Self {
+        Self {
+            move_forward: sym(act::MOVE_FORWARD),
+            move_back: sym(act::MOVE_BACK),
+            move_left: sym(act::MOVE_LEFT),
+            move_right: sym(act::MOVE_RIGHT),
+            jump: sym(act::JUMP),
+            mode_hands: sym(act::MODE_HANDS),
+            mode_telekinesis: sym(act::MODE_TELEKINESIS),
+            mode_repulsion: sym(act::MODE_REPULSION),
+            push: sym(act::PUSH),
+            pull: sym(act::PULL),
+            throw: sym(act::THROW),
+            repulse: sym(act::REPULSE),
+
+            spawn: sym(act::SPAWN),
+            mode_spawn: sym(act::MODE_SPAWN),
+            mode_despawn: sym(act::MODE_DESPAWN),
+        }
+    }
+}
 
 #[derive(Default)]
 struct CubeStack(Vec<EntityId>);
@@ -140,6 +239,28 @@ fn main() -> anyhow::Result<(), AppError> {
         .insert_resource(PendingTransition::default())
         .insert_resource(EditModeResource(EditMode::Add))
         .insert_resource(CubeStack::default())
+        // Layer 2 action bindings (Part 2.B.4). The verbs/controller
+        // consume these in 2.F/2.G; 2.B.5 smoke-tests the pipeline.
+        .insert_resource(Acts::new())
+        .bind_key(act::MOVE_FORWARD, KeyCode::KeyW)
+        .bind_key(act::MOVE_BACK, KeyCode::KeyS)
+        .bind_key(act::MOVE_LEFT, KeyCode::KeyA)
+        .bind_key(act::MOVE_RIGHT, KeyCode::KeyD)
+        .bind_key(act::JUMP, KeyCode::Space)
+        .bind_key(act::MODE_HANDS, KeyCode::Digit1)
+        .bind_key(act::MODE_TELEKINESIS, KeyCode::Digit2)
+        .bind_key(act::MODE_REPULSION, KeyCode::Digit3)
+        .bind_key(act::MODE_SPAWN, KeyCode::KeyE)
+        .bind_key(act::MODE_DESPAWN, KeyCode::KeyQ)
+        .bind(act::PUSH, Trigger::Mouse(MouseButton::Left))
+        .bind(act::SPAWN, Trigger::Mouse(MouseButton::Left))
+        .bind(act::PULL, Trigger::Mouse(MouseButton::Right))
+        .bind(act::THROW, Trigger::Mouse(MouseButton::Middle))
+        // Mode 3 reuses Left; the active mode disambiguates push vs repulse.
+        .bind(act::REPULSE, Trigger::Mouse(MouseButton::Left))
+        // 2.B.5 rebind proof: jump is data — moved off Space to J at
+        // setup. Revert to Space when 2.F's KCC consumes the jump action.
+        .rebind(act::JUMP, Trigger::Key(KeyCode::KeyJ))
         .add_system(Stage::Update, fps_cursor_toggle)
         .add_system(Stage::Update, fps_look)
         .add_system(Stage::Update, fps_move)
@@ -148,6 +269,7 @@ fn main() -> anyhow::Result<(), AppError> {
         .add_system(Stage::Update, edit_input)
         .add_system(Stage::Update, apply_spawns)
         .add_system(Stage::Update, apply_despawns)
+        .add_system(Stage::Update, action_smoke)
         .add_system(Stage::Startup, exclusive(setup));
 
     // in main(), after building the App:

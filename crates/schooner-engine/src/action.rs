@@ -31,6 +31,49 @@
 //! actions differenced ([`Actions::axis`]); a *chord* (two-handed grip)
 //! is an `&&` in the one consumer that needs it. Expressiveness lives in
 //! the reader, which keeps the binding model small.
+//!
+//! ## The fixed-step discipline
+//!
+//! Edges ([`just_pressed`](Actions::just_pressed) /
+//! [`just_released`](Actions::just_released)) and the
+//! [`wheel`](Actions::wheel) are **frame-scoped** — resolved once per
+//! frame on `Update`, cleared once per frame by `Input::end_frame`.
+//! **Never read them from a `FixedUpdate` system.** `FixedUpdate` reads
+//! *levels* only: [`pressed`](Actions::pressed), [`axis`](Actions::axis),
+//! or a mode/state resource.
+//!
+//! Why: `FixedUpdate` runs 0..N times per frame against the time
+//! accumulator, while an edge lives for exactly one frame. A `FixedUpdate`
+//! edge read therefore
+//! - **double-fires** on a slow frame that runs several fixed steps — the
+//!   edge is still true on each step (one press → N jumps);
+//! - **misses** on a fast frame that runs zero fixed steps — the edge is
+//!   born and cleared inside a frame the fixed clock never entered;
+//! - reads a **stale** edge anyway, since the resolve runs on `Update`,
+//!   *after* the frame's fixed steps have already run.
+//!
+//! Levels are safe because they derive from `Input` state that does not
+//! change across a frame's steps — integrating "move forward" on each of
+//! three steps is just correct integration.
+//!
+//! Two handoff shapes carry an edge down to the fixed clock:
+//! - **edge → latch (consume once):** an `Update` system turns the edge
+//!   into a durable intent (`jump_intent.requested = true`); the first
+//!   fixed step that sees it acts and clears it. A press on a zero-step
+//!   frame waits in the latch (no miss); a press on an N-step frame is
+//!   consumed once (no double-fire). The cost is a deterministic
+//!   one-frame latency — the same shape as an event readable the frame
+//!   after it is sent.
+//! - **continuous → mirror latest:** an `Update` system writes the current
+//!   axis / mode / hold-distance into a state resource; each fixed step
+//!   reads the latest value. No latch — only edges latch.
+//!
+//! Mode select is the canonical edge→state case: an `Update` system flips
+//! a persistent `ControlMode` on the 1/2/3 edge, and per-mode
+//! `FixedUpdate` systems gate on that mode as a level (via `run_if`). This
+//! module ships only the rule and the `Update` resolve; the per-verb
+//! intent resources are authored game-side when the verbs land (Part 2.F
+//! / 2.G).
 
 use std::collections::HashMap;
 
@@ -72,6 +115,12 @@ impl Bindings {
     /// OR together — any one fires it. Call repeatedly to bind several.
     pub fn bind(&mut self, action: Symbol, trigger: Trigger) {
         self.map.entry(action).or_default().push(trigger);
+    }
+
+    /// Replace an action's triggers with a single one (clear-then-bind).
+    /// For rebinding; the per-frame resolve reflects it next frame.
+    pub fn rebind(&mut self, action: Symbol, trigger: Trigger) {
+        self.map.insert(action, vec![trigger]);
     }
 
     fn iter(&self) -> impl Iterator<Item = (Symbol, &[Trigger])> {

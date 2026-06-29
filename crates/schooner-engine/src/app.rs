@@ -10,12 +10,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::action::{Actions, Bindings, resolve_actions};
+use crate::action::{Actions, Bindings, Trigger, resolve_actions};
 use crate::debug::{
     DebugState, ProfilerView, debug_input_system, f5_reload_system,
 };
 use crate::ecs::{CommandQueue, Events, IntoSystem, Schedule, Stage, World, exclusive};
-use crate::input::Input;
+use crate::input::{Input, KeyCode};
+use crate::symbol::sym;
 use crate::render::{
     AutoExposure, Bloom, BloomPipeline, ColorGrade, DebugOverlay, ExposurePipeline, Fog,
     ForwardPipeline, HDR_FORMAT, MeshRegistry, PostOverlay, PostPipeline, RenderContext,
@@ -158,6 +159,31 @@ impl App {
     pub fn add_event<T: Send + Sync + 'static>(mut self) -> Self {
         self.world.insert_resource(Events::<T>::default());
         self.event_updaters.push(crate::ecs::event::swap_events::<T>);
+        self
+    }
+
+    /// Bind an action name to a physical [`Trigger`]. Repeated calls on
+    /// the same name OR the triggers together — any one fires the action.
+    /// The name is interned through the global symbol table, so a later
+    /// script (or another call site) binding the same name lands on the
+    /// same action.
+    pub fn bind(mut self, action: &str, trigger: Trigger) -> Self {
+        if let Some(bindings) = self.world.resource_mut::<Bindings>() {
+            bindings.bind(sym(action), trigger);
+        }
+        self
+    }
+
+    /// Ergonomic alias for `bind(action, Trigger::Key(key))`.
+    pub fn bind_key(self, action: &str, key: KeyCode) -> Self {
+        self.bind(action, Trigger::Key(key))
+    }
+
+    /// Replace an action's triggers with a single one (clear-then-bind).
+    pub fn rebind(mut self, action: &str, trigger: Trigger) -> Self {
+        if let Some(bindings) = self.world.resource_mut::<Bindings>() {
+            bindings.rebind(sym(action), trigger);
+        }
         self
     }
 

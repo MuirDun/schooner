@@ -14,17 +14,32 @@ is the build state and Kinesis roadmap.
   gated so overlay typing doesn't leak into gameplay; `Input::end_frame` rolls
   edges and clears per-frame deltas once per frame (`app.rs`).
 - `record_*` methods are crate-private — systems can't synthesize input.
+- **Mouse wheel** (Part 2.B.1): a per-frame vertical accumulator (`mouse_wheel`),
+  the twin of the motion delta — normalized from winit `LineDelta` / `PixelDelta`
+  at the App boundary, cleared by `end_frame`.
+
+## What exists now (Layer 2, Part 2.B)
+
+- **Interned-symbol action IDs** (`symbol.rs`): `sym(name) -> Symbol`, a
+  process-global interner — the shared namespace a future Glyph script registers
+  into, so script-side action registration is a translation, not a rewrite (see
+  `architecture/input.md`).
+- **The action map** (`action.rs`): a `Bindings` table (action `Symbol` → OR'd
+  `Trigger`s — key / mouse button / wheel sign) and an `Actions` state resource,
+  resolved once per frame on `Update` by `resolve_actions` (registered
+  engine-intrinsic, ahead of game systems). Reader surface mirrors `Input`:
+  `pressed` / `just_pressed` / `just_released` / `axis(neg, pos)` / `wheel`.
+- Action edges derive from each action's own aggregate down-transition, **not**
+  from OR-ing its triggers' edges — so a multi-bound action never double-announces.
 
 ## What's missing
 
-- **Layer 2 — the action map.** Named verbs ("grab", "throw", "mode-repulsion")
-  OR'd from one-or-many physical triggers, recomputed once per frame from Layer 1.
-  `architecture/input.md` defers it until a consumer forces it. **Kinesis forces a
-  light version in Part 2** (modes, verbs, mouse-wheel distance) — but it can stay
-  minimal (a small enum-keyed binding table), not the full rebind/file-format
-  build.
-- **Mouse wheel** — not recorded yet; Part 2 needs it for telekinesis distance.
-- **A FixedUpdate-safe read path** — edges are frame-scoped; see hazard below.
+- **Migrating existing consumers onto the action map.** `fps_move` / `fps_look`
+  still read `Input` directly with hard-coded keys; they move onto `Actions` when
+  the Rapier KCC replaces `fps_move` (Part 2.F).
+- **Out-of-Kinesis Layer-2 generality** — rebind persistence / file format,
+  gamepad, IME, chords-as-primitive, input contexts. Deferred until a game forces
+  them.
 
 ## Kinesis roadmap
 
@@ -41,21 +56,34 @@ is the build state and Kinesis roadmap.
 - **Out of Kinesis scope:** rebinding persistence / file format, gamepad,
   text-input/IME (Game 2A's UI), full Layer-2 generality.
 
-## Sharp risk: edges vs the fixed step
+## The fixed-step discipline (resolved, Part 2.B.3)
 
-`Input::end_frame` clears `just_pressed`/`just_released` and mouse delta exactly
-once per frame, *after* the whole `run_fixed × N → Update → Render` sequence. So a
-system in **FixedUpdate** that reads an edge will:
-- **double-fire** when a frame runs multiple fixed steps (edge true in each), and
-- **miss** the edge entirely on frames that run zero fixed steps (edge born and
-  cleared within a frame that ran no fixed step).
+`Input::end_frame` clears the edges and the wheel exactly once per frame, *after*
+the whole `run_fixed × N → Update → Render` sequence — so a **FixedUpdate** system
+that reads an edge **double-fires** on a multi-step frame, **misses** on a
+zero-step frame, and reads a **stale** edge anyway (the resolve runs on Update,
+after the frame's fixed steps).
 
-Latent today (every input consumer runs on Update). It bites the moment a
-physics/gameplay verb reads input in FixedUpdate. Standard fixes: keep edge reads
-on Update and have FixedUpdate read *state* (`ControlMode`, etc.); or maintain a
-separate FixedUpdate input snapshot cleared by the fixed schedule. Decide in
-Part 2 when player physics lands. (Mode select stays on Update — see
-[events.md](events.md) example 1.)
+The convention, decided in Part 2.B and now load-bearing for every verb:
+
+- **Edges (`just_pressed` / `just_released`) and the wheel are `Update`-only.**
+  Both `Input`'s and `Actions`' frame-scoped reads happen on the variable clock.
+- **Levels are `FixedUpdate`-safe.** `pressed`, `axis`, and mode/state resources
+  derive from `Input` state that is unchanged across a frame's steps, so reading
+  them per fixed step is idempotent (correct continuous integration).
+- **One-shots are latched.** An edge that must cause exactly one fixed-step action
+  is captured on `Update` into a durable intent and consumed once by the fixed
+  clock — no miss on a zero-step frame, no double-fire on an N-step frame. The
+  cost is a deterministic one-frame latency, the same shape as a one-frame-late
+  event.
+
+We chose this over the alternative — a separate `FixedUpdate` input snapshot
+cleared by the fixed schedule — because one resolve point plus durable intent is
+simpler and matches how `Events<T>` already crosses frames. Mode select stays on
+`Update`, flipping a persistent `ControlMode` read as a level in `FixedUpdate`
+(see [events.md](events.md) example 1). The actionable form of this rule lives in
+the `action.rs` module docs; the idea-level version is in `architecture/input.md`
+§"The Fixed-Step Discipline".
 
 Cross-refs: [events.md](events.md) (input edges drive state transitions),
 [physics.md](physics.md) (the FixedUpdate consumer).
