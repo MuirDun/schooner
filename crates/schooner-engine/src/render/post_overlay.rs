@@ -80,7 +80,9 @@ impl OverlayBlend {
 }
 
 /// Per-scene post overlay parameters. See module docs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+// Not `Copy`: `texture` is an owning, ref-counted `TextureHandle`. `Clone`
+// is the explicit (refcount-bump) way to duplicate one.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PostOverlay {
     /// Texture to composite. `None` binds WHITE and (with the default
     /// `intensity = 0`) renders nothing — see module docs on the

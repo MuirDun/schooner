@@ -33,7 +33,7 @@ use wgpu::{
 
 use crate::render::context::{DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::render::mesh::Vertex;
-use crate::render::texture::TextureHandle;
+use crate::render::texture::RawTextureId;
 use crate::render::uniforms::{CameraUniformData, LightsUniformData, ModelUniformData};
 
 /// Maximum number of draws the per-frame model buffer can serve
@@ -110,7 +110,7 @@ pub struct ForwardPipeline {
     /// [`Self::material_bind_group`]; reload drops every entry touching a
     /// replaced handle via [`Self::invalidate_material_bind_group`] so
     /// the next frame rebuilds against the reloaded view.
-    material_bind_groups: HashMap<(TextureHandle, TextureHandle), BindGroup>,
+    material_bind_groups: HashMap<(RawTextureId, RawTextureId), BindGroup>,
 }
 
 impl ForwardPipeline {
@@ -357,9 +357,9 @@ impl ForwardPipeline {
     pub fn ensure_material_bind_group_with_views(
         &mut self,
         device: &Device,
-        albedo: TextureHandle,
+        albedo: RawTextureId,
         albedo_view: &TextureView,
-        normal: TextureHandle,
+        normal: RawTextureId,
         normal_view: &TextureView,
     ) {
         self.material_bind_groups
@@ -393,7 +393,7 @@ impl ForwardPipeline {
     /// error in the pre-pass — not a routine cache miss.
     pub fn material_bind_group(
         &self,
-        key: (TextureHandle, TextureHandle),
+        key: (RawTextureId, RawTextureId),
     ) -> Option<&BindGroup> {
         self.material_bind_groups.get(&key)
     }
@@ -403,9 +403,9 @@ impl ForwardPipeline {
     /// texture's underlying GPU view has been replaced — the next
     /// pre-pass population rebuilds the affected pairs against the
     /// reloaded view.
-    pub fn invalidate_material_bind_group(&mut self, handle: TextureHandle) {
+    pub fn invalidate_material_bind_group(&mut self, id: RawTextureId) {
         self.material_bind_groups
-            .retain(|&(albedo, normal), _| albedo != handle && normal != handle);
+            .retain(|&(albedo, normal), _| albedo != id && normal != id);
     }
 }
 

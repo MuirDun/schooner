@@ -33,7 +33,11 @@ pub enum MeshAsset {
 /// case the spawn site leaves `Material::albedo_texture` at WHITE). The
 /// texture rides along with the mesh so scenes don't list it as a
 /// separate `TextureAsset` or hand-stitch it onto the material.
-#[derive(Clone, Copy)]
+///
+/// `Clone`, not `Copy`: it owns ref-counted [`MeshHandle`] /
+/// [`TextureHandle`]s, so cloning bumps refcounts and the underlying GPU
+/// resources free when the last clone drops.
+#[derive(Clone)]
 pub struct ModelHandle {
     pub mesh: MeshHandle,
     pub albedo_texture: Option<TextureHandle>,
@@ -55,16 +59,19 @@ pub struct Assets {
 }
 
 impl Assets {
+    /// An owning clone of the resident handle for `k` (cheap refcount
+    /// bump). The clone keeps the texture alive for as long as the
+    /// caller — typically a spawned entity's `Material` — holds it.
     pub fn texture(&self, k: TextureAsset) -> TextureHandle {
-        *self
-            .textures
+        self.textures
             .get(&k)
+            .cloned()
             .unwrap_or_else(|| panic!("texture {k:?} not resident - missing from manifest"))
     }
     pub fn model(&self, k: MeshAsset) -> ModelHandle {
-        *self
-            .models
+        self.models
             .get(&k)
+            .cloned()
             .unwrap_or_else(|| panic!("model {k:?} not resident - missing from manifest"))
     }
 }
@@ -115,36 +122,25 @@ fn ensure_inner(world: &mut World, need: SceneAssets) {
         None => return,
     };
 
-    // Find assets which are not presented in the next scene
-    // and the ones that no more needed
-    let (missing, redundant): (Vec<TextureAsset>, Vec<TextureAsset>) = {
+    // --- Textures ---
+    // Load whatever the next scene needs that isn't already resident. A
+    // texture shared with the current scene stays put under the same
+    // handle, so a transition never reloads it.
+    let missing: Vec<TextureAsset> = {
         let assets = world.resource::<Assets>().unwrap();
-
-        let missing = need
-            .texture
+        need.texture
             .iter()
             .copied()
             .filter(|k| !assets.textures.contains_key(k))
-            .collect();
-
-        let redundant = assets
-            .textures
-            .keys()
-            .copied()
-            .filter(|k| !need.texture.contains(k))
-            .collect();
-
-        (missing, redundant)
+            .collect()
     };
 
     let loaded: Vec<(TextureAsset, TextureHandle)> = {
         let reg = world.resource_mut::<TextureRegistry>().unwrap();
-
         missing
             .iter()
             .filter_map(|&k| {
                 let path = texture_path(k);
-
                 // Normal maps are data → linear upload; albedo/glass are
                 // color → sRGB upload.
                 let result = if k.is_data() {
@@ -162,48 +158,28 @@ fn ensure_inner(world: &mut World, need: SceneAssets) {
             })
             .collect()
     };
-    let dead: Vec<TextureHandle> = if !redundant.is_empty() {
-        let assets = world.resource::<Assets>().unwrap();
-        redundant.iter().map(|k| assets.textures[k]).collect() // TextureHandle is Copy
-    } else {
-        vec![]
-    };
 
-    if !dead.is_empty() {
-        let reg = world.resource_mut::<TextureRegistry>().unwrap();
-        for handle in dead {
-            reg.unload(handle);
-        }
-    }
-
+    // Commit residency: add the newly loaded, then drop every texture the
+    // next scene doesn't need. Dropping the handle *is* the eviction —
+    // once its last owner is gone (this map entry, plus any entity still
+    // holding a clone), the registry frees the GPU texture on the next
+    // frame's reclaim pass. No manual `unload`, no leak.
     {
         let assets = world.resource_mut::<Assets>().unwrap();
         for (k, h) in loaded {
             assets.textures.insert(k, h);
         }
-        for k in redundant {
-            assets.textures.remove(&k);
-        }
+        assets.textures.retain(|k, _| need.texture.contains(k));
     }
 
-    let (missing, redundant): (Vec<MeshAsset>, Vec<MeshAsset>) = {
+    // --- Models (glb: mesh + embedded textures) ---
+    let missing: Vec<MeshAsset> = {
         let assets = world.resource::<Assets>().unwrap();
-
-        let missing = need
-            .mesh
+        need.mesh
             .iter()
             .copied()
             .filter(|k| !assets.models.contains_key(k))
-            .collect();
-
-        let redundant = assets
-            .models
-            .keys()
-            .copied()
-            .filter(|k| !need.mesh.contains(k))
-            .collect();
-
-        (missing, redundant)
+            .collect()
     };
 
     // Parse first (pure CPU, holds no registry borrow), then upload mesh
@@ -255,37 +231,13 @@ fn ensure_inner(world: &mut World, need: SceneAssets) {
         })
         .collect();
 
-    let dead: Vec<ModelHandle> = if !redundant.is_empty() {
-        let assets = world.resource::<Assets>().unwrap();
-        redundant.iter().map(|k| assets.models[k]).collect()
-    } else {
-        vec![]
-    };
-
-    if !dead.is_empty() {
-        let reg = world.resource_mut::<MeshRegistry>().unwrap();
-        for handle in &dead {
-            reg.unload(handle.mesh);
-        }
-
-        let reg = world.resource_mut::<TextureRegistry>().unwrap();
-        for handle in dead {
-            if let Some(albedo) = handle.albedo_texture {
-                reg.unload(albedo);
-            }
-            if let Some(normal) = handle.normal_texture {
-                reg.unload(normal);
-            }
-        }
-    }
-
+    // Same commit-then-prune as textures: dropping a redundant
+    // `ModelHandle` releases its mesh and embedded textures together.
     {
         let assets = world.resource_mut::<Assets>().unwrap();
         for (k, h) in loaded {
             assets.models.insert(k, h);
         }
-        for k in redundant {
-            assets.models.remove(&k);
-        }
+        assets.models.retain(|k, _| need.mesh.contains(k));
     }
 }

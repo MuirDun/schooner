@@ -187,16 +187,20 @@ impl MeshGpu {
     }
 }
 
-/// Opaque handle into the `MeshRegistry`.
-///
-/// Two slots are reserved for engine-owned built-ins:
-/// [`MeshHandle::CUBE`] and [`MeshHandle::PLANE`]. They are the
-/// canonical "is the renderer alive?" primitives — every later
-/// game gets them for free without re-deriving the vertex arrays.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MeshHandle(pub u32);
+use std::sync::{Arc, Mutex};
 
-impl MeshHandle {
+/// Raw, `Copy` mesh id: the [`MeshRegistry`](crate::render::MeshRegistry)
+/// hash key, the per-draw render currency, and where the built-in slots
+/// live. Owning [`MeshHandle`]s wrap one of these — the id is what the
+/// registry and the render path use, neither of which needs ownership.
+///
+/// Two ids are reserved for engine-owned built-ins ([`RawMeshId::CUBE`]
+/// and [`RawMeshId::PLANE`]) — the canonical "is the renderer alive?"
+/// primitives every later game gets for free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RawMeshId(pub u32);
+
+impl RawMeshId {
     /// Built-in unit cube centered at the origin, edges aligned to
     /// world axes. Registered eagerly during render init.
     pub const CUBE: Self = Self(0);
@@ -205,10 +209,70 @@ impl MeshHandle {
     /// eagerly during render init.
     pub const PLANE: Self = Self(1);
 
-    /// First handle a user-supplied mesh may take. Registry's
-    /// allocator starts here so built-in slots are never overwritten
-    /// by a later `insert`.
+    /// First id the registry's allocator may hand to a user mesh, so the
+    /// built-in slots above are never overwritten by a later load.
     pub const FIRST_USER: Self = Self(2);
+}
+
+/// Ids whose last owning [`MeshHandle`] has dropped, awaiting teardown at
+/// the next [`MeshRegistry::drain_dead`](crate::render::MeshRegistry::drain_dead).
+/// Shared (one `Arc` clone rides in every live handle) so a handle's
+/// `Drop` can record its id without reaching the registry or the `World`.
+pub(crate) type MeshFreeList = Arc<Mutex<Vec<RawMeshId>>>;
+
+struct MeshHandleInner {
+    id: RawMeshId,
+    free: MeshFreeList,
+}
+
+impl Drop for MeshHandleInner {
+    fn drop(&mut self) {
+        // Built-in ids are permanent — never queue them for teardown.
+        if self.id.0 < RawMeshId::FIRST_USER.0 {
+            return;
+        }
+        // The last owner is going away. We can't free the GPU mesh from
+        // here (no `&mut MeshRegistry`, and an in-flight frame may still
+        // reference it), so we only record the id; the registry tears it
+        // down at a safe point — mirroring wgpu's deferred destruction.
+        if let Ok(mut dead) = self.free.lock() {
+            dead.push(self.id);
+        }
+    }
+}
+
+/// Owning, ref-counted handle into the [`MeshRegistry`](crate::render::MeshRegistry).
+///
+/// `Clone` bumps the refcount; when the last clone drops, the mesh is
+/// queued for teardown (see the `Drop` on its inner). Deliberately **not**
+/// `Copy` — automatic freeing when the last link dies is the whole point,
+/// and `Copy` would scatter untracked references the registry can't see.
+#[derive(Clone)]
+pub struct MeshHandle(Arc<MeshHandleInner>);
+
+impl MeshHandle {
+    pub(crate) fn new(id: RawMeshId, free: MeshFreeList) -> Self {
+        Self(Arc::new(MeshHandleInner { id, free }))
+    }
+
+    /// The `Copy` id this handle owns.
+    pub fn raw(&self) -> RawMeshId {
+        self.0.id
+    }
+}
+
+// Identity is the underlying id, not the `Arc`: two clones of one handle
+// are equal, as are two handles naming the same mesh.
+impl PartialEq for MeshHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+}
+
+impl std::fmt::Debug for MeshHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MeshHandle({})", self.0.id.0)
+    }
 }
 
 /// Built-in unit cube: ±0.5 on each axis, six faces, one normal
@@ -383,15 +447,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_handles_are_distinct_and_lowest() {
-        assert_ne!(MeshHandle::CUBE, MeshHandle::PLANE);
-        assert!(MeshHandle::CUBE.0 < MeshHandle::FIRST_USER.0);
-        assert!(MeshHandle::PLANE.0 < MeshHandle::FIRST_USER.0);
+    fn builtin_ids_are_distinct_and_lowest() {
+        assert_ne!(RawMeshId::CUBE, RawMeshId::PLANE);
+        assert!(RawMeshId::CUBE.0 < RawMeshId::FIRST_USER.0);
+        assert!(RawMeshId::PLANE.0 < RawMeshId::FIRST_USER.0);
     }
 
     #[test]
     fn first_user_skips_builtin_slots() {
-        assert_eq!(MeshHandle::FIRST_USER.0, 2);
+        assert_eq!(RawMeshId::FIRST_USER.0, 2);
     }
 
     #[test]

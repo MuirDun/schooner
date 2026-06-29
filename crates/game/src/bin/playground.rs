@@ -12,7 +12,6 @@ use schooner_engine::{
 
 #[cfg(feature = "hot")]
 mod hot {
-    use game::scene::assets::Assets;
     use game::scene::{self, ActiveScene, SceneId};
     use schooner_engine::ecs::World;
     use std::sync::Arc;
@@ -29,13 +28,17 @@ mod hot {
 
     /// Update system: on a landed patch, rebuild the live scene in
     /// place. The player isn't a SceneEntity, so the camera stays put.
+    ///
+    /// No manual asset clearing: `load_scene` despawns the old
+    /// `SceneEntity`s (dropping their handle clones) and re-runs the
+    /// patched `build`. Assets shared across the rebuild stay resident via
+    /// the `Assets` map; nothing reloads or leaks.
     pub fn reload_system(world: &mut World) {
         if PATCHED.swap(false, Ordering::SeqCst) {
             let id = world
                 .resource::<ActiveScene>()
                 .map(|a| a.0)
                 .unwrap_or(SceneId::Playground);
-            let assets = world.resource_mut::<Assets>().unwrap();
             scene::load_scene(world, id);
             log::info!("hot-reloaded {id:?}");
         }

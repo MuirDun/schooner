@@ -30,15 +30,18 @@ use wgpu::{
     TextureViewDescriptor,
 };
 
-/// Opaque handle into the `TextureRegistry`.
+/// Raw, `Copy` texture id: the [`TextureRegistry`](crate::render::TextureRegistry)
+/// hash key, the forward pipeline's material-bind-group cache key, and
+/// the per-draw render currency. Owning [`TextureHandle`]s wrap one of
+/// these — the id is what the registry, cache, and render path use,
+/// none of which needs ownership.
 ///
-/// One slot is reserved for the engine-owned WHITE built-in:
-/// [`TextureHandle::WHITE`]. User-loaded textures start at higher
-/// indices via the registry's allocator.
+/// Two ids are reserved for engine-owned built-ins:
+/// [`RawTextureId::WHITE`] and [`RawTextureId::FLAT_NORMAL`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TextureHandle(pub u32);
+pub struct RawTextureId(pub u32);
 
-impl TextureHandle {
+impl RawTextureId {
     /// 1×1 white texel. Materials with no `albedo_texture` bind this;
     /// the multiply into `Material.albedo` is then a no-op so the
     /// shader's textured and untextured paths stay uniform.
@@ -48,14 +51,75 @@ impl TextureHandle {
     /// 255)`. Materials with no `normal_texture` bind this; decoding
     /// `xyz * 2 - 1` yields `(0, 0, 1)` so the TBN rotate is the identity
     /// and the mapped/unmapped fragment paths stay uniform — the normal-
-    /// map twin of [`TextureHandle::WHITE`]. Uploaded **linear**
+    /// map twin of [`RawTextureId::WHITE`]. Uploaded **linear**
     /// (`Rgba8Unorm`); a normal map must never go through the sRGB path.
     pub const FLAT_NORMAL: Self = Self(1);
 
-    /// First handle a user-supplied texture may take. Registry's
-    /// allocator starts here so built-in slots are never overwritten
-    /// by a later load.
+    /// First id the registry's allocator may hand to a user texture, so
+    /// the built-in slots above are never overwritten by a later load.
     pub const FIRST_USER: Self = Self(2);
+}
+
+/// Ids whose last owning [`TextureHandle`] has dropped, awaiting teardown
+/// at the next [`TextureRegistry::drain_dead`](crate::render::TextureRegistry::drain_dead).
+/// Shared (one `Arc` clone rides in every live handle) so a handle's
+/// `Drop` can record its id without reaching the registry or the `World`.
+pub(crate) type TextureFreeList = std::sync::Arc<std::sync::Mutex<Vec<RawTextureId>>>;
+
+struct TextureHandleInner {
+    id: RawTextureId,
+    free: TextureFreeList,
+}
+
+impl Drop for TextureHandleInner {
+    fn drop(&mut self) {
+        // Built-in ids are permanent — never queue them for teardown.
+        if self.id.0 < RawTextureId::FIRST_USER.0 {
+            return;
+        }
+        // The last owner is going away. We can't free the GPU texture
+        // here (no `&mut TextureRegistry`, and an in-flight frame may
+        // still reference it), so we only record the id; the registry
+        // tears it down — and invalidates the bind groups that cached
+        // it — at a safe point, mirroring wgpu's deferred destruction.
+        if let Ok(mut dead) = self.free.lock() {
+            dead.push(self.id);
+        }
+    }
+}
+
+/// Owning, ref-counted handle into the [`TextureRegistry`](crate::render::TextureRegistry).
+///
+/// `Clone` bumps the refcount; when the last clone drops, the texture is
+/// queued for teardown (see the `Drop` on its inner). Deliberately **not**
+/// `Copy` — automatic freeing when the last link dies is the whole point,
+/// and `Copy` would scatter untracked references the registry can't see.
+#[derive(Clone)]
+pub struct TextureHandle(std::sync::Arc<TextureHandleInner>);
+
+impl TextureHandle {
+    pub(crate) fn new(id: RawTextureId, free: TextureFreeList) -> Self {
+        Self(std::sync::Arc::new(TextureHandleInner { id, free }))
+    }
+
+    /// The `Copy` id this handle owns.
+    pub fn raw(&self) -> RawTextureId {
+        self.0.id
+    }
+}
+
+// Identity is the underlying id, not the `Arc`: two clones of one handle
+// are equal, as are two handles naming the same texture.
+impl PartialEq for TextureHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+}
+
+impl std::fmt::Debug for TextureHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TextureHandle({})", self.0.id.0)
+    }
 }
 
 /// CPU-side decoded texture: tightly packed RGBA8 pixels, dimensions,
@@ -190,17 +254,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn white_builtin_is_handle_zero() {
-        assert_eq!(TextureHandle::WHITE.0, 0);
-        assert!(TextureHandle::WHITE.0 < TextureHandle::FIRST_USER.0);
+    fn white_builtin_is_id_zero() {
+        assert_eq!(RawTextureId::WHITE.0, 0);
+        assert!(RawTextureId::WHITE.0 < RawTextureId::FIRST_USER.0);
     }
 
     #[test]
     fn first_user_skips_builtin_slots() {
         // WHITE (0) and FLAT_NORMAL (1) are reserved; users start at 2.
-        assert_eq!(TextureHandle::WHITE.0, 0);
-        assert_eq!(TextureHandle::FLAT_NORMAL.0, 1);
-        assert_eq!(TextureHandle::FIRST_USER.0, 2);
+        assert_eq!(RawTextureId::WHITE.0, 0);
+        assert_eq!(RawTextureId::FLAT_NORMAL.0, 1);
+        assert_eq!(RawTextureId::FIRST_USER.0, 2);
     }
 
     #[test]

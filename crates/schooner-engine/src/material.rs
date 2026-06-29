@@ -39,7 +39,7 @@ use crate::render::texture::TextureHandle;
 /// shader's textured and untextured paths stay uniform — a `Material`
 /// with no texture reads `albedo = albedo_tint × white = albedo_tint`,
 /// identical to the pre-texture pipeline's behaviour.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Material {
     pub albedo: Vec3,
     pub roughness: f32,

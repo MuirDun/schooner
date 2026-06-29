@@ -54,14 +54,14 @@ use crate::render::context::RenderContext;
 use crate::render::exposure::{AdaptParamsUniform, AutoExposure, ExposurePipeline};
 use crate::render::fog::Fog;
 use crate::render::light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
-use crate::render::mesh::MeshHandle;
+use crate::render::mesh::{MeshHandle, RawMeshId};
 use crate::render::overlay::DebugOverlay;
 use crate::render::grade::ColorGrade;
 use crate::render::pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 use crate::render::post::PostPipeline;
 use crate::render::post_overlay::PostOverlay;
 use crate::render::registry::{MeshRegistry, TextureRegistry};
-use crate::render::texture::TextureHandle;
+use crate::render::texture::RawTextureId;
 use crate::render::shadow::{
     MAX_SHADOW_CASTERS, SHADOW_VP_UNIFORM_STRIDE, ShadowMaps, ShadowPipeline, compute_shadow_vp,
 };
@@ -272,8 +272,78 @@ impl PcfKernel {
     }
 }
 
+/// One draw resolved to plain `Copy` data, snapshotted from the ECS once
+/// per frame. Carries the model matrix (kept for the transparent
+/// back-to-front sort), the mesh id, the pre-packed model uniform, and
+/// the blend mode plus the `(albedo, normal)` texture ids resolved once
+/// from the owning [`Material`].
+///
+/// Resolving to ids here is what keeps the per-frame draw list free of
+/// `Arc` traffic: the owning handles stay in their components (and
+/// `render_frame` is exclusive, so nothing drops them mid-frame), while
+/// the hot loops below deal only in `Copy` ids. It also collapses the
+/// handle→id resolution and the uniform packing to one place each,
+/// instead of re-doing them in the pre-pass and the per-draw bind step.
+#[derive(Clone, Copy)]
+struct DrawItem {
+    model: glam::Mat4,
+    mesh: RawMeshId,
+    uniform: ModelUniformData,
+    blend: BlendMode,
+    albedo_id: RawTextureId,
+    normal_id: RawTextureId,
+}
+
+impl DrawItem {
+    fn resolve(model: glam::Mat4, mesh: RawMeshId, material: &Material) -> Self {
+        Self {
+            model,
+            mesh,
+            uniform: ModelUniformData::new(model, material),
+            blend: material.blend,
+            albedo_id: material
+                .albedo_texture
+                .as_ref()
+                .map_or(RawTextureId::WHITE, |h| h.raw()),
+            normal_id: material
+                .normal_texture
+                .as_ref()
+                .map_or(RawTextureId::FLAT_NORMAL, |h| h.raw()),
+        }
+    }
+}
+
 pub fn render_frame(world: &mut World) {
     puffin::profile_scope!("render_frame");
+
+    {
+        puffin::profile_scope!("reclaim_assets");
+        let dead_textures = world
+            .resource_mut::<TextureRegistry>()
+            .map(TextureRegistry::drain_dead)
+            .unwrap_or_default();
+        if !dead_textures.is_empty() {
+            // Every cache that holds a *view* of a freed texture must
+            // release it, or that view clone keeps the GPU texture pinned
+            // after its registry entry is gone. Two such caches exist: the
+            // forward per-material cache and the post overlay cache. (The
+            // post HDR/bloom/exposure caches hold views of internal render
+            // targets, not registry textures, so they're unaffected.)
+            if let Some(pipeline) = world.resource_mut::<ForwardPipeline>() {
+                for &id in &dead_textures {
+                    pipeline.invalidate_material_bind_group(id);
+                }
+            }
+            if let Some(post) = world.resource_mut::<PostPipeline>() {
+                for &id in &dead_textures {
+                    post.invalidate_overlay_bind_group(id);
+                }
+            }
+        }
+        if let Some(meshes) = world.resource_mut::<MeshRegistry>() {
+            meshes.drain_dead();
+        }
+    }
 
     // Snapshot scene data through queries. Block-scoped puffin
     //    spans nest correctly under `render_frame` and let the
@@ -306,19 +376,30 @@ pub fn render_frame(world: &mut World) {
         // the borrow checker — the iterator holds a shared borrow
         // of the world while the closure wants its own. Collecting
         // entity ids first ends the iter borrow before the lookups.
-        let mesh_entities: Vec<(crate::ecs::EntityId, MeshHandle)> = world
+        // Snapshot the owning `MeshHandle` down to its `Copy` `RawMeshId`
+        // here: the render path only ever looks meshes up by id, so the
+        // frame carries ids (no per-draw `Arc` traffic) while the owning
+        // handles stay in their components. `render_frame` is exclusive,
+        // so nothing drops a handle between this snapshot and the draws.
+        let mesh_entities: Vec<(crate::ecs::EntityId, RawMeshId)> = world
             .iter::<MeshHandle>()
-            .map(|(entity, handle)| (entity, *handle))
+            .map(|(entity, handle)| (entity, handle.raw()))
             .collect();
-        let mut draws: Vec<(glam::Mat4, MeshHandle, Material)> = mesh_entities
+        let mut draws: Vec<DrawItem> = mesh_entities
             .into_iter()
-            .filter_map(|(entity, handle)| {
-                let transform = world.get::<Transform>(entity)?;
-                let material = world
-                    .get::<Material>(entity)
-                    .copied()
-                    .unwrap_or(Material::DEFAULT);
-                Some((transform.matrix(), handle, material))
+            .filter_map(|(entity, mesh)| {
+                let model = world.get::<Transform>(entity)?.matrix();
+                // Resolve the owning material to a `Copy` `DrawItem` while
+                // we hold the borrow: pack the model uniform and resolve
+                // both texture handles to ids once, here. The draw list
+                // then owns nothing — no per-draw `Arc` clone, and the
+                // (albedo, normal) ids aren't re-resolved later in the
+                // pre-pass or the per-draw bind step.
+                let item = match world.get::<Material>(entity) {
+                    Some(material) => DrawItem::resolve(model, mesh, material),
+                    None => DrawItem::resolve(model, mesh, &Material::DEFAULT),
+                };
+                Some(item)
             })
             .collect();
         if draws.len() as u64 > MAX_DRAWS_PER_FRAME {
@@ -352,8 +433,8 @@ pub fn render_frame(world: &mut World) {
     // order; 1.G.2 sorts it back-to-front by camera distance.
     let mut opaque_draws: Vec<usize> = Vec::with_capacity(draws.len());
     let mut transparent_draws: Vec<usize> = Vec::new();
-    for (i, (_, _, material)) in draws.iter().enumerate() {
-        match material.blend {
+    for (i, item) in draws.iter().enumerate() {
+        match item.blend {
             BlendMode::Opaque => opaque_draws.push(i),
             BlendMode::AlphaBlend => transparent_draws.push(i),
         }
@@ -374,8 +455,8 @@ pub fn render_frame(world: &mut World) {
     // triangle sorting or order-independent transparency (out of scope —
     // Game 2A+).
     transparent_draws.sort_by(|&a, &b| {
-        let da = (draws[a].0.w_axis.truncate() - cam_pos).length_squared();
-        let db = (draws[b].0.w_axis.truncate() - cam_pos).length_squared();
+        let da = (draws[a].model.w_axis.truncate() - cam_pos).length_squared();
+        let db = (draws[b].model.w_axis.truncate() - cam_pos).length_squared();
         db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
     });
 
@@ -461,13 +542,10 @@ pub fn render_frame(world: &mut World) {
             0,
             bytemuck::bytes_of(&lights_uniform),
         );
-        for (i, (model, _, material)) in draws.iter().enumerate() {
+        for (i, item) in draws.iter().enumerate() {
             let offset = (i as u64) * MODEL_UNIFORM_STRIDE;
-            queue.write_buffer(
-                &pipeline.model_buffer,
-                offset,
-                bytemuck::bytes_of(&ModelUniformData::new(*model, material)),
-            );
+            // Uniform was packed once at snapshot — just upload the bytes.
+            queue.write_buffer(&pipeline.model_buffer, offset, bytemuck::bytes_of(&item.uniform));
         }
 
         let Some(shadow) = world.resource::<ShadowPipeline>() else {
@@ -535,8 +613,7 @@ pub fn render_frame(world: &mut World) {
             // the frosted pane can't throw a partial shadow into a
             // binary depth map, so AlphaBlend draws are skipped here.
             for &di in &opaque_draws {
-                let (_, handle, _) = &draws[di];
-                let Some(mesh) = meshes.get(*handle) else {
+                let Some(mesh) = meshes.get(draws[di].mesh) else {
                     continue;
                 };
                 let model_offset = (di as u32) * (MODEL_UNIFORM_STRIDE as u32);
@@ -567,38 +644,36 @@ pub fn render_frame(world: &mut World) {
             // are the WHITE / FLAT_NORMAL builtins so an unmapped material
             // still binds valid textures (WHITE → albedo no-op, FLAT_NORMAL
             // → zero perturbation).
-            let mut pairs: HashSet<(TextureHandle, TextureHandle)> = HashSet::new();
-            pairs.insert((TextureHandle::WHITE, TextureHandle::FLAT_NORMAL));
-            for (_, _, material) in &draws {
-                let albedo = material.albedo_texture.unwrap_or(TextureHandle::WHITE);
-                let normal = material.normal_texture.unwrap_or(TextureHandle::FLAT_NORMAL);
-                pairs.insert((albedo, normal));
+            let mut pairs: HashSet<(RawTextureId, RawTextureId)> = HashSet::new();
+            pairs.insert((RawTextureId::WHITE, RawTextureId::FLAT_NORMAL));
+            for item in &draws {
+                pairs.insert((item.albedo_id, item.normal_id));
             }
 
-            // Resolve a view for every handle either slot references.
-            let mut unique_handles: HashSet<TextureHandle> = HashSet::new();
+            // Resolve a view for every id either slot references.
+            let mut unique_ids: HashSet<RawTextureId> = HashSet::new();
             for &(albedo, normal) in &pairs {
-                unique_handles.insert(albedo);
-                unique_handles.insert(normal);
+                unique_ids.insert(albedo);
+                unique_ids.insert(normal);
             }
 
-            let views: HashMap<TextureHandle, wgpu::TextureView> = {
+            let views: HashMap<RawTextureId, wgpu::TextureView> = {
                 let Some(textures) = world.resource::<TextureRegistry>() else {
                     warn!("render_frame: TextureRegistry missing");
                     return;
                 };
-                unique_handles
+                unique_ids
                     .iter()
-                    .filter_map(|&h| {
-                        // Handles absent from the registry resolve to
-                        // WHITE; the cache still ends up with an entry
-                        // under the requested key.
-                        let actual = if textures.contains(h) {
-                            h
+                    .filter_map(|&id| {
+                        // Ids absent from the registry resolve to WHITE;
+                        // the cache still ends up with an entry under the
+                        // requested key.
+                        let actual = if textures.contains(id) {
+                            id
                         } else {
-                            TextureHandle::WHITE
+                            RawTextureId::WHITE
                         };
-                        textures.get(actual).map(|tex| (h, tex.view.clone()))
+                        textures.get(actual).map(|tex| (id, tex.view.clone()))
                     })
                     .collect()
             };
@@ -685,24 +760,25 @@ pub fn render_frame(world: &mut World) {
         // two pipelines share one layout; only group 2 (per-draw
         // dynamic offset) and group 4 (per-material texture) rebind.
         let draw_one = |pass: &mut wgpu::RenderPass, i: usize| {
-            let (_, handle, material) = &draws[i];
-            let Some(mesh) = meshes.get(*handle) else {
-                warn!("render_frame: missing mesh for handle {handle:?}; skipping draw");
+            let item = &draws[i];
+            let Some(mesh) = meshes.get(item.mesh) else {
+                warn!("render_frame: missing mesh for id {:?}; skipping draw", item.mesh);
                 return;
             };
             let dyn_offset = (i as u32) * (MODEL_UNIFORM_STRIDE as u32);
             pass.set_bind_group(2, &pipeline.model_bind_group, &[dyn_offset]);
 
             // The pre-pass guarantees an entry exists for every
-            // (albedo, normal) pair the draw list needs, including the
-            // WHITE / FLAT_NORMAL fallback for `None` and unknown
-            // handles. A `None` here would indicate a logic error above;
-            // the warn surfaces it without crashing the frame.
-            let albedo = material.albedo_texture.unwrap_or(TextureHandle::WHITE);
-            let normal = material.normal_texture.unwrap_or(TextureHandle::FLAT_NORMAL);
-            let Some(material_bg) = pipeline.material_bind_group((albedo, normal)) else {
+            // (albedo, normal) id pair the draw list needs, including the
+            // WHITE / FLAT_NORMAL fallback for `None` and unknown ids
+            // (resolved once at snapshot into `item`). A `None` here would
+            // indicate a logic error above; the warn surfaces it without
+            // crashing the frame.
+            let Some(material_bg) = pipeline.material_bind_group((item.albedo_id, item.normal_id))
+            else {
                 warn!(
-                    "render_frame: material bind group missing for ({albedo:?}, {normal:?}); skipping draw"
+                    "render_frame: material bind group missing for ({:?}, {:?}); skipping draw",
+                    item.albedo_id, item.normal_id
                 );
                 return;
             };
@@ -819,7 +895,7 @@ pub fn render_frame(world: &mut World) {
             .unwrap_or(Vignette::DEFAULT);
         let overlay = world
             .resource::<PostOverlay>()
-            .copied()
+            .cloned()
             .unwrap_or(PostOverlay::DEFAULT);
         let params = PostParamsUniform::pack(&grade, &vignette, &overlay, &bloom);
 
@@ -830,16 +906,19 @@ pub fn render_frame(world: &mut World) {
         // overlay term is gated by `intensity = 0` anyway, so the bound
         // texture is irrelevant when the overlay is off. `TextureView`
         // is `Arc`-backed, so the clone is cheap.
-        let overlay_handle = overlay.texture.unwrap_or(TextureHandle::WHITE);
-        let (overlay_handle, overlay_view) = {
+        let overlay_id = overlay
+            .texture
+            .as_ref()
+            .map_or(RawTextureId::WHITE, |h| h.raw());
+        let (overlay_id, overlay_view) = {
             let Some(textures) = world.resource::<TextureRegistry>() else {
                 warn!("render_frame: TextureRegistry missing");
                 return;
             };
-            let actual = if textures.contains(overlay_handle) {
-                overlay_handle
+            let actual = if textures.contains(overlay_id) {
+                overlay_id
             } else {
-                TextureHandle::WHITE
+                RawTextureId::WHITE
             };
             match textures.get(actual) {
                 Some(tex) => (actual, tex.view.clone()),
@@ -861,7 +940,7 @@ pub fn render_frame(world: &mut World) {
             .clone();
         // Overlay group rebuilds only when the active handle changes.
         let overlay_bind_group = post
-            .ensure_overlay_bind_group(&device, overlay_handle, &overlay_view)
+            .ensure_overlay_bind_group(&device, overlay_id, &overlay_view)
             .clone();
         // Bloom group rebuilds on the same cadence as the HDR group — the
         // bloom mip-0 view is recreated alongside the HDR view on resize.

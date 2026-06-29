@@ -33,7 +33,7 @@ use wgpu::{
     VertexState,
 };
 
-use crate::render::texture::TextureHandle;
+use crate::render::texture::RawTextureId;
 use crate::render::uniforms::PostParamsUniform;
 
 /// All persistent GPU state for the post-process pass.
@@ -78,7 +78,7 @@ pub struct PostPipeline {
     /// from the HDR group's resize cadence and the params group's
     /// per-frame writes. `None` until the first frame.
     cached_overlay_bind_group: Option<BindGroup>,
-    cached_overlay_handle: Option<TextureHandle>,
+    cached_overlay_handle: Option<RawTextureId>,
     /// BGL for `@group(3)` — the bloom pyramid's mip 0 + sampler. Same
     /// shape as the HDR group (filterable float 2D + filtering sampler).
     pub bloom_bgl: BindGroupLayout,
@@ -287,7 +287,7 @@ impl PostPipeline {
     pub fn ensure_overlay_bind_group(
         &mut self,
         device: &Device,
-        handle: TextureHandle,
+        handle: RawTextureId,
         view: &TextureView,
     ) -> &BindGroup {
         if self.cached_overlay_handle != Some(handle) || self.cached_overlay_bind_group.is_none() {
@@ -312,6 +312,27 @@ impl PostPipeline {
         self.cached_overlay_bind_group
             .as_ref()
             .expect("overlay bind group present")
+    }
+
+    /// Drop the cached overlay bind group if it was built for `id` — the
+    /// texture-side twin of [`ForwardPipeline::invalidate_material_bind_group`].
+    /// Called from `render_frame`'s reclaim pass for every freed texture
+    /// id: a freed texture whose view is still held by this cached bind
+    /// group would stay pinned (and the `TextureRegistry` entry already
+    /// gone), so the cache must release it too. The next
+    /// [`Self::ensure_overlay_bind_group`] rebuilds against whatever the
+    /// overlay points at now.
+    ///
+    /// In practice the overlay cache is single-entry and re-keyed every
+    /// frame, so it would self-correct on the next overlay change anyway —
+    /// but wiring it into the freed-id path makes the "no cache outlives
+    /// the texture it samples" invariant hold by construction rather than
+    /// by that timing accident.
+    pub fn invalidate_overlay_bind_group(&mut self, id: RawTextureId) {
+        if self.cached_overlay_handle == Some(id) {
+            self.cached_overlay_handle = None;
+            self.cached_overlay_bind_group = None;
+        }
     }
 
     /// Lazily rebuild the bloom bind group when the bloom pyramid's mip-0

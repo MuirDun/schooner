@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use glam::{Quat, Vec2, Vec3};
 use schooner_engine::{
     AutoExposure, BlendMode, Bloom, ColorGrade, DirectionalLight, EntityId, Fog, Material,
-    MeshHandle, PointLight, Shadowcaster, SpotLight, Transform, Vignette, World,
+    MeshRegistry, PointLight, Shadowcaster, SpotLight, Transform, Vignette, World,
 };
 
 use crate::scene::{
@@ -116,7 +116,10 @@ fn spawn_box(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
             scale: size,
         },
     );
-    world.insert(e, MeshHandle::CUBE);
+    // Owning handle to the engine's built-in cube — a cheap clone of a
+    // permanent built-in (never evicted).
+    let cube = world.resource::<MeshRegistry>().unwrap().cube();
+    world.insert(e, cube);
     world.insert(e, SceneEntity);
 
     e
@@ -279,7 +282,8 @@ fn spawn_window(world: &mut World, center: Vec3, size: Vec3) {
             scale: size,
         },
     );
-    world.insert(e, MeshHandle::PLANE);
+    let plane = world.resource::<MeshRegistry>().unwrap().plane();
+    world.insert(e, plane);
     world.insert(e, SceneEntity);
 
     let glass_texture = world
@@ -347,8 +351,7 @@ fn spawn_lamp(world: &mut World, pos: Vec3, target: Vec3, lamp_range: f32) {
         world,
         pos + Vec3::new(0.0, -0.2, 0.0),
         target,
-        SpotLight::new(lamp_light, 80.0, lamp_range, 42.0, 60.0)
-            .with_god_ray_intensity(1.4),
+        SpotLight::new(lamp_light, 80.0, lamp_range, 42.0, 60.0).with_god_ray_intensity(1.4),
         true,
     );
 }
@@ -543,10 +546,13 @@ pub fn build(world: &mut World) {
     let platform_length = 2.0;
     spawn_chamber_wall(
         world,
-        Vec3::new(hole_cx, hole_cy - h_hs_y - h_t, h_p_z + platform_length / 2.0 - h_t),
+        Vec3::new(
+            hole_cx,
+            hole_cy - h_hs_y - h_t,
+            h_p_z + platform_length / 2.0 - h_t,
+        ),
         Vec3::new(hole_size_x, t, platform_length),
     ); // top tunnel wall
-
 
     // Tunnel
     let tunnel_length = 4.0;

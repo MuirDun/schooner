@@ -23,12 +23,17 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use wgpu::{Device, Queue};
 
 use crate::asset::{self, AssetResult};
-use crate::render::mesh::{MeshData, MeshGpu, MeshHandle, cube_mesh, plane_mesh};
-use crate::render::texture::{TextureData, TextureGpu, TextureHandle};
+use crate::render::mesh::{
+    MeshData, MeshFreeList, MeshGpu, MeshHandle, RawMeshId, cube_mesh, plane_mesh,
+};
+use crate::render::texture::{
+    RawTextureId, TextureData, TextureFreeList, TextureGpu, TextureHandle,
+};
 
 /// Outcome of one manual-reload pass over a registry's disk-sourced
 /// entries (the F5 path, Step 1.F.4).
@@ -77,17 +82,23 @@ struct MeshEntry {
     source: Option<PathBuf>,
 }
 
-/// Handle → GPU mesh.
+/// [`RawMeshId`] → GPU mesh.
 ///
-/// Insertions go through [`MeshRegistry::insert`],
-/// [`MeshRegistry::insert_new`], or [`MeshRegistry::load_gltf`]; the
-/// renderer's frame loop only ever calls [`MeshRegistry::get`], so the
-/// read path stays cheap (one hash lookup per draw call). Game 0 has
-/// no eviction — meshes live as long as the registry does.
+/// Insertions go through [`MeshRegistry::insert_new`] or
+/// [`MeshRegistry::load_gltf`] and hand back an owning [`MeshHandle`];
+/// the renderer's frame loop only ever calls [`MeshRegistry::get`] with
+/// a [`RawMeshId`], so the read path stays cheap (one hash lookup per
+/// draw call). Eviction is by ownership: when the last [`MeshHandle`] for
+/// an id drops, the id lands on `free`, and [`MeshRegistry::drain_dead`]
+/// removes the entry on the next frame. Built-in ids never drop.
 #[derive(Debug)]
 pub struct MeshRegistry {
-    meshes: HashMap<MeshHandle, MeshEntry>,
-    next_user_handle: u32,
+    meshes: HashMap<RawMeshId, MeshEntry>,
+    next_user_id: u32,
+    /// Ids whose last owning handle has dropped, drained each frame.
+    /// Cloned into every handle so `Drop` can enqueue without the
+    /// registry. See [`MeshFreeList`].
+    free: MeshFreeList,
 }
 
 impl MeshRegistry {
@@ -96,7 +107,8 @@ impl MeshRegistry {
     pub fn empty() -> Self {
         Self {
             meshes: HashMap::new(),
-            next_user_handle: MeshHandle::FIRST_USER.0,
+            next_user_id: RawMeshId::FIRST_USER.0,
+            free: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -108,14 +120,14 @@ impl MeshRegistry {
         let cube = MeshGpu::upload(device, "builtin-cube", &cube_mesh());
         let plane = MeshGpu::upload(device, "builtin-plane", &plane_mesh());
         registry.meshes.insert(
-            MeshHandle::CUBE,
+            RawMeshId::CUBE,
             MeshEntry {
                 gpu: cube,
                 source: None,
             },
         );
         registry.meshes.insert(
-            MeshHandle::PLANE,
+            RawMeshId::PLANE,
             MeshEntry {
                 gpu: plane,
                 source: None,
@@ -124,36 +136,37 @@ impl MeshRegistry {
         registry
     }
 
-    /// Insert a user-supplied mesh under the given handle.
-    /// Returns the prior `MeshGpu` if one existed at that handle —
-    /// callers can use the return value to detect accidental
-    /// overwrites of built-ins (which they should treat as a bug,
-    /// not a feature).
-    pub fn insert(&mut self, handle: MeshHandle, mesh: MeshGpu) -> Option<MeshGpu> {
-        self.meshes
-            .insert(
-                handle,
-                MeshEntry {
-                    gpu: mesh,
-                    source: None,
-                },
-            )
-            .map(|entry| entry.gpu)
+    /// An owning handle to the built-in unit cube. Cheap (one `Arc`
+    /// alloc); built-in ids are never evicted, so handing out fresh
+    /// handles for them is always safe.
+    pub fn cube(&self) -> MeshHandle {
+        self.make_handle(RawMeshId::CUBE)
     }
 
-    /// Allocate a fresh handle past the built-in reserved range
-    /// and insert `mesh` under it. The handle returned is
-    /// guaranteed unique within this registry's lifetime.
+    /// An owning handle to the built-in unit plane. See [`Self::cube`].
+    pub fn plane(&self) -> MeshHandle {
+        self.make_handle(RawMeshId::PLANE)
+    }
+
+    /// Mint an owning handle for `id`, wiring it to this registry's free
+    /// list so the handle's `Drop` enqueues the id for teardown.
+    fn make_handle(&self, id: RawMeshId) -> MeshHandle {
+        MeshHandle::new(id, Arc::clone(&self.free))
+    }
+
+    /// Allocate a fresh id past the built-in reserved range, insert
+    /// `mesh` under it, and return an owning [`MeshHandle`]. The id is
+    /// unique within this registry's lifetime (ids are never reused).
     pub fn insert_new(&mut self, mesh: MeshGpu) -> MeshHandle {
-        let handle = self.allocate_handle();
+        let id = self.allocate_id();
         self.meshes.insert(
-            handle,
+            id,
             MeshEntry {
                 gpu: mesh,
                 source: None,
             },
         );
-        handle
+        self.make_handle(id)
     }
 
     /// Upload already-parsed CPU mesh data under a fresh handle. Unlike
@@ -179,15 +192,15 @@ impl MeshRegistry {
         let data = asset::load_gltf_mesh(path)?;
         let label = format!("gltf:{}", path.display());
         let gpu = MeshGpu::upload(device, &label, &data);
-        let handle = self.allocate_handle();
+        let id = self.allocate_id();
         self.meshes.insert(
-            handle,
+            id,
             MeshEntry {
                 gpu,
                 source: Some(path.to_path_buf()),
             },
         );
-        Ok(handle)
+        Ok(self.make_handle(id))
     }
 
     /// Re-read every disk-sourced mesh from its tracked path and
@@ -201,8 +214,8 @@ impl MeshRegistry {
     /// glTF logs a `warn` and leaves that entry's previous `MeshGpu`
     /// intact, then the loop carries on to the next — one broken file
     /// never blocks the rest of the reload.
-    pub fn reload_all(&mut self, device: &Device) -> ReloadReport<MeshHandle> {
-        let targets: Vec<(MeshHandle, PathBuf)> = self
+    pub fn reload_all(&mut self, device: &Device) -> ReloadReport<RawMeshId> {
+        let targets: Vec<(RawMeshId, PathBuf)> = self
             .meshes
             .iter()
             .filter_map(|(handle, entry)| entry.source.as_ref().map(|p| (*handle, p.clone())))
@@ -233,20 +246,36 @@ impl MeshRegistry {
         report
     }
 
-    /// Remove the handle from the registry
+    /// Tear down every mesh whose last owning [`MeshHandle`] has dropped
+    /// since the previous call: remove the entry, which drops its
+    /// [`MeshGpu`] (wgpu frees the buffers once in-flight frames release
+    /// them). Ids are monotonic and never reused, so a queued id is
+    /// always a genuine last-drop. Called once per frame from
+    /// `render_frame`.
     ///
-    /// An accociated entry would be removed automatically
-    /// once last reference removed
-    pub fn unload(&mut self, handle: MeshHandle) {
-        self.meshes.remove(&handle);
+    /// Built-in ids are never queued (their handle `Drop` skips them),
+    /// but the `>= FIRST_USER` guard is kept as a backstop. Meshes carry
+    /// no bind-group cache, so removal is the whole teardown — unlike
+    /// [`TextureRegistry::drain_dead`], which also invalidates the
+    /// material cache.
+    pub fn drain_dead(&mut self) {
+        let dead = match self.free.lock() {
+            Ok(mut queue) => std::mem::take(&mut *queue),
+            Err(_) => return,
+        };
+        for id in dead {
+            if id.0 >= RawMeshId::FIRST_USER.0 {
+                self.meshes.remove(&id);
+            }
+        }
     }
 
-    pub fn get(&self, handle: MeshHandle) -> Option<&MeshGpu> {
-        self.meshes.get(&handle).map(|entry| &entry.gpu)
+    pub fn get(&self, id: RawMeshId) -> Option<&MeshGpu> {
+        self.meshes.get(&id).map(|entry| &entry.gpu)
     }
 
-    pub fn contains(&self, handle: MeshHandle) -> bool {
-        self.meshes.contains_key(&handle)
+    pub fn contains(&self, id: RawMeshId) -> bool {
+        self.meshes.contains_key(&id)
     }
 
     pub fn len(&self) -> usize {
@@ -260,19 +289,19 @@ impl MeshRegistry {
     /// Source path for `handle` if it was loaded from disk. Built-ins
     /// return `None`. The F5 manual-reload system (Step 1.F.4) uses
     /// this to discover which entries should be re-read.
-    pub fn source(&self, handle: MeshHandle) -> Option<&Path> {
+    pub fn source(&self, id: RawMeshId) -> Option<&Path> {
         self.meshes
-            .get(&handle)
+            .get(&id)
             .and_then(|entry| entry.source.as_deref())
     }
 
-    fn allocate_handle(&mut self) -> MeshHandle {
-        let handle = MeshHandle(self.next_user_handle);
-        self.next_user_handle = self
-            .next_user_handle
+    fn allocate_id(&mut self) -> RawMeshId {
+        let id = RawMeshId(self.next_user_id);
+        self.next_user_id = self
+            .next_user_id
             .checked_add(1)
-            .expect("MeshHandle u32 space exhausted");
-        handle
+            .expect("RawMeshId u32 space exhausted");
+        id
     }
 }
 
@@ -289,8 +318,11 @@ struct TextureEntry {
 /// their source path for F5 manual reload.
 #[derive(Debug)]
 pub struct TextureRegistry {
-    textures: HashMap<TextureHandle, TextureEntry>,
-    next_user_handle: u32,
+    textures: HashMap<RawTextureId, TextureEntry>,
+    next_user_id: u32,
+    /// Ids whose last owning handle has dropped, drained each frame. See
+    /// [`TextureFreeList`] and [`TextureRegistry::drain_dead`].
+    free: TextureFreeList,
 }
 
 impl TextureRegistry {
@@ -299,7 +331,8 @@ impl TextureRegistry {
     pub fn empty() -> Self {
         Self {
             textures: HashMap::new(),
-            next_user_handle: TextureHandle::FIRST_USER.0,
+            next_user_id: RawTextureId::FIRST_USER.0,
+            free: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -311,7 +344,7 @@ impl TextureRegistry {
 
         let white = TextureGpu::upload_rgba8(device, queue, "builtin-white", &TextureData::white_1x1());
         registry.textures.insert(
-            TextureHandle::WHITE,
+            RawTextureId::WHITE,
             TextureEntry {
                 gpu: white,
                 source: None,
@@ -327,7 +360,7 @@ impl TextureRegistry {
             &TextureData::flat_normal_1x1(),
         );
         registry.textures.insert(
-            TextureHandle::FLAT_NORMAL,
+            RawTextureId::FLAT_NORMAL,
             TextureEntry {
                 gpu: flat_normal,
                 source: None,
@@ -335,6 +368,12 @@ impl TextureRegistry {
         );
 
         registry
+    }
+
+    /// Mint an owning handle for `id`, wiring it to this registry's free
+    /// list so the handle's `Drop` enqueues the id for teardown.
+    fn make_handle(&self, id: RawTextureId) -> TextureHandle {
+        TextureHandle::new(id, Arc::clone(&self.free))
     }
 
     /// Decode a PNG from disk, upload it, and register under a fresh
@@ -350,15 +389,15 @@ impl TextureRegistry {
         let data = asset::load_png_pixels(path)?;
         let label = format!("png:{}", path.display());
         let gpu = TextureGpu::upload_rgba8(device, queue, &label, &data);
-        let handle = self.allocate_handle();
+        let id = self.allocate_id();
         self.textures.insert(
-            handle,
+            id,
             TextureEntry {
                 gpu,
                 source: Some(path.to_path_buf()),
             },
         );
-        Ok(handle)
+        Ok(self.make_handle(id))
     }
 
     /// Decode a PNG from disk and upload it through the *linear*
@@ -419,15 +458,15 @@ impl TextureRegistry {
     }
 
     fn insert_gpu(&mut self, gpu: TextureGpu) -> TextureHandle {
-        let handle = self.allocate_handle();
+        let id = self.allocate_id();
         self.textures.insert(
-            handle,
+            id,
             TextureEntry {
                 gpu,
                 source: None,
             },
         );
-        handle
+        self.make_handle(id)
     }
 
     /// Re-read every disk-sourced texture from its tracked path and
@@ -442,8 +481,8 @@ impl TextureRegistry {
     /// frame keeps sampling the pre-reload texture. A failed decode
     /// leaves the previous `TextureGpu` (and its still-valid cached
     /// bind group) untouched.
-    pub fn reload_all(&mut self, device: &Device, queue: &Queue) -> ReloadReport<TextureHandle> {
-        let targets: Vec<(TextureHandle, PathBuf)> = self
+    pub fn reload_all(&mut self, device: &Device, queue: &Queue) -> ReloadReport<RawTextureId> {
+        let targets: Vec<(RawTextureId, PathBuf)> = self
             .textures
             .iter()
             .filter_map(|(handle, entry)| entry.source.as_ref().map(|p| (*handle, p.clone())))
@@ -472,20 +511,39 @@ impl TextureRegistry {
         report
     }
 
-    /// Remove the handle from the registry
+    /// Tear down every texture whose last owning [`TextureHandle`] has
+    /// dropped since the previous call, and **return the freed ids** so
+    /// the caller can invalidate any forward-pipeline material bind group
+    /// that cached them. That second step is essential: a cached bind
+    /// group holds its own clone of the texture's view, so dropping the
+    /// registry entry alone would leave the GPU texture pinned and free
+    /// nothing. Removal here drops the [`TextureGpu`]; the matching
+    /// `invalidate_material_bind_group` call drops the last view clone,
+    /// and wgpu frees the allocation once in-flight frames release it.
     ///
-    /// An accociated entry would be removed automatically
-    /// once last reference removed
-    pub fn unload(&mut self, handle: TextureHandle) {
-        self.textures.remove(&handle);
+    /// Built-in ids are never queued; the `>= FIRST_USER` guard is a
+    /// backstop. Called once per frame from `render_frame`.
+    pub fn drain_dead(&mut self) -> Vec<RawTextureId> {
+        let dead = match self.free.lock() {
+            Ok(mut queue) => std::mem::take(&mut *queue),
+            Err(_) => return Vec::new(),
+        };
+        let mut freed = Vec::new();
+        for id in dead {
+            if id.0 >= RawTextureId::FIRST_USER.0 {
+                self.textures.remove(&id);
+                freed.push(id);
+            }
+        }
+        freed
     }
 
-    pub fn get(&self, handle: TextureHandle) -> Option<&TextureGpu> {
-        self.textures.get(&handle).map(|entry| &entry.gpu)
+    pub fn get(&self, id: RawTextureId) -> Option<&TextureGpu> {
+        self.textures.get(&id).map(|entry| &entry.gpu)
     }
 
-    pub fn contains(&self, handle: TextureHandle) -> bool {
-        self.textures.contains_key(&handle)
+    pub fn contains(&self, id: RawTextureId) -> bool {
+        self.textures.contains_key(&id)
     }
 
     pub fn len(&self) -> usize {
@@ -498,19 +556,19 @@ impl TextureRegistry {
 
     /// Source path for `handle` if it was loaded from disk. Built-ins
     /// return `None`.
-    pub fn source(&self, handle: TextureHandle) -> Option<&Path> {
+    pub fn source(&self, id: RawTextureId) -> Option<&Path> {
         self.textures
-            .get(&handle)
+            .get(&id)
             .and_then(|entry| entry.source.as_deref())
     }
 
-    fn allocate_handle(&mut self) -> TextureHandle {
-        let handle = TextureHandle(self.next_user_handle);
-        self.next_user_handle = self
-            .next_user_handle
+    fn allocate_id(&mut self) -> RawTextureId {
+        let id = RawTextureId(self.next_user_id);
+        self.next_user_id = self
+            .next_user_id
             .checked_add(1)
-            .expect("TextureHandle u32 space exhausted");
-        handle
+            .expect("RawTextureId u32 space exhausted");
+        id
     }
 }
 
@@ -522,48 +580,48 @@ mod tests {
     fn empty_mesh_registry_starts_blank() {
         let r = MeshRegistry::empty();
         assert!(r.is_empty());
-        assert!(r.get(MeshHandle::CUBE).is_none());
-        assert!(r.get(MeshHandle::PLANE).is_none());
+        assert!(r.get(RawMeshId::CUBE).is_none());
+        assert!(r.get(RawMeshId::PLANE).is_none());
     }
 
     #[test]
-    fn mesh_insert_new_skips_builtin_range() {
+    fn mesh_allocator_skips_builtin_range() {
         let mut r = MeshRegistry::empty();
-        assert_eq!(r.next_user_handle, MeshHandle::FIRST_USER.0);
-        let h0 = r.allocate_handle();
-        let h1 = r.allocate_handle();
-        assert_eq!(h0, MeshHandle::FIRST_USER);
-        assert_eq!(h1.0, MeshHandle::FIRST_USER.0 + 1);
+        assert_eq!(r.next_user_id, RawMeshId::FIRST_USER.0);
+        let h0 = r.allocate_id();
+        let h1 = r.allocate_id();
+        assert_eq!(h0, RawMeshId::FIRST_USER);
+        assert_eq!(h1.0, RawMeshId::FIRST_USER.0 + 1);
     }
 
     #[test]
-    fn mesh_source_is_none_for_unknown_handle() {
+    fn mesh_source_is_none_for_unknown_id() {
         let r = MeshRegistry::empty();
-        assert!(r.source(MeshHandle::FIRST_USER).is_none());
+        assert!(r.source(RawMeshId::FIRST_USER).is_none());
     }
 
     #[test]
     fn empty_texture_registry_starts_blank() {
         let r = TextureRegistry::empty();
         assert!(r.is_empty());
-        assert!(r.get(TextureHandle::WHITE).is_none());
+        assert!(r.get(RawTextureId::WHITE).is_none());
     }
 
     #[test]
     fn texture_allocator_skips_builtin_slot() {
         let mut r = TextureRegistry::empty();
-        assert_eq!(r.next_user_handle, TextureHandle::FIRST_USER.0);
-        assert_eq!(TextureHandle::FIRST_USER.0, 2); // WHITE + FLAT_NORMAL reserved
-        let h0 = r.allocate_handle();
-        let h1 = r.allocate_handle();
-        assert_eq!(h0, TextureHandle::FIRST_USER);
-        assert_eq!(h1.0, TextureHandle::FIRST_USER.0 + 1);
+        assert_eq!(r.next_user_id, RawTextureId::FIRST_USER.0);
+        assert_eq!(RawTextureId::FIRST_USER.0, 2); // WHITE + FLAT_NORMAL reserved
+        let h0 = r.allocate_id();
+        let h1 = r.allocate_id();
+        assert_eq!(h0, RawTextureId::FIRST_USER);
+        assert_eq!(h1.0, RawTextureId::FIRST_USER.0 + 1);
     }
 
     #[test]
-    fn texture_source_is_none_for_unknown_handle() {
+    fn texture_source_is_none_for_unknown_id() {
         let r = TextureRegistry::empty();
-        assert!(r.source(TextureHandle::FIRST_USER).is_none());
+        assert!(r.source(RawTextureId::FIRST_USER).is_none());
     }
 
     // `reload_all` itself is GPU-bound (it uploads through a `Device`)
@@ -574,7 +632,7 @@ mod tests {
     // reload pass start out already reporting a phantom failure.
     #[test]
     fn reload_report_default_is_empty() {
-        let report = ReloadReport::<MeshHandle>::default();
+        let report = ReloadReport::<RawMeshId>::default();
         assert!(report.reloaded.is_empty());
         assert_eq!(report.failed, 0);
     }
