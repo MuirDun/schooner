@@ -42,6 +42,10 @@ struct KeyboardState {
 struct MouseState {
     position: Vec2,
     delta: Vec2,
+    /// Per-frame vertical wheel accumulator in line/notch units.
+    /// Accumulates within a frame and resets at end-of-frame, exactly
+    /// like `delta`.
+    wheel: f32,
     down: HashSet<MouseButton>,
     just_pressed: HashSet<MouseButton>,
     just_released: HashSet<MouseButton>,
@@ -142,6 +146,20 @@ impl Input {
         self.mouse.delta
     }
 
+    /// Accumulated vertical wheel movement since the last
+    /// [`end_frame`](Self::end_frame), in line/notch units — a notched
+    /// mouse reports ~±1 per detent, and trackpad pixel-scroll is
+    /// normalized onto the same scale at the winit boundary. Positive is
+    /// scroll-up / away from the user. Reset to zero on rollover.
+    ///
+    /// Frame-scoped like [`mouse_delta`](Self::mouse_delta): read it in
+    /// `Update`, never in `FixedUpdate` — the per-frame clear means a
+    /// fixed-step read double-fires or misses (see the fixed-step
+    /// discipline in `architecture/input.md`).
+    pub fn mouse_wheel(&self) -> f32 {
+        self.mouse.wheel
+    }
+
     // -- cursor read -----------------------------------------------
 
     pub fn cursor_grabbed(&self) -> bool {
@@ -202,18 +220,29 @@ impl Input {
         self.mouse.delta += Vec2::new(dx, dy);
     }
 
+    /// Add to the per-frame wheel accumulator. Multiple wheel events in
+    /// one frame sum, mirroring [`record_mouse_motion`](Self::record_mouse_motion).
+    /// The winit `LineDelta` / `PixelDelta` distinction is normalized to
+    /// line units at the App boundary before this is called, so this
+    /// setter sees one unit.
+    pub(crate) fn record_mouse_wheel(&mut self, lines: f32) {
+        self.mouse.wheel += lines;
+    }
+
     /// End-of-frame rollover.
     ///
     /// Clears one-shot edges (`just_pressed`, `just_released` for
-    /// both keys and mouse buttons) and resets `mouse_delta` to
-    /// zero. Persistent state — what's currently `down`, last
-    /// cursor `position`, cursor grab/visibility — is left alone.
+    /// both keys and mouse buttons) and resets `mouse_delta` and
+    /// `mouse_wheel` to zero. Persistent state — what's currently
+    /// `down`, last cursor `position`, cursor grab/visibility — is left
+    /// alone.
     pub(crate) fn end_frame(&mut self) {
         self.keyboard.just_pressed.clear();
         self.keyboard.just_released.clear();
         self.mouse.just_pressed.clear();
         self.mouse.just_released.clear();
         self.mouse.delta = Vec2::ZERO;
+        self.mouse.wheel = 0.0;
     }
 }
 
@@ -356,6 +385,31 @@ mod tests {
         input.end_frame();
         assert_eq!(input.mouse_delta(), Vec2::ZERO);
         assert_eq!(input.mouse_position(), Vec2::new(100.0, 50.0));
+    }
+
+    // -- mouse wheel ------------------------------------------------
+
+    #[test]
+    fn fresh_input_has_zero_wheel() {
+        let input = Input::new();
+        assert_eq!(input.mouse_wheel(), 0.0);
+    }
+
+    #[test]
+    fn mouse_wheel_accumulates_within_frame() {
+        let mut input = Input::new();
+        input.record_mouse_wheel(1.0);
+        input.record_mouse_wheel(-0.5);
+        input.record_mouse_wheel(2.0);
+        assert_eq!(input.mouse_wheel(), 2.5);
+    }
+
+    #[test]
+    fn end_frame_clears_wheel() {
+        let mut input = Input::new();
+        input.record_mouse_wheel(3.0);
+        input.end_frame();
+        assert_eq!(input.mouse_wheel(), 0.0);
     }
 
     #[test]

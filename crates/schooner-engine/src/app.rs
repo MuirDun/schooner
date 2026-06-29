@@ -5,11 +5,12 @@ use std::time::Instant;
 use log::{info, warn};
 use thiserror::Error;
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use crate::action::{Actions, Bindings, resolve_actions};
 use crate::debug::{
     DebugState, ProfilerView, debug_input_system, f5_reload_system,
 };
@@ -22,6 +23,15 @@ use crate::render::{
 };
 use crate::time::Time;
 use crate::window::WindowConfig;
+
+/// Trackpad pixel-scroll normalization: how many physical pixels of
+/// `MouseScrollDelta::PixelDelta` scroll equal one notch of
+/// `LineDelta`. A notched wheel reports ~±1 line per detent; a trackpad
+/// reports raw pixels (tens per gesture). Dividing by this brings the
+/// trackpad onto the wheel's scale so wheel-driven gameplay (e.g.
+/// telekinesis distance) feels the same on both devices. Empirical, not
+/// load-bearing — tuned for feel, not correctness.
+const PIXELS_PER_LINE: f32 = 16.0;
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -91,7 +101,19 @@ impl App {
         // somewhere to land. The sink survives until ProfilerView
         // is dropped (which happens when the World drops).
         world.insert_resource(ProfilerView::new());
+        // Layer 2 input: the binding table (config) and the resolved
+        // action state. Both engine-intrinsic like Input, so a game can
+        // declare bindings and read actions without a setup step. Started
+        // empty; the game binds its actions via the builder.
+        world.insert_resource(Bindings::default());
+        world.insert_resource(Actions::default());
         let mut schedule = Schedule::new();
+        // Resolve the action map first each Update so every gameplay
+        // system this frame reads fresh action state. It must stay on
+        // Update — edges and the wheel are frame-scoped, and a
+        // FixedUpdate resolve would double-fire or miss them (see the
+        // fixed-step discipline in architecture/input.md).
+        schedule.add_system(&mut world, Stage::Update, resolve_actions);
         // F1 toggle runs in Update so the visibility flip is
         // observable to render_frame the same frame.
         schedule.add_system(&mut world, Stage::Update, debug_input_system);
@@ -525,6 +547,24 @@ impl ApplicationHandler for App {
                 }
                 if let Some(input) = self.world.resource_mut::<Input>() {
                     input.record_mouse_position(position.x as f32, position.y as f32);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if egui_consumed {
+                    return;
+                }
+                // Normalize winit's two report shapes onto one unit
+                // (lines/notches) so the Input resource — and every
+                // wheel consumer above it — sees a single scale. A
+                // notched mouse sends LineDelta; a trackpad / high-res
+                // device sends PixelDelta. We only track the vertical
+                // axis; no Kinesis verb reads horizontal scroll.
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / PIXELS_PER_LINE,
+                };
+                if let Some(input) = self.world.resource_mut::<Input>() {
+                    input.record_mouse_wheel(lines);
                 }
             }
             _ => {}

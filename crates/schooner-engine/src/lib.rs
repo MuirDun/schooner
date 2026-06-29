@@ -1,3 +1,4 @@
+pub mod action;
 pub mod app;
 pub mod asset;
 pub mod camera;
@@ -9,6 +10,7 @@ pub mod input;
 pub mod logging;
 pub mod material;
 pub mod render;
+pub mod symbol;
 pub mod time;
 pub mod transform;
 pub mod window;
@@ -26,7 +28,9 @@ pub use debug::{
 pub use diagnostics::{FpsLogger, log_fps_system, log_input_system};
 pub use ecs::{EntityId, Schedule, Stage, World};
 pub use error::{EngineError, EngineResult};
+pub use action::{Actions, Bindings, Trigger, WheelDir};
 pub use input::{Input, KeyCode, MouseButton};
+pub use symbol::{Symbol, sym, symbol_name};
 pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
 pub use render::{
