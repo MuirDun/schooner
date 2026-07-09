@@ -1,235 +1,136 @@
-# Current Game Development — Working Prompt
+# Current Game Development Prompt
 
-Instructions for any agent session that is implementing the **active game** in the Schooner engine.
+Use this prompt for implementation sessions on the active game in Schooner. Durable project rules live in `AGENTS.md`; this file defines the development-session rhythm.
 
----
+## Goal
 
-## Project context
+Implement the active game's current Part, Phase, and Step in small, reviewable increments. The work should advance the game while preserving the engine direction described by the roadmap, architecture docs, and current code.
 
-You are helping build **Schooner**, a custom game engine written from scratch in Rust, targeting an open-world RPG with emergent living-world simulation. The roadmap lives in `plans/plan.md` (Games 0–5; Game 2 is split into 2A and 2B). The engine's vision lives in `plans/architecture/*.md`. You are working on **the current game**, whichever one that is — the prompt is intentionally game-agnostic so it survives the progression.
+## Startup
 
-### Current state of the project
+At the start of a development session:
 
-- **Game 0 (The Void) is complete.** Engine scaffold lives: sparse-set ECS with per-component change-detection ticks (Tier 1 reactive substrate), wgpu forward renderer with Blinn–Phong + one directional light, first-person camera, winit window + input, egui debug overlay, puffin profiler with custom in-overlay scope viewer, CI matrix on macOS / Linux / Windows, `bench-ecs` benchmark crate.
-- **The active game lives in `crates/game/`.** Run with `cargo run -p game`. The crate's name stays `game` regardless of which game is being developed; its contents change.
-- **Previously shipped / finished games live in `games/<n>-<name>/`.** Excluded from the workspace `members` list. Each has a README pinning the engine commit it last built against; reviving an old game means checking out that commit.
-- **Architecture vision** lives in `plans/architecture/*.md` — read these first: `overview.md` (four pillars + five layers), then the docs relevant to whatever you're building (`ecs.md`, `rendering.md`, `glyph.md`, `chronicle.md`, `ai.md`, `reactivity.md`, `world-state.md`, `language-binding.md`).
-- **Project progression** in `plans/plan.md`. Each game has its own general bullet list of subsystems to build, with cross-references to architecture docs. These bullet list has lesser priorities over the real game plan in the `game` crate.
-- **Game progression** in `crates/game/plan.md`. Each game has its own bullet list of subsystems to build, with cross-references to architecture docs.
+1. Read `AGENTS.md`.
+2. Read `crates/game/plan.md`.
+3. Read the current Part doc under `crates/game/implementation/` for the requested Phase.
+4. Read `crates/game/development.md` if it exists.
+5. Read only the architecture and design docs directly relevant to the requested Phase.
+6. Inspect the relevant engine and game source files.
 
-**Authoritative sources — read at the start of every session before touching code:**
+Do not load the entire project by default. If the requested Phase is ambiguous, first identify the likely Part doc and ask for confirmation.
 
-- `plans/plan.md` — engine roadmap and resolved/open design decisions; the current-game section enumerates which engine subsystems land in the active game.
-- The relevant `plans/architecture/*.md` docs for the systems the current chunk touches (engine vision, read-only).
-- The per-game production plan: `crates/game/plan.md` (TOC of Parts) plus the Part docs under `crates/game/implementation/partN-<name>.md` (Phases and Steps within each Part).
-- The per-game design spine under `crates/game/design/*.md` (narrative, world, systems, acts — read-only for the implementer; the design surface is the architect/designer's, like the architecture docs).
-- The per-game development posture at `crates/game/development.md` if it exists — game-specific implementation conventions, build targets, or rules that don't generalize to other games.
-- The engine code in `crates/schooner-engine/` — plans describe intent; code describes reality.
+After startup, report:
 
-If anything in the plans is unclear or looks inconsistent with what the code needs, **stop and ask**. Do not silently reinterpret the plan.
+- current game, Part, Phase, and last completed Step
+- the Part milestone question, if the Part doc defines one
+- the next Step or the smallest sensible implementation slice
+- files read for context
+- any discrepancy between plan, design, architecture, and code
+- whether enough context has been loaded to discuss implementation
 
-Persistent memory at `~/.claude/projects/-Users-m1akovlev-Develop-schooner/memory/` carries developer profile, project vision, four-pillar framing, scripting-language philosophy, and prior phase completions. Loaded automatically.
+Then stop and wait for confirmation before planning or editing, unless the user's prompt explicitly grants permission to continue.
 
----
+## Before Implementation
 
-## About the developer
+Before editing code:
 
-Experienced Rust developer (~10 years), solo, building this project as a learning exercise in game engine development.
+1. Explain the proposed implementation approach.
+2. Name the files or modules likely to change.
+3. Call out any API, data model, scheduling, rendering, serialization, or dependency decision that is hard to reverse.
+4. Recommend a path when there are multiple reasonable options.
+5. State the intended verification command or manual playtest.
 
-- **Rust is a native tongue** — do not over-explain lifetimes, borrowing, `Result`/`Option`, idiomatic patterns.
-- **Game-engine internals are the growth area** — renderer internals, ECS design tradeoffs, GPU pipelines, scheduler design, scripting integration, AI architecture, world simulation. Explain in real depth.
+Wait for approval if the user asked for a checkpointed session, if the plan is unclear, or if the approach changes project/design/architecture intent.
 
-When you make a non-obvious choice, explain the **game-dev / architectural reasoning**, not the Rust reasoning.
+## Work Size
 
----
+Work one Step at a time. If a documented Step is still too large, split it into smaller slices such as:
 
-## How we work together
+- one module
+- one public type or resource
+- one system and its tests
+- one renderer pass
+- one debug overlay/control
+- one focused integration point
 
-### Step by step, with check-ins
+Do not batch an entire Phase without check-ins.
 
-Each game's production plan is staged as **Parts** (large milestones, each answering one milestone question) → **Phases** (coherent technical chunks within a Part) → **Steps** (the unit of work a single check-in covers — one module, one type, or one test batch). We work **one Part at a time**, **one Phase at a time within a Part**, **one Step at a time within a Phase**. A Step is small enough that a broken result is quickly diagnosable.
+## Check-Ins
 
-At every check-in:
+At each implementation check-in:
 
-1. **Say what you're about to do and why this chunk before any other.**
-2. Do the work via `Edit` / `Write`.
-3. **Say exactly what the developer needs to run to verify** (see tool constraints below) — e.g., `cargo check -p schooner-engine`, `cargo test -p schooner-engine ecs::`, `cargo run -p game`.
-4. **Wait for the developer to report back** with output, errors, or "looks good."
-5. If there's an error: diagnose from the output, don't guess-and-retry.
+1. Say what slice is being changed and why it comes next.
+2. Make the code/doc changes.
+3. Ask the user to run the verification task, following `AGENTS.md` and the session prompt.
+4. Summarize what changed, what was learned, and what remains.
+5. If verification fails, diagnose from actual output before changing more code.
 
-**Never batch an entire phase without check-ins.** The developer wants to track progress, catch misunderstandings early, and learn from the reasoning at each step.
+When a slice creates something visible or interactive, propose a short experiment or playtest before continuing. Skip this for pure plumbing, refactors, and invisible infrastructure.
 
-### Before starting a Part
+## Phase Boundaries
 
-1. Read the Part doc end-to-end. Confirm the prior Part's Done Bar is genuinely met, including any subjective items.
-2. Surface the Part's milestone question — the one decision-changing question the Part exists to answer. Keep it visible throughout the Part; the work serves it, not the box-checking.
-3. If the Part doc is at Phase-level only (no Step breakdown yet), draft the Step-level plan for the first Phase and confirm before starting.
+When a Phase is complete:
 
-### Before starting a Phase
+1. Confirm every Step and Done criterion for that Phase.
+2. Update Step or Phase checkboxes in the relevant Part doc.
+3. Add a short implementation note only if it records completed reality useful to later work.
+4. Summarize what was built and what affects later Phases or Parts.
+5. Ask whether to close the Phase and move to the next one.
 
-1. Check out the progress and what has already been done.
-2. Explain and discuss the idea of how it would be implemented.
-3. Check whether the plan is valid or might be adjusted before starting implementation.
+Updating progress markers is allowed. Rewriting Phase scope, milestone questions, design facts, or architecture direction is not allowed without a prior planning conversation and explicit approval.
 
-### At Phase boundaries
+## Part Boundaries
 
-When a Phase completes:
-1. Check the Step boxes in the relevant Part doc (`[ ]` → `[x]`).
-2. Summarize in one paragraph what was built and what was learned that affects later Phases or later Parts.
-3. Make sure everything about the current Phase is done and then ask about closing this Phase and moving on to the next within the same Part.
+When a Part is complete:
 
-### At Part boundaries
+1. Verify the Part Done Bar, including subjective criteria.
+2. Run or request the Part's regression surface.
+3. Confirm whether the Part's milestone question now has a confident answer.
+4. Update Part status/checklists in `crates/game/plan.md` and the Part doc.
+5. Summarize what was built and what affects later Parts or games.
+6. If the work changes the engine's understood current state, propose an architecture or overview update as a separate planning step.
+7. Ask whether to close the Part and move on.
 
-When a Part completes:
-1. Verify the Done Bar criteria — including any subjective items ("does it feel right?"). A "no" on a subjective item is a stop, not a continue; the work serves the milestone question.
-2. Run a regression pass against the prior Parts' test surfaces (the per-game plan establishes what those are — a playground binary, integration test set, or equivalent).
-3. Confirm the Part's milestone question has a confident "yes" answer. If not, identify what needs rework before starting the next Part.
-4. Update the Part's status in `crates/game/plan.md` and check the Done Bar boxes in the Part doc. Summarize in one paragraph what was built and what was learned that affects later Parts or later games.
-5. Propose making an overview, or updating the current one, of what was done in `plans/architecture/` (idea-level: what it is and how it should work, no struct shapes or signatures that rot). It differs from `plans/architecture` in that the overview contains the current state of the system and expresses it in detail.
-6. Ask about closing this Part and moving on.
+Do not edit `plans/architecture/`, `plans/overview/`, or design canon as part of closing a Part unless the user has explicitly approved that documentation change after discussion.
 
-### At game boundaries
-
-When a game completes:
-1. Update `plans/plan.md` to mark the game *(complete)* and check off its subsystem bullets.
-2. **Move the game's source out of the workspace**: `crates/game/` → `games/<n>-<name>/`, and remove the entry from the workspace `members` list. The plan, design, implementation, and development docs under `crates/game/` are carried along with the move — frozen alongside the code they describe.
-3. Write a `games/<n>-<name>/README.md` noting the engine commit + rustc version it last built against, plus a one-paragraph summary of what was learned.
-4. Tag the engine commit (e.g. `engine-game1-shipped`) so the snapshot is immutable.
-5. Create a fresh `crates/game/` for the next game; update its `Cargo.toml` package name back to `game`. The new game's per-game plan, design, implementation, and (optionally) development docs are written into the new `crates/game/`.
-6. Propose starting the next game's planning, confirm, and write the new per-game plan.
-
-### Ask questions when the plan leaves room
+## Decision Policy
 
 Ask when:
-- There are 2+ reasonable options with meaningfully different tradeoffs and the plan doesn't specify.
-- A decision is hard to reverse (file format, public API shape, serialization format, a trait signature that callers will couple to).
-- The plan conflicts with what the code actually needs — surface the conflict, don't silently deviate.
-- You're about to add a dependency not previously approved.
 
-Don't ask about:
-- Idiomatic Rust phrasing or internal implementation details hidden behind a settled public API.
-- Doc-comment wording, variable names, trivial formatting.
+- two or more reasonable options have different tradeoffs
+- the decision is hard to reverse
+- code reality conflicts with the plan
+- a dependency is needed
+- the requested change would alter design, architecture, roadmap, or phase scope
 
-**Always state your recommendation and reasoning first, then ask.** Use this shape:
+Do not ask about:
 
-> I see two reasonable options:
->
-> **(a)** *short description* — pros: …, cons: …
-> **(b)** *short description* — pros: …, cons: …
->
-> I recommend **(a)** because *reason rooted in the architectural context*. Want (a), or would you rather go with (b)?
+- routine Rust idiom
+- local variable names
+- doc-comment wording
+- trivial formatting
+- private implementation details behind an agreed public shape
 
-Never dump a bare question on the developer. Your analysis is the value.
+When asking, state the options, recommendation, and reasoning first.
 
-### Explain the WHY (teaching stance)
+## Explanation Policy
 
-When a choice isn't obvious to someone new to game engines, explain it in one or two sentences. Good framings:
+Explain game-engine reasoning, not basic Rust mechanics. Go deeper for:
 
-- **Why this data lives here**: "`RenderContext` is a `Resource` rather than a field on `App` because systems that need wgpu access declare `Res<RenderContext>` as a parameter."
-- **Why this order**: "We build the ECS before the renderer because the renderer queries the ECS for `(Transform, MeshHandle)` pairs."
-- **Why this tradeoff**: "Sparse-set join iteration is slower than archetype iteration's straight stride. At Game 0 scale this doesn't matter; at Game 4 scale we'll revisit with dense-view caches."
-- **Why this serves a pillar**: "Hot reload here serves pillar 3 (developer ergonomics is a feature) — the alternative is a recompile loop that taxes every script change."
+- rendering and GPU pipeline choices
+- ECS data layout and scheduling tradeoffs
+- simulation, world state, AI, and reactivity architecture
+- scripting and language-binding boundaries
+- input, physics, camera, and gameplay feel
 
-Avoid explanations that a 10-year Rust dev doesn't need. Calibrate to "new to game dev, fluent in Rust."
+Use industry terms when useful so the developer can research further. Mention alternatives when they clarify why the chosen path fits the current game.
 
-**Graphics programming is the growth area — go deeper there.** The developer's GPU/renderer knowledge is theoretical; they are learning hands-on through this engine. When the topic is graphics (a binding-array vs. texture-array trade-off, what a comparison sampler does, why std140 padding matters, what PCF actually averages over, how a stencil-shadow pass differs from a shadow-map pass), treat it as a chance to teach the underlying concept, not just justify the path we picked. Specifically:
+## Things To Resist
 
-- **Name techniques by their industry terms** so the developer can google further. "Slope-scaled depth bias," "windowed inverse-square attenuation," "WGSL std140 layout rules," "comparison sampler" — these are searchable phrases that open doors to papers, talks, and other codebases.
-- **Sketch the alternatives we are not picking** when they teach something useful. Even a paragraph on what cube-map omnidirectional shadows would look like — when we're not building them — gives the developer a map of the space.
-- **Point at canonical references** when you know them (Real-Time Rendering, learnopengl.com, the WebGPU spec, UE/Frostbite/Crytek talks, NVIDIA GPU Gems chapters). One named source beats a hand-wavy summary.
-- **Show the math when it pays rent.** A short derivation of a perspective frustum or the std140 alignment for a struct teaches more than "trust me, this layout works."
-
-A paragraph of context that lets the developer follow a citation chain is worth more than a sentence of justification.
-
-### Pause to play with new capabilities
-
-When a Step produces something the developer can *feel* — a new verb, a new visual, a new system the player or developer can poke at — propose a small experiment before moving to the next Step. Not a refactor, not a polish pass: a throwaway tweak to the scene or the new system that exercises the capability in a way the next Step alone wouldn't.
-
-Examples:
-- "We just got telekinesis working — want to drop a stack of crates in the playground and see how the impulse feels before we add the next verb?"
-- "Shadows work. The smoke scene has one fixed spot; want to make it orbit before we move to post-process so we can see shadows from multiple angles in one run?"
-- "The fog density resource exists. Want to bind it to a debug slider before we touch atmospherics, so we can dial it live during the next phase?"
-
-The point is pillar 4 — *organism, not castle*. Each capability layered on the engine should be **felt** before the next one stacks on top. Experiments are short (minutes, not hours), reversible (no API churn, no plan revision), and almost always inform the next Step in some small way — sometimes by revealing the next Step's assumption is wrong while it's still cheap to change.
-
-When to **skip** the proposal: pure plumbing changes, refactors, infrastructure-only Steps, or anything the developer cannot interact with on screen or via a key press. Save the prompt for moments where there is a new toy worth playing with.
-
-When to **always** raise it: anything visually new, anything gameplay-new, anything the developer would otherwise only see through a test or a log line.
-
----
-
-## Tool constraints
-
-- **Do NOT run `cargo` or `rustup` commands yourself.** That includes `cargo install`, `cargo build`, `cargo check`, `cargo test`, `cargo run`, `cargo add`, `cargo clippy`, `cargo fmt`. The developer runs these on their machine and reports results.
-- When you need something compiled / tested / run: **write the exact command line** — `cargo check -p schooner-engine`, `cargo run -p game`, etc. — and wait for output.
-- If a compilation error happens, ask for the error text. Do not speculate; diagnose from the actual message.
-- `Read`, `Edit`, `Write`, `Glob`, `Grep` — use freely.
-- `Bash` — OK for read-only or scaffolding operations (`mkdir`, `ls`, `git status`, `git diff`, `git log`). For anything destructive (`rm`, `git reset`, `git push`, force operations, overwrites), **ask first**.
-- Never edit `Cargo.lock` by hand.
-- When editing `Cargo.toml` to add a dependency, state the dep, its version rationale, and what it replaces / why it's needed before writing — see "Dependency discipline" below.
-
----
-
-## Coding principles
-
-- **Idiomatic Rust.** Lifetimes, borrowing, `Result`/`Option`, typed enums over stringly-typed flags, traits where they pay rent (not everywhere).
-- **Optimize honestly, not prematurely.** Prefer references over clones when the borrow is clean; prefer clones when they meaningfully simplify code and aren't in a hot path. Don't pre-optimize for numbers you haven't measured.
-- **Clarity before cleverness.** A Rust-literate reader new to the project should follow the code. A clever construction that saves three lines but costs ten minutes of reading is a loss.
-- **Small, focused types and functions.** One responsibility each. Split files aggressively — 3 × 150-line files with clear names beat one 500-line file.
-- **Comment the WHY, never the WHAT.** Invariants, non-obvious game-dev reasoning, GPU-specific quirks, workarounds for wgpu/winit behaviors. The code itself says "what."
-- **No panics in library code.** Use `Result`. `unwrap()` / `expect()` only in `main`, tests, or where it's provably infallible with a comment stating why.
-- **No `unsafe` unless there is no alternative.** If you reach for it, explain why, what invariant you are upholding, and show you considered the safe path.
-- **Error types:** `thiserror` for library-side errors, `anyhow` for the game/app binary only.
-- **Use `glam` for math.** Don't hand-roll `Vec3` / `Mat4`. Re-export from the engine's `math` module so consumers import one name.
-- **`#[derive(Debug)]` on everything that isn't enormous or a wgpu handle.** Makes debugging the ECS dramatically easier.
-
-### Dependency discipline
-
-Before adding any new dependency:
-
-1. State what it does and why a hand-rolled alternative is impractical.
-2. State the version you propose and why.
-3. Wait for approval.
-
-No transitive-feature expansion without surfacing it. If a crate pulls in features we don't need, disable them.
-
----
-
-## First-session startup sequence
-
-When starting a fresh session:
-
-1. `Read` `plans/plan.md` and the relevant `plans/architecture/*.md` docs for the systems likely to be touched.
-2. `Read` the per-game plan TOC at `crates/game/plan.md` and the docs for the current Part under `crates/game/implementation/`.
-3. `Read` the per-game design docs under `crates/game/design/` that relate to the current Part's scope.
-4. `Read` `crates/game/development.md` if it exists — game-specific implementation conventions.
-5. Scan the current Part doc's Phase + Step checkboxes for the in-progress state.
-6. `Bash ls` `crates/`, `games/`, and `crates/game/src/` to confirm what's on disk vs. what the plan expects.
-7. State:
-   - Where we are (which game, which Part, which Phase, last completed Step).
-   - The Part's milestone question (still visible).
-   - What the next Step is.
-   - Any discrepancy between plan and on-disk state.
-8. Propose the next Step and wait for confirmation before starting.
-
----
-
-## Things to resist
-
-- **Scope creep.** If the current game doesn't have feature X per the plan, don't build X. If you believe the plan is wrong, say so explicitly and wait — don't silently extend or reduce the scope.
-- **Building for future games.** The architecture docs name what later games will need. The current game builds only what the current game needs, in shapes that don't *foreclose* later games.
-- **Rewriting what works.** If a chunk compiles and passes its tests, move on. Refactoring is its own deliberate decision, not a reflex while you're nearby.
-- **Dependency creep.** See above.
-- **Silent decisions.** Every non-obvious decision in the code should either be in the plan, in this prompt, in an architecture doc, or in a comment with a "why."
-- **Guessing at compilation errors.** Ask for the output.
-- **Over-explaining Rust.** The developer knows Rust. Spend explanation budget on game-dev and architecture.
-- **Under-explaining game-dev.** When a choice makes sense "because that's how engines do it," that's exactly the moment to explain why engines do it.
-- **Touching games in `games/`.** Those are frozen snapshots. They are not under active maintenance; do not "fix" them to compile against the current engine.
-- **Editing the design, architecture, or plan surfaces.** `crates/game/design/*.md`, `plans/architecture/*.md`, `crates/game/plan.md`, and the Part docs under `crates/game/implementation/` are authoritative inputs to the implementer, not outputs. If you believe one is wrong, surface the conflict and wait — don't edit. The architect and designer hold those surfaces. The implementer checks Step boxes in Part docs as work completes; restructuring the plan is not the implementer's job.
-
----
-
-## Summary of the rhythm
-
-The goal of every game is not just the game itself. It is a **coherent, extensible engine milestone** whose shape will not have to be thrown away when the next game layers more on top. Every choice should be made with that in mind.
-
+- scope creep beyond the active Phase
+- future-game infrastructure unless it is needed now and does not distort the current work
+- refactoring working code just because it is nearby
+- silent plan reinterpretation
+- guessing at compiler errors
+- changing frozen games
+- treating architecture/design documents as implementation scratchpads
