@@ -1,16 +1,35 @@
 # Physics — Rapier integration (new in Part 2)
 
-No idea doc yet; the vision lives in `plans/architecture/overview.md`
-(§Supporting Cast: "Physics (Rapier). Lives inside Layer 4. Bridges to ECS
-transforms each fixed-update."). This doc is the Part-2 build plan plus the
-readiness the audit established.
+The vision lives in `plans/architecture/physics.md`, rooted in
+`plans/architecture/overview.md` (§Supporting Cast: "Physics (Rapier). Lives inside
+Layer 4. Bridges to ECS transforms each fixed-update."). This doc is the as-built
+state plus the Part-2 build plan.
 
 ---
 
 ## What exists now
 
-Nothing — Kinesis Part 1 has no physics. But the *substrate the bridge needs* is
-already correct, which is why the audit rated physics **ready-with-caveats**:
+Kinesis Part 2 has the first hosted-physics substrate in place:
+
+- **Rapier resource host.** `PhysicsWorld` owns the Rapier pipeline, body/collider
+  sets, broad/narrow phase, joints, CCD solver, integration parameters, gravity,
+  and a sync-safe collision/impact sink.
+- **Fixed-step bridge stub.** `App::with_physics` installs `PhysicsWorld` plus the
+  `Events<Contact>` / `Events<TriggerEnter>` queues and registers one exclusive
+  FixedUpdate bridge. The bridge currently sets `integration_parameters.dt` from
+  `Time::fixed_delta` and steps Rapier once per fixed tick.
+- **Authoring components.** `RigidBody`, `BodyKind`, `Collider`, `ColliderShape`,
+  and `PhysicsMaterial` are the public ECS vocabulary. They describe gameplay
+  intent; they do not expose Rapier handles.
+- **Private identity bridge.** `PhysicsWorld` owns the `EntityId -> PhysicsHandles`
+  side table. Rapier body/collider `user_data` stores a tagged `EntityId` so future
+  collision draining can map solver output back to ECS entities without scanning.
+- **Impact-strength convention.** `CollisionEvent::Started` is treated as topology,
+  not impact strength. The sink samples solver impulses from Rapier's post-solver
+  contact-force callback; 2.D.3 arms `CONTACT_FORCE_EVENTS`, and 2.D.4 drains those
+  samples into `Contact`.
+
+The substrate the bridge relies on was already correct before Rapier landed:
 
 - **Deterministic capped fixed-step.** `Time::advance` accumulator +
   `MAX_FIXED_STEPS_PER_FRAME` clamp (`time.rs`); `App::tick` runs `run_fixed`
@@ -29,9 +48,11 @@ already correct, which is why the audit rated physics **ready-with-caveats**:
 
 Ordered by dependency:
 
-1. **Entity ↔ handle convention.** A `RigidBodyHandle`/`ColliderHandle` component
-   plus a `HashMap<EntityId, Handle>` in a physics resource. Decide this first;
-   everything else hangs off it.
+1. **Entity ↔ handle convention.** Public ECS authoring components
+   (`RigidBody`/`Collider`) plus a private `EntityId -> PhysicsHandles` map in
+   `PhysicsWorld`; Rapier user-data carries a tagged `EntityId` for reverse lookup.
+   No ECS-side Rapier handle component exists until a concrete internal consumer
+   requires one.
 2. **Removed-detection** (see [ecs.md](ecs.md)) so despawning a bodied entity
    frees its Rapier handle. *Note:* despawn is already observable via
    `world.is_alive` + generation bump, so a reconcile-style bridge is leak-free

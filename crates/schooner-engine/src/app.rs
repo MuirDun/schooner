@@ -16,6 +16,7 @@ use crate::debug::{
 };
 use crate::ecs::{CommandQueue, Events, IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::{Input, KeyCode};
+use crate::physics::{Contact, PhysicsWorld, TriggerEnter, physics_bridge};
 use crate::symbol::sym;
 use crate::render::{
     AutoExposure, Bloom, BloomPipeline, ColorGrade, DebugOverlay, ExposurePipeline, Fog,
@@ -72,6 +73,10 @@ pub struct App {
     /// frame at tick-top. `fn` pointers, not boxed closures — each is
     /// a monomorphised swap with no captured state.
     event_updaters: Vec<fn(&mut World)>,
+    /// Whether physics was requested through `with_physics`. The bridge
+    /// is appended during `resumed`, after the complete builder chain,
+    /// so it is guaranteed to be the last FixedUpdate system.
+    physics_enabled: bool,
 }
 
 impl Default for App {
@@ -129,6 +134,7 @@ impl App {
             cursor_grab_pushed: false,
             cursor_visible_pushed: true,
             event_updaters: Vec::new(),
+            physics_enabled: false,
         }
     }
 
@@ -140,6 +146,28 @@ impl App {
     /// Override the fixed-update rate. Defaults to 60 Hz.
     pub fn with_fixed_hz(mut self, fixed_hz: f32) -> Self {
         self.world.insert_resource(Time::new(fixed_hz));
+        self
+    }
+
+    /// Enable the Rapier world and its ECS bridge.
+    ///
+    /// Physics is opt-in because not every engine application needs a
+    /// solver. The bridge itself is appended after the builder chain is
+    /// complete, preserving the fixed-step order: gameplay writes intent,
+    /// then physics solves and writes the settled poses back.
+    pub fn with_physics(mut self) -> Self {
+        if self.physics_enabled {
+            return self;
+        }
+
+        self.world.insert_resource(PhysicsWorld::new());
+        self.world.insert_resource(Events::<Contact>::default());
+        self.world.insert_resource(Events::<TriggerEnter>::default());
+        self.event_updaters
+            .push(crate::ecs::event::swap_events::<Contact>);
+        self.event_updaters
+            .push(crate::ecs::event::swap_events::<TriggerEnter>);
+        self.physics_enabled = true;
         self
     }
 
@@ -475,6 +503,15 @@ impl ApplicationHandler for App {
         // for why.
         self.schedule
             .add_system(&mut self.world, Stage::Render, exclusive(render_frame));
+
+        // Physics does not depend on the GPU, but this is the first point
+        // after the user's builder chain has finished. Appending here makes
+        // the bridge last in FixedUpdate regardless of whether
+        // `with_physics()` appeared before or after gameplay systems.
+        if self.physics_enabled {
+            self.schedule
+                .add_system(&mut self.world, Stage::FixedUpdate, exclusive(physics_bridge));
+        }
 
         // F5 manual asset reload. Registered here, not in App::new(),
         // because it reads RenderContext + the registries + the

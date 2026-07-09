@@ -543,7 +543,7 @@ pub fn build(world: &mut World) {
         Vec3::new(hole_size_x, bottom_h, t),
     ); // bottom panel
 
-    let platform_length = 2.0;
+    let platform_length = 1.0;
     spawn_chamber_wall(
         world,
         Vec3::new(

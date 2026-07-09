@@ -1,0 +1,22 @@
+//! Physics — Rapier integration and the bridge to the ECS.
+//!
+//! Physics is hosted, not hand-rolled: the engine embeds Rapier and the
+//! work here is the **bridge** that keeps Rapier's world and the ECS's
+//! world coherent each fixed step, without either becoming the other's
+//! puppet. Games opt in with [`App::with_physics`](crate::App::with_physics);
+//! they author bodies through plain components and react to collisions by
+//! polling the Tier-2 event queues. The Rapier handles, the solver arena,
+//! and the acceleration structures stay the bridge's private business.
+//!
+//! The idea-level design is `plans/architecture/physics.md`; the as-built
+//! state and Part-2 roadmap are `plans/overview/physics.md`.
+
+mod bridge;
+mod component;
+mod event;
+mod world;
+
+pub(crate) use bridge::physics_bridge;
+pub use component::{BodyKind, Collider, ColliderShape, PhysicsMaterial, RigidBody};
+pub use event::{Contact, TriggerEnter};
+pub(crate) use world::PhysicsWorld;

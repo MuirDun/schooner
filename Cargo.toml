@@ -31,6 +31,7 @@ puffin = "0.20"
 smallvec = "1"
 gltf = { version = "1", default-features = false, features = ["import", "utils"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+rapier3d = { version = "0.33.0", default-features = false, features = ["dim3", "f32", "std"] }
 
 schooner-engine = { path = "crates/schooner-engine" }
 

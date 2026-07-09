@@ -121,7 +121,7 @@ impl Bloom {
     /// HDR" Lost Coast feel without going all the way to a white-out.
     pub const ERA_GLOW: Self = Self {
         enabled: true,
-        strength: 0.15,
+        strength: 0.90,
         threshold: 0.9,
         knee: 0.6,
         filter_radius: 2.5,

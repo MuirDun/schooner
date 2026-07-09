@@ -154,6 +154,36 @@ Glyph action registration is a translation, not a rewrite.
   log an action's `just_pressed`; read wheel delta in a system. (Migrating the FPS
   controller onto this is deferred to 2.F, where the KCC replaces `fps_move`.)
 
+### Phase 2.D — Rapier core + the physics ↔ ECS bridge
+
+Source: [physics.md]. New dependency (`rapier3d`). The substrate is ready: a
+deterministic capped fixed-step, a flat decomposed `Transform` at the engine root
+(the cleanest write-back target), and `fps_move` as the sole — explicitly
+kinematic — translation writer.
+
+**Steps:**
+- [x] **2.D.1** Add `rapier3d`; stand up `PhysicsWorld` + pipeline + integration
+  params + collision-event channel as resources in `App::resumed` (isolated block).
+  Set `integration_parameters.dt = Time::fixed_delta`; step once per `run_fixed`.
+- [x] **2.D.2** **Entity ↔ handle convention** (decide first — everything hangs off
+  it): `RigidBody` / `Collider` authoring components (body type, shape, mass,
+  material) + a bidirectional `EntityId ↔ Handle` map in the physics resource.
+- [ ] **2.D.3** Body / collider lifecycle: on `Added<RigidBody>` (2.A.1) create the
+  Rapier body + collider and record the mapping; on `Removed<RigidBody>` / despawn
+  (2.A.2) free the handle. Event-driven, not O(handles)/step.
+- [ ] **2.D.4** The bridge — one exclusive `fn(&mut World)` FixedUpdate system,
+  registered *after* gameplay Transform writers: sync changed Transforms → bodies
+  → `step()` → write dynamic poses back (`t.translation = body.translation();
+  t.rotation = body.rotation()`) → drain Rapier collision / sensor events into
+  `Events<Contact>` / `Events<TriggerEnter>`. Use **contact impulse**, not velocity,
+  as the `Contact` payload (it already integrates mass × Δv).
+- [ ] **2.D.5** Smoke test: spawn a dynamic cube above a static floor collider — it
+  falls, collides, and rests, rendering for free via Transform write-back. Drop two;
+  they stack.
+- [ ] **2.D.6** Experiment (pillar 4): toss a handful of dynamic cubes into the
+  chamber and watch them tumble and settle — the first taste of the world becoming
+  physical. If the settling looks wrong, the bridge ordering is the suspect.
+
 ### Phase 2.C — Debug-system rework
 
 The engine's `debug.rs` is a monolith that mixes engine-intrinsic dev tooling
@@ -189,37 +219,8 @@ the 2.B input API. Confirmed coupling to remove: `render::forward` reads
   `ColorGrade` / `Bloom` / `Vignette` / `PostOverlay`; profiler + F5 reload remain
   engine-side and still work.
 
-### Phase 2.D — Rapier core + the physics ↔ ECS bridge
 
-Source: [physics.md]. New dependency (`rapier3d`). The substrate is ready: a
-deterministic capped fixed-step, a flat decomposed `Transform` at the engine root
-(the cleanest write-back target), and `fps_move` as the sole — explicitly
-kinematic — translation writer.
-
-**Steps:**
-- [ ] **2.D.1** Add `rapier3d`; stand up `PhysicsWorld` + pipeline + integration
-  params + collision-event channel as resources in `App::resumed` (isolated block).
-  Set `integration_parameters.dt = Time::fixed_delta`; step once per `run_fixed`.
-- [ ] **2.D.2** **Entity ↔ handle convention** (decide first — everything hangs off
-  it): `RigidBody` / `Collider` authoring components (body type, shape, mass,
-  material) + a bidirectional `EntityId ↔ Handle` map in the physics resource.
-- [ ] **2.D.3** Body / collider lifecycle: on `Added<RigidBody>` (2.A.1) create the
-  Rapier body + collider and record the mapping; on `Removed<RigidBody>` / despawn
-  (2.A.2) free the handle. Event-driven, not O(handles)/step.
-- [ ] **2.D.4** The bridge — one exclusive `fn(&mut World)` FixedUpdate system,
-  registered *after* gameplay Transform writers: sync changed Transforms → bodies
-  → `step()` → write dynamic poses back (`t.translation = body.translation();
-  t.rotation = body.rotation()`) → drain Rapier collision / sensor events into
-  `Events<Contact>` / `Events<TriggerEnter>`. Use **contact impulse**, not velocity,
-  as the `Contact` payload (it already integrates mass × Δv).
-- [ ] **2.D.5** Smoke test: spawn a dynamic cube above a static floor collider — it
-  falls, collides, and rests, rendering for free via Transform write-back. Drop two;
-  they stack.
-- [ ] **2.D.6** Experiment (pillar 4): toss a handful of dynamic cubes into the
-  chamber and watch them tumble and settle — the first taste of the world becoming
-  physical. If the settling looks wrong, the bridge ordering is the suspect.
-
-### Phase 2.E — Physics debug-draw (the line / gizmo pipeline)
+### Phase 2.E — Physics debug-draw (the line / gizmo pipeline / profiling)
 
 Source: [graphics.md] — "the one genuinely new GPU primitive Part 2 needs." All
 existing pipelines are TriangleList + Fill. Build the line pipeline once and reuse

@@ -9,6 +9,7 @@ pub mod error;
 pub mod input;
 pub mod logging;
 pub mod material;
+pub mod physics;
 pub mod render;
 pub mod symbol;
 pub mod time;
@@ -33,6 +34,9 @@ pub use input::{Input, KeyCode, MouseButton};
 pub use symbol::{Symbol, sym, symbol_name};
 pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
+pub use physics::{
+    BodyKind, Collider, ColliderShape, Contact, PhysicsMaterial, RigidBody, TriggerEnter,
+};
 pub use render::{
     AutoExposure, ColorGrade, DebugOverlay, Bloom, DirectionalLight, Fog, ForwardPipeline, MeshData, MeshHandle,
     MeshRegistry, OverlayBlend, PointLight, PostOverlay, ReloadReport, RenderContext, ShadowMaps,

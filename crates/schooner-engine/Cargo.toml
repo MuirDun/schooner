@@ -22,3 +22,4 @@ puffin.workspace = true
 smallvec.workspace = true
 gltf.workspace = true
 image.workspace = true
+rapier3d.workspace = true

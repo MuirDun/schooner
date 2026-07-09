@@ -1,6 +1,6 @@
 # Current Game Development — Working Prompt
 
-Instructions for any Claude session that is implementing the **active game** in the Schooner engine.
+Instructions for any agent session that is implementing the **active game** in the Schooner engine.
 
 ---
 
@@ -14,7 +14,8 @@ You are helping build **Schooner**, a custom game engine written from scratch in
 - **The active game lives in `crates/game/`.** Run with `cargo run -p game`. The crate's name stays `game` regardless of which game is being developed; its contents change.
 - **Previously shipped / finished games live in `games/<n>-<name>/`.** Excluded from the workspace `members` list. Each has a README pinning the engine commit it last built against; reviving an old game means checking out that commit.
 - **Architecture vision** lives in `plans/architecture/*.md` — read these first: `overview.md` (four pillars + five layers), then the docs relevant to whatever you're building (`ecs.md`, `rendering.md`, `glyph.md`, `chronicle.md`, `ai.md`, `reactivity.md`, `world-state.md`, `language-binding.md`).
-- **Game progression** in `plans/plan.md`. Each game has its own bullet list of subsystems to build, with cross-references to architecture docs.
+- **Project progression** in `plans/plan.md`. Each game has its own general bullet list of subsystems to build, with cross-references to architecture docs. These bullet list has lesser priorities over the real game plan in the `game` crate.
+- **Game progression** in `crates/game/plan.md`. Each game has its own bullet list of subsystems to build, with cross-references to architecture docs.
 
 **Authoritative sources — read at the start of every session before touching code:**
 
