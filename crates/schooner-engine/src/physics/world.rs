@@ -11,9 +11,11 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use rapier3d::prelude::*;
+use rapier3d::prelude::{nalgebra, *};
 
 use crate::ecs::EntityId;
+use crate::physics::{BodyKind, Collider, ColliderShape, RigidBody};
+use crate::transform::Transform;
 
 const ENTITY_USER_DATA_TAG: u128 = 0x5343_484f_4f4e_4552;
 
@@ -130,6 +132,7 @@ pub(crate) struct PhysicsWorld {
     ccd_solver: CCDSolver,
     sink: CollisionSink,
     entities: HashMap<EntityId, PhysicsHandles>,
+    last_body_lifecycle_tick: u64,
 }
 
 impl Default for PhysicsWorld {
@@ -158,6 +161,7 @@ impl PhysicsWorld {
             ccd_solver: CCDSolver::new(),
             sink: CollisionSink::default(),
             entities: HashMap::new(),
+            last_body_lifecycle_tick: 0,
         }
     }
 
@@ -185,6 +189,60 @@ impl PhysicsWorld {
 
 #[allow(dead_code)]
 impl PhysicsWorld {
+    pub(crate) fn last_body_lifecycle_tick(&self) -> u64 {
+        self.last_body_lifecycle_tick
+    }
+
+    pub(crate) fn set_last_body_lifecycle_tick(&mut self, tick: u64) {
+        self.last_body_lifecycle_tick = tick;
+    }
+
+    /// Materialize an ECS-authored body into Rapier and remember the
+    /// private handles. Entities must carry both body and collider
+    /// authoring components in Part 2's baseline bridge; a body without
+    /// a collision proxy is not useful to Kinesis yet.
+    pub(crate) fn materialize_body(
+        &mut self,
+        entity: EntityId,
+        transform: Transform,
+        body: RigidBody,
+        collider: Collider,
+    ) -> PhysicsHandles {
+        // Idempotence matters because change/removal ledgers have a
+        // readable window. If a stale handle exists, free it before
+        // installing the fresh Rapier objects.
+        self.remove_body(entity);
+
+        let user_data = Self::entity_user_data(entity);
+        let body_builder = body_builder(body, transform).user_data(user_data);
+        let body_handle = self.bodies.insert(body_builder);
+        let collider_builder = collider_builder(collider).user_data(user_data);
+        let collider_handle =
+            self.colliders
+                .insert_with_parent(collider_builder, body_handle, &mut self.bodies);
+        let handles = PhysicsHandles {
+            body: body_handle,
+            collider: collider_handle,
+        };
+        self.entities.insert(entity, handles);
+        handles
+    }
+
+    /// Remove an entity's Rapier body and any attached collider. Safe to
+    /// call repeatedly; the side map is the cleanup authority.
+    pub(crate) fn remove_body(&mut self, entity: EntityId) -> Option<PhysicsHandles> {
+        let handles = self.entities.remove(&entity)?;
+        self.bodies.remove(
+            handles.body,
+            &mut self.islands,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            true,
+        );
+        Some(handles)
+    }
+
     pub(crate) fn insert_handles(
         &mut self,
         entity: EntityId,
@@ -223,9 +281,48 @@ impl PhysicsWorld {
     }
 }
 
+fn body_builder(body: RigidBody, transform: Transform) -> RigidBodyBuilder {
+    let builder = match body.kind {
+        BodyKind::Dynamic => RigidBodyBuilder::dynamic(),
+        BodyKind::Static => RigidBodyBuilder::fixed(),
+        BodyKind::KinematicPositionBased => RigidBodyBuilder::kinematic_position_based(),
+    };
+    builder.pose(transform_pose(transform))
+}
+
+fn collider_builder(collider: Collider) -> ColliderBuilder {
+    let builder = match collider.shape {
+        ColliderShape::Cuboid { half_extents } => {
+            ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
+        }
+        ColliderShape::Ball { radius } => ColliderBuilder::ball(radius),
+        ColliderShape::CapsuleY {
+            half_height,
+            radius,
+        } => ColliderBuilder::capsule_y(half_height, radius),
+    };
+
+    builder
+        .mass(collider.mass)
+        .friction(collider.material.friction)
+        .restitution(collider.material.restitution)
+        .sensor(collider.sensor)
+        .active_events(ActiveEvents::COLLISION_EVENTS | ActiveEvents::CONTACT_FORCE_EVENTS)
+}
+
+fn transform_pose(transform: Transform) -> Pose {
+    let t = transform.translation;
+    let r = transform.rotation;
+    let rotation =
+        nalgebra::UnitQuaternion::new_normalize(nalgebra::Quaternion::new(r.w, r.x, r.y, r.z));
+
+    nalgebra::Isometry3::from_parts(nalgebra::Translation3::new(t.x, t.y, t.z), rotation).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::{Quat, Vec3};
 
     #[test]
     fn entity_user_data_round_trips_with_generation() {
@@ -263,5 +360,71 @@ mod tests {
         assert_eq!(physics.remove_handles(entity), Some(handles));
         assert_eq!(physics.handles(entity), None);
         assert_eq!(physics.entity_count(), 0);
+    }
+
+    #[test]
+    fn materialize_body_creates_rapier_body_and_collider() {
+        let mut physics = PhysicsWorld::new();
+        let entity = EntityId {
+            index: 4,
+            generation: 2,
+        };
+        let transform = Transform {
+            translation: Vec3::new(1.0, 2.0, 3.0),
+            rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            scale: Vec3::splat(2.0),
+        };
+        let collider = Collider::cuboid(Vec3::new(0.5, 1.0, 1.5)).mass(3.0);
+
+        let handles =
+            physics.materialize_body(entity, transform, RigidBody::dynamic(), collider);
+
+        assert_eq!(physics.handles(entity), Some(handles));
+        assert_eq!(physics.entity_count(), 1);
+        assert_eq!(physics.bodies.len(), 1);
+        assert_eq!(physics.colliders.len(), 1);
+
+        let body = &physics.bodies[handles.body];
+        assert_eq!(body.user_data, PhysicsWorld::entity_user_data(entity));
+        assert_eq!(body.translation(), vector![1.0, 2.0, 3.0].into());
+
+        let collider = &physics.colliders[handles.collider];
+        assert_eq!(collider.user_data, PhysicsWorld::entity_user_data(entity));
+        assert!(collider
+            .active_events()
+            .contains(ActiveEvents::COLLISION_EVENTS));
+        assert!(collider
+            .active_events()
+            .contains(ActiveEvents::CONTACT_FORCE_EVENTS));
+    }
+
+    #[test]
+    fn remove_body_drops_map_body_and_attached_collider() {
+        let mut physics = PhysicsWorld::new();
+        let entity = EntityId {
+            index: 5,
+            generation: 1,
+        };
+        let handles = physics.materialize_body(
+            entity,
+            Transform::from_translation(Vec3::new(0.0, 5.0, 0.0)),
+            RigidBody::dynamic(),
+            Collider::ball(0.5),
+        );
+
+        assert_eq!(physics.remove_body(entity), Some(handles));
+        assert_eq!(physics.handles(entity), None);
+        assert_eq!(physics.entity_count(), 0);
+        assert_eq!(physics.bodies.len(), 0);
+        assert_eq!(physics.colliders.len(), 0);
+        assert_eq!(physics.remove_body(entity), None);
+    }
+
+    #[test]
+    fn lifecycle_cursor_is_owned_by_physics_world() {
+        let mut physics = PhysicsWorld::new();
+        assert_eq!(physics.last_body_lifecycle_tick(), 0);
+        physics.set_last_body_lifecycle_tick(12);
+        assert_eq!(physics.last_body_lifecycle_tick(), 12);
     }
 }
