@@ -1,8 +1,9 @@
 use bitflags::bitflags;
 use glam::{Quat, Vec2, Vec3};
 use schooner_engine::{
-    AutoExposure, BlendMode, Bloom, ColorGrade, DirectionalLight, EntityId, Fog, Material,
-    MeshRegistry, PointLight, Shadowcaster, SpotLight, Transform, Vignette, World,
+    AutoExposure, BlendMode, Bloom, Collider, ColorGrade, DirectionalLight, EntityId, Fog,
+    Material, MeshRegistry, PointLight, RigidBody, Shadowcaster, SpotLight, Transform, Vignette,
+    World,
 };
 
 use crate::scene::{
@@ -180,6 +181,9 @@ fn spawn_chamber_wall(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
         },
     );
 
+    world.insert(wall, RigidBody::static_body());
+    world.insert(wall, Collider::cuboid(size * 0.5));
+
     wall
 }
 
@@ -199,6 +203,8 @@ pub fn spawn_cube(world: &mut World, center: Vec3, size: Vec3) -> EntityId {
             ..Material::DEFAULT
         },
     );
+    world.insert(cube, RigidBody::dynamic());
+    world.insert(cube, Collider::cuboid(size * 0.5));
     cube
 }
 
@@ -269,6 +275,8 @@ fn spawn_chamber_floor(world: &mut World, center: Vec3, size: Vec3) -> EntityId 
             ..Material::DEFAULT
         },
     );
+    world.insert(floor, RigidBody::static_body());
+    world.insert(floor, Collider::cuboid(size * 0.5));
 
     floor
 }
@@ -302,6 +310,15 @@ fn spawn_window(world: &mut World, center: Vec3, size: Vec3) {
             fresnel: 1.0,
             ..Material::DEFAULT
         },
+    );
+
+    world.insert(e, RigidBody::static_body());
+    world.insert(
+        e,
+        // The rendered plane has no thickness. Its local Y axis is the
+        // world-space normal after the Z rotation, so give the proxy only a
+        // thin pane there instead of inheriting the decorative scale.
+        Collider::cuboid(Vec3::new(size.x * 0.5, 0.05, size.z * 0.5)),
     );
 }
 

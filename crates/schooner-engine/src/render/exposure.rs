@@ -48,10 +48,10 @@ use wgpu::{
     Device, Extent3d, FilterMode, FragmentState, FrontFace, LoadOp, MipmapFilterMode,
     MultisampleState, Operations, PipelineLayoutDescriptor, PolygonMode, PrimitiveState,
     PrimitiveTopology, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor,
-    ShaderSource, ShaderStages, StoreOp, TextureDescriptor, TextureDimension, TextureFormat,
-    TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension,
-    VertexState,
+    RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor,
+    ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, TextureDescriptor,
+    TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
+    TextureViewDescriptor, TextureViewDimension, VertexState,
 };
 
 use std::num::NonZeroU64;
@@ -497,7 +497,13 @@ impl ExposurePipeline {
 
         // Prefilter: HDR full-res -> luma mip 0 (log-luminance).
         let hdr_group = self.hdr_bind_group.as_ref().expect("hdr group built");
-        self.reduce_pass(encoder, "exposure-prefilter", &self.prefilter, &self.luma_views[0], hdr_group);
+        self.reduce_pass(
+            encoder,
+            "exposure-prefilter",
+            &self.prefilter,
+            &self.luma_views[0],
+            hdr_group,
+        );
 
         // Downsample: mip i-1 -> mip i, walking down to the 1x1 mean.
         for i in 1..n {
@@ -514,7 +520,9 @@ impl ExposurePipeline {
         // the new exposure into the other texture (1 - parity).
         let prev = self.parity;
         let next = 1 - self.parity;
-        let adapt_group = self.adapt_bind_groups[prev].as_ref().expect("adapt group built");
+        let adapt_group = self.adapt_bind_groups[prev]
+            .as_ref()
+            .expect("adapt group built");
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("exposure-adapt"),

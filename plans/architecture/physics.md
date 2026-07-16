@@ -134,10 +134,10 @@ reactivity design: **a fact that persists is state; an instant that occurs is an
 event.** A contact *occurs* — it is an instant with a payload — so it is an event.
 The health it damages *persists* — so health is state, mutated in one place, and
 death is a *derived* reaction to that state changing, never coded inside the
-collision handler. The two physics events the target game needs are the **contact**
-(two bodies touched) and the **trigger entry** (something entered a sensor volume,
-which reports overlaps without a physical response — the substrate for pressure
-plates and pickups).
+collision handler. The target game needs three physics events: **contact** (two
+bodies touched), **trigger entry**, and **trigger exit**. A sensor reports
+overlaps without a physical response; its entry and exit events let gameplay
+derive held overlap state for pressure plates and pickups.
 
 ### Why the payload is impulse
 

@@ -11,18 +11,19 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::action::{Actions, Bindings, Trigger, resolve_actions};
-use crate::debug::{
-    DebugState, ProfilerView, debug_input_system, f5_reload_system,
-};
+use crate::debug::{DebugState, ProfilerView, debug_input_system, f5_reload_system};
 use crate::ecs::{CommandQueue, Events, IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::{Input, KeyCode};
-use crate::physics::{Contact, PhysicsWorld, TriggerEnter, physics_bridge};
-use crate::symbol::sym;
+use crate::physics::{
+    Contact, PhysicsCommands, PhysicsWorld, TriggerEnter, TriggerExit, physics_bridge,
+    physics_reconcile_lifecycle,
+};
 use crate::render::{
     AutoExposure, Bloom, BloomPipeline, ColorGrade, DebugOverlay, ExposurePipeline, Fog,
     ForwardPipeline, HDR_FORMAT, MeshRegistry, PostOverlay, PostPipeline, RenderContext,
     ShadowMaps, ShadowPipeline, TextureRegistry, Vignette, render_frame,
 };
+use crate::symbol::sym;
 use crate::time::Time;
 use crate::window::WindowConfig;
 
@@ -73,9 +74,7 @@ pub struct App {
     /// frame at tick-top. `fn` pointers, not boxed closures — each is
     /// a monomorphised swap with no captured state.
     event_updaters: Vec<fn(&mut World)>,
-    /// Whether physics was requested through `with_physics`. The bridge
-    /// is appended during `resumed`, after the complete builder chain,
-    /// so it is guaranteed to be the last FixedUpdate system.
+    /// Whether physics was requested through `with_physics`.
     physics_enabled: bool,
 }
 
@@ -152,21 +151,25 @@ impl App {
     /// Enable the Rapier world and its ECS bridge.
     ///
     /// Physics is opt-in because not every engine application needs a
-    /// solver. The bridge itself is appended after the builder chain is
-    /// complete, preserving the fixed-step order: gameplay writes intent,
-    /// then physics solves and writes the settled poses back.
+    /// solver. Its bridge runs between `FixedUpdate` intent writers and
+    /// `PostPhysics` outcome readers.
     pub fn with_physics(mut self) -> Self {
         if self.physics_enabled {
             return self;
         }
 
         self.world.insert_resource(PhysicsWorld::new());
+        self.world.insert_resource(PhysicsCommands::new());
         self.world.insert_resource(Events::<Contact>::default());
-        self.world.insert_resource(Events::<TriggerEnter>::default());
+        self.world
+            .insert_resource(Events::<TriggerEnter>::default());
+        self.world.insert_resource(Events::<TriggerExit>::default());
         self.event_updaters
             .push(crate::ecs::event::swap_events::<Contact>);
         self.event_updaters
             .push(crate::ecs::event::swap_events::<TriggerEnter>);
+        self.event_updaters
+            .push(crate::ecs::event::swap_events::<TriggerExit>);
         self.physics_enabled = true;
         self
     }
@@ -186,7 +189,8 @@ impl App {
     /// resets the queue and adds a redundant swap.
     pub fn add_event<T: Send + Sync + 'static>(mut self) -> Self {
         self.world.insert_resource(Events::<T>::default());
-        self.event_updaters.push(crate::ecs::event::swap_events::<T>);
+        self.event_updaters
+            .push(crate::ecs::event::swap_events::<T>);
         self
     }
 
@@ -237,10 +241,12 @@ impl App {
         self
     }
 
-    /// Direct mutable access to the world for one-shot setup
-    /// (spawning startup entities, inserting components). For
-    /// long-lived state that systems need to coordinate over,
-    /// prefer a resource.
+    /// Direct mutable access to the world for one-shot setup. Prefer
+    /// [`Stage::Startup`] for scene entities, especially physics bodies:
+    /// Startup runs after the first tick increment, so change-detection
+    /// driven bridges see authored components. Use this pre-run access for
+    /// resources and setup that is not meant to enter staged lifecycle
+    /// processing before Startup.
     pub fn world_mut(&mut self) -> &mut World {
         &mut self.world
     }
@@ -281,6 +287,14 @@ impl App {
         // while last frame's stay readable — a one-frame-late reactor
         // (e.g. physics handle cleanup) never misses one.
         self.world.swap_removed();
+
+        // Physics cleanup cannot wait for a fixed step: a high-refresh frame
+        // may have zero steps, and the removed-component ledger only keeps a
+        // bounded frame window. Reconciling at frame top consumes pending
+        // removals before the next rotation can discard them.
+        if self.physics_enabled {
+            physics_reconcile_lifecycle(&mut self.world);
+        }
 
         // Swap every registered Events<T> queue at the same point: last
         // frame's events stay readable, this frame's start fresh. `&f`
@@ -505,12 +519,11 @@ impl ApplicationHandler for App {
             .add_system(&mut self.world, Stage::Render, exclusive(render_frame));
 
         // Physics does not depend on the GPU, but this is the first point
-        // after the user's builder chain has finished. Appending here makes
-        // the bridge last in FixedUpdate regardless of whether
-        // `with_physics()` appeared before or after gameplay systems.
+        // after the user's builder chain has finished. The bridge occupies
+        // the dedicated membrane between fixed-step intent and outcome.
         if self.physics_enabled {
             self.schedule
-                .add_system(&mut self.world, Stage::FixedUpdate, exclusive(physics_bridge));
+                .add_physics_system(&mut self.world, exclusive(physics_bridge));
         }
 
         // F5 manual asset reload. Registered here, not in App::new(),

@@ -924,7 +924,10 @@ mod tests {
         world.increment_tick(); // fixed step 3
         world.increment_tick(); // update — the reaction "runs" here
 
-        let changed: Vec<_> = world.changed_since::<i32>(last_run).map(|(e, _)| e).collect();
+        let changed: Vec<_> = world
+            .changed_since::<i32>(last_run)
+            .map(|(e, _)| e)
+            .collect();
         assert_eq!(changed, vec![x]); // only x, despite four tick bumps
         last_run = world.current_tick();
 
@@ -932,7 +935,10 @@ mod tests {
         // re-report x (no double-count across frames).
         world.increment_tick();
         world.increment_tick();
-        let changed: Vec<_> = world.changed_since::<i32>(last_run).map(|(e, _)| e).collect();
+        let changed: Vec<_> = world
+            .changed_since::<i32>(last_run)
+            .map(|(e, _)| e)
+            .collect();
         assert!(changed.is_empty());
     }
 

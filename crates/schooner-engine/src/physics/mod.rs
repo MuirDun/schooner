@@ -12,11 +12,14 @@
 //! state and Part-2 roadmap are `plans/overview/physics.md`.
 
 mod bridge;
+mod command;
 mod component;
 mod event;
 mod world;
 
-pub(crate) use bridge::physics_bridge;
-pub use component::{BodyKind, Collider, ColliderShape, PhysicsMaterial, RigidBody};
-pub use event::{Contact, TriggerEnter};
-pub(crate) use world::PhysicsWorld;
+pub(crate) use bridge::{physics_bridge, physics_reconcile_lifecycle};
+pub(crate) use command::PhysicsCommand;
+pub use command::{PhysicsCommands, TeleportVelocity};
+pub use component::{BodyKind, Collider, ColliderShape, ContactEvents, PhysicsMaterial, RigidBody};
+pub use event::{Contact, TriggerEnter, TriggerExit};
+pub(crate) use world::{PhysicsStepOutput, PhysicsWorld};

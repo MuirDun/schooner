@@ -3,7 +3,8 @@
 //! Collisions and sensor overlaps are *instants with a payload* — the
 //! event half of the state-versus-event rule (`plans/overview/events.md`).
 //! The bridge drains Rapier's per-step output into these queues; gameplay
-//! reacts by polling `Res<Events<Contact>>` / `Res<Events<TriggerEnter>>`,
+//! reacts by polling `Res<Events<Contact>>`, `Res<Events<TriggerEnter>>`, or
+//! `Res<Events<TriggerExit>>`,
 //! never by registering a callback. These are the engine's first Tier-2
 //! cross-layer channel.
 
@@ -30,6 +31,15 @@ pub struct Contact {
 /// entered it.
 #[derive(Debug, Clone, Copy)]
 pub struct TriggerEnter {
+    pub sensor: EntityId,
+    pub other: EntityId,
+}
+
+/// Something stopped overlapping a sensor volume. Together with
+/// [`TriggerEnter`], this lets gameplay derive persistent overlap state such
+/// as a pressure plate's pressed state without polling Rapier directly.
+#[derive(Debug, Clone, Copy)]
+pub struct TriggerExit {
     pub sensor: EntityId,
     pub other: EntityId,
 }

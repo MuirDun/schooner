@@ -14,10 +14,12 @@ Kinesis Part 2 has the first hosted-physics substrate in place:
 - **Rapier resource host.** `PhysicsWorld` owns the Rapier pipeline, body/collider
   sets, broad/narrow phase, joints, CCD solver, integration parameters, gravity,
   and a sync-safe collision/impact sink.
-- **Fixed-step bridge stub.** `App::with_physics` installs `PhysicsWorld` plus the
-  `Events<Contact>` / `Events<TriggerEnter>` queues and registers one exclusive
-  FixedUpdate bridge. The bridge currently sets `integration_parameters.dt` from
-  `Time::fixed_delta` and steps Rapier once per fixed tick.
+- **Fixed-step bridge.** `App::with_physics` installs `PhysicsWorld` plus the
+  `Events<Contact>` / `Events<TriggerEnter>` / `Events<TriggerExit>` queues. The
+  exclusive bridge runs between fixed-step intent writers and outcome readers;
+  it reconciles authoring lifecycle, syncs authored static/kinematic poses, sets
+  `integration_parameters.dt` from `Time::fixed_delta`, steps Rapier, writes awake
+  dynamic poses back, and publishes collision events.
 - **Authoring components.** `RigidBody`, `BodyKind`, `Collider`, `ColliderShape`,
   and `PhysicsMaterial` are the public ECS vocabulary. They describe gameplay
   intent; they do not expose Rapier handles.
@@ -61,9 +63,9 @@ Ordered by dependency:
 3. **Stand up Rapier resources** (`PhysicsWorld`, pipeline, integration params,
    collision-event channel) in `App::resumed` — isolated block for now.
 4. **The bridge — one exclusive `fn(&mut World)` FixedUpdate system**, registered
-   *after* gameplay Transform writers: sync changed Transforms → bodies → `step()`
+   between fixed-step intent writers and outcome readers: sync changed Transforms → bodies → `step()`
    → write poses back → drain Rapier collision/sensor events into `Events<Contact>`
-   / `Events<TriggerEnter>` ([events.md](events.md)).
+   / `Events<TriggerEnter>` / `Events<TriggerExit>` ([events.md](events.md)).
 5. **Force application** — directional / radial / impulse from gameplay onto
    bodies (the grab/throw/repulse verbs).
 6. **Character controller** — replace `fps_move`'s direct translation write with a
@@ -71,7 +73,8 @@ Ordered by dependency:
    `Transform`) and copy `body.translation + eye_offset` into it each fixed step —
    Rapier's own KCC pattern, and it matches the sibling-Transform convention the
    lights already use. (No hierarchy needed; see "Decisions".)
-7. **Triggers & pressure plates** — Rapier sensor colliders → `Events<TriggerEnter>`;
+7. **Triggers & pressure plates** — Rapier sensor colliders → `Events<TriggerEnter>` /
+   `Events<TriggerExit>`;
    pressure plate is a held-state sensor.
 8. **Destructibles** — swap a mesh for authored physics fragments on an impact
    threshold read from `Events<Contact>`.

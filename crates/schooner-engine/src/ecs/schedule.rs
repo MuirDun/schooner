@@ -1,9 +1,11 @@
-//! Ordered system execution for the three fixed Game 0 stages.
+//! Ordered system execution for the engine stages.
 //!
 //! The engine runs systems in exactly three stages, named by [`Stage`]:
 //! - [`Stage::FixedUpdate`] — fixed timestep, 0..N times per frame,
-//!   driven by an accumulator in the App loop.
-//!   Physics and deterministic game logic land here.
+//!   driven by an accumulator in the App loop. This is the pre-physics
+//!   intent stage: deterministic gameplay writes forces and desired poses here.
+//! - [`Stage::PostPhysics`] — fixed timestep, immediately after the engine's
+//!   physics bridge. Deterministic gameplay reads settled poses and contacts here.
 //! - [`Stage::Update`] — variable timestep, once per frame. Input,
 //!   camera, gameplay logic. `delta` scales with real frame time.
 //! - [`Stage::Render`] — once per frame, after `Update`. Owns the
@@ -48,7 +50,11 @@ use crate::ecs::world::World;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stage {
     Startup,
+    /// Fixed-step intent writers. Kept under its original name for source
+    /// compatibility; it is the pre-physics half of the fixed schedule.
     FixedUpdate,
+    /// Fixed-step outcome readers, after the engine physics bridge.
+    PostPhysics,
     Update,
     Render,
 }
@@ -88,6 +94,8 @@ impl SystemStage {
 /// fixed-timestep accumulator).
 pub struct Schedule {
     fixed_update: SystemStage,
+    physics: SystemStage,
+    post_physics: SystemStage,
     update: SystemStage,
     render: SystemStage,
     startup: SystemStage,
@@ -103,6 +111,8 @@ impl Schedule {
     pub fn new() -> Self {
         Self {
             fixed_update: SystemStage::new(),
+            physics: SystemStage::new(),
+            post_physics: SystemStage::new(),
             update: SystemStage::new(),
             render: SystemStage::new(),
             startup: SystemStage::new(),
@@ -135,10 +145,32 @@ impl Schedule {
         let boxed: Box<dyn System> = Box::new(system);
         match stage {
             Stage::FixedUpdate => self.fixed_update.push(boxed),
+            Stage::PostPhysics => self.post_physics.push(boxed),
             Stage::Update => self.update.push(boxed),
             Stage::Render => self.render.push(boxed),
             Stage::Startup => self.startup.push(boxed),
         }
+        self
+    }
+
+    /// Register an engine-owned bridge between fixed-step intent and outcome.
+    /// Kept crate-private so games cannot accidentally interleave systems with
+    /// the membrane; use [`Stage::FixedUpdate`] or [`Stage::PostPhysics`] instead.
+    pub(crate) fn add_physics_system<M, S: IntoSystem<M>>(
+        &mut self,
+        world: &mut World,
+        system: S,
+    ) -> &mut Self {
+        let system = system.into_system();
+        let accesses = system.param_access(world);
+        if let Err(err) = check_param_conflicts(&accesses, |c| {
+            world
+                .component_name(c.component_id)
+                .unwrap_or("<unregistered>")
+        }) {
+            panic!("{err}");
+        }
+        self.physics.push(Box::new(system));
         self
     }
 
@@ -152,12 +184,18 @@ impl Schedule {
     }
 
     /// Advance `world.current_tick` by one, then run every
-    /// [`Stage::FixedUpdate`] system in registration order.
+    /// [`Stage::FixedUpdate`] intent systems, then the engine physics bridge,
+    /// then [`Stage::PostPhysics`] outcome systems. Commands flush at every
+    /// boundary so fixed-step spawns and despawns are visible to physics.
     /// Called 0..N times per frame by the App's accumulator.
     pub fn run_fixed(&mut self, world: &mut World) {
         puffin::profile_scope!("fixed_stage");
         world.increment_tick();
         self.fixed_update.run(world);
+        CommandQueue::apply(world);
+        self.physics.run(world);
+        CommandQueue::apply(world);
+        self.post_physics.run(world);
         CommandQueue::apply(world);
     }
 
@@ -184,6 +222,7 @@ impl Schedule {
     pub fn system_count(&self, stage: Stage) -> usize {
         match stage {
             Stage::FixedUpdate => self.fixed_update.len(),
+            Stage::PostPhysics => self.post_physics.len(),
             Stage::Update => self.update.len(),
             Stage::Render => self.render.len(),
             Stage::Startup => self.startup.len(),
@@ -339,6 +378,28 @@ mod tests {
     }
 
     #[test]
+    fn fixed_step_runs_intent_physics_then_outcome() {
+        let mut world = World::new();
+        world.insert_resource(Log(Vec::new()));
+        let mut sched = Schedule::new();
+        sched
+            .add_system(&mut world, Stage::FixedUpdate, |mut log: ResMut<Log>| {
+                log.0.push("intent")
+            })
+            .add_physics_system(&mut world, |mut log: ResMut<Log>| log.0.push("physics"))
+            .add_system(&mut world, Stage::PostPhysics, |mut log: ResMut<Log>| {
+                log.0.push("outcome")
+            });
+
+        sched.run_fixed(&mut world);
+
+        assert_eq!(
+            world.resource::<Log>().unwrap().0,
+            vec!["intent", "physics", "outcome"]
+        );
+    }
+
+    #[test]
     fn changed_since_sees_entity_mutated_by_scheduled_system() {
         use crate::ecs::exclusive;
 
@@ -459,12 +520,14 @@ mod tests {
         fn _exhaustive(s: Stage) -> &'static str {
             match s {
                 Stage::FixedUpdate => "fixed",
+                Stage::PostPhysics => "post_physics",
                 Stage::Update => "update",
                 Stage::Render => "render",
                 Stage::Startup => "startup",
             }
         }
         assert_eq!(_exhaustive(Stage::FixedUpdate), "fixed");
+        assert_eq!(_exhaustive(Stage::PostPhysics), "post_physics");
         assert_eq!(_exhaustive(Stage::Update), "update");
         assert_eq!(_exhaustive(Stage::Render), "render");
     }

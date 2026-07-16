@@ -125,7 +125,6 @@ fn apply_despawns(
 /// map in Parts 2.F–2.G.
 fn action_smoke(actions: Res<Actions>, acts: Res<Acts>) {
     for (name, action) in [
-        ("jump", acts.jump),
         ("mode_hands", acts.mode_hands),
         ("mode_telekinesis", acts.mode_telekinesis),
         ("mode_repulsion", acts.mode_repulsion),
@@ -233,6 +232,7 @@ fn main() -> anyhow::Result<(), AppError> {
 
     let mut app = App::new()
         .with_window_config(WindowConfig::new("Playground", 1280, 720))
+        .with_physics()
         .add_event::<SpawnRequest>()
         .add_event::<DespawnRequest>()
         .insert_resource(Assets::default())

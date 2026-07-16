@@ -71,6 +71,22 @@ pub struct PhysicsMaterial {
     pub restitution: f32,
 }
 
+/// Opts an entity into post-solver contact reports.
+///
+/// Rapier evaluates this threshold as a contact **force** in newtons; the
+/// engine event still carries the resolved impulse. Keeping reporting separate
+/// from [`Collider`] means ordinary world geometry does not pay callback cost.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContactEvents {
+    pub force_threshold: f32,
+}
+
+impl ContactEvents {
+    pub const fn new(force_threshold: f32) -> Self {
+        Self { force_threshold }
+    }
+}
+
 impl Default for PhysicsMaterial {
     fn default() -> Self {
         Self {
@@ -182,5 +198,10 @@ mod tests {
         assert_eq!(collider.mass, 3.0);
         assert_eq!(collider.material, material);
         assert!(collider.sensor);
+    }
+
+    #[test]
+    fn contact_events_carries_a_force_threshold() {
+        assert_eq!(ContactEvents::new(12.0).force_threshold, 12.0);
     }
 }

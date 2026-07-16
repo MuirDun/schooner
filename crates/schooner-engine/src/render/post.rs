@@ -29,8 +29,7 @@ use wgpu::{
     FragmentState, FrontFace, MipmapFilterMode, MultisampleState, PipelineLayoutDescriptor,
     PolygonMode, PrimitiveState, PrimitiveTopology, RenderPipeline, RenderPipelineDescriptor,
     Sampler, SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource,
-    ShaderStages, TextureFormat, TextureSampleType, TextureView, TextureViewDimension,
-    VertexState,
+    ShaderStages, TextureFormat, TextureSampleType, TextureView, TextureViewDimension, VertexState,
 };
 
 use crate::render::texture::RawTextureId;
@@ -526,9 +525,7 @@ fn create_params_bgl(device: &Device) -> BindGroupLayout {
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Uniform,
                 has_dynamic_offset: false,
-                min_binding_size: NonZeroU64::new(
-                    std::mem::size_of::<PostParamsUniform>() as u64
-                ),
+                min_binding_size: NonZeroU64::new(std::mem::size_of::<PostParamsUniform>() as u64),
             },
             count: None,
         }],

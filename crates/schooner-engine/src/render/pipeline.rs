@@ -391,10 +391,7 @@ impl ForwardPipeline {
     /// `None` otherwise. The forward pass populates every pair it needs
     /// ahead of opening the render pass, so a `None` here means a logic
     /// error in the pre-pass — not a routine cache miss.
-    pub fn material_bind_group(
-        &self,
-        key: (RawTextureId, RawTextureId),
-    ) -> Option<&BindGroup> {
+    pub fn material_bind_group(&self, key: (RawTextureId, RawTextureId)) -> Option<&BindGroup> {
         self.material_bind_groups.get(&key)
     }
 

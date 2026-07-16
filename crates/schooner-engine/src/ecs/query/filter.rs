@@ -462,9 +462,7 @@ mod tests {
         let e = world.spawn();
         world.insert(e, Pos(1));
         // Tag never inserted: Added<Tag> sees no storage → nobody passes.
-        let got = world
-            .query_filtered_since::<&Pos, Added<Tag>>(0)
-            .count();
+        let got = world.query_filtered_since::<&Pos, Added<Tag>>(0).count();
         assert_eq!(got, 0);
     }
 

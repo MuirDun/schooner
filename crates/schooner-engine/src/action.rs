@@ -124,7 +124,9 @@ impl Bindings {
     }
 
     fn iter(&self) -> impl Iterator<Item = (Symbol, &[Trigger])> {
-        self.map.iter().map(|(action, triggers)| (*action, triggers.as_slice()))
+        self.map
+            .iter()
+            .map(|(action, triggers)| (*action, triggers.as_slice()))
     }
 }
 

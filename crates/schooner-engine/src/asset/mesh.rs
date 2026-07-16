@@ -46,11 +46,10 @@ pub struct GltfModel {
 /// missing positions, normals, or indices are hard errors so a wrong
 /// Blender export setting doesn't masquerade as a working asset.
 pub fn load_gltf_mesh(path: &Path) -> AssetResult<MeshData> {
-    let (document, buffers, _images) =
-        gltf::import(path).map_err(|source| AssetError::Gltf {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let (document, buffers, _images) = gltf::import(path).map_err(|source| AssetError::Gltf {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
     let primitive = first_primitive(&document, path)?;
     read_primitive_mesh(&primitive, &buffers, path)

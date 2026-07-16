@@ -173,10 +173,7 @@ impl PcfKernel {
 /// - **F5**  reload disk assets — see [`f5_reload_system`]
 /// - **F12** toggle the debug overlay
 ///
-pub fn debug_input_system(
-    input: Res<Input>,
-    mut debug: ResMut<DebugState>,
-) {
+pub fn debug_input_system(input: Res<Input>, mut debug: ResMut<DebugState>) {
     if input.just_pressed(KeyCode::F12) {
         debug.overlay_visible = !debug.overlay_visible;
     }

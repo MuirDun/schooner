@@ -175,7 +175,12 @@ impl MeshRegistry {
     /// glb via `load_gltf_model`, where the source is the glb (not a
     /// standalone mesh file) and hot-reload of bundled assets is deferred
     /// to the Game 2A asset pipeline.
-    pub fn insert_mesh_data(&mut self, device: &Device, label: &str, data: &MeshData) -> MeshHandle {
+    pub fn insert_mesh_data(
+        &mut self,
+        device: &Device,
+        label: &str,
+        data: &MeshData,
+    ) -> MeshHandle {
         let gpu = MeshGpu::upload(device, label, data);
         self.insert_new(gpu)
     }
@@ -342,7 +347,8 @@ impl TextureRegistry {
     pub fn with_builtins(device: &Device, queue: &Queue) -> Self {
         let mut registry = Self::empty();
 
-        let white = TextureGpu::upload_rgba8(device, queue, "builtin-white", &TextureData::white_1x1());
+        let white =
+            TextureGpu::upload_rgba8(device, queue, "builtin-white", &TextureData::white_1x1());
         registry.textures.insert(
             RawTextureId::WHITE,
             TextureEntry {
@@ -459,13 +465,7 @@ impl TextureRegistry {
 
     fn insert_gpu(&mut self, gpu: TextureGpu) -> TextureHandle {
         let id = self.allocate_id();
-        self.textures.insert(
-            id,
-            TextureEntry {
-                gpu,
-                source: None,
-            },
-        );
+        self.textures.insert(id, TextureEntry { gpu, source: None });
         self.make_handle(id)
     }
 

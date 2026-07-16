@@ -37,14 +37,14 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
     AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendComponent,
-    BlendFactor, BlendOperation, BlendState, Buffer, BufferBindingType, BufferUsages,
-    Color, ColorTargetState, ColorWrites, CommandEncoder, Device, Extent3d, FilterMode,
-    FragmentState, FrontFace, LoadOp, MipmapFilterMode, MultisampleState, Operations,
-    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology,
-    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
-    Sampler, SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource,
-    ShaderStages, StoreOp, TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType,
-    TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension, VertexState,
+    BlendFactor, BlendOperation, BlendState, Buffer, BufferBindingType, BufferUsages, Color,
+    ColorTargetState, ColorWrites, CommandEncoder, Device, Extent3d, FilterMode, FragmentState,
+    FrontFace, LoadOp, MipmapFilterMode, MultisampleState, Operations, PipelineLayoutDescriptor,
+    PolygonMode, PrimitiveState, PrimitiveTopology, RenderPassColorAttachment,
+    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType,
+    SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp,
+    TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages,
+    TextureView, TextureViewDescriptor, TextureViewDimension, VertexState,
 };
 
 use std::num::NonZeroU64;
@@ -250,11 +250,21 @@ impl BloomPipeline {
         // accumulates onto the destination mip's existing downsampled
         // content, so it blends additively (src*1 + dst*1).
         let prefilter = make_pipeline(
-            device, &layout, &shader, "fs_prefilter", hdr_format, BlendState::REPLACE,
+            device,
+            &layout,
+            &shader,
+            "fs_prefilter",
+            hdr_format,
+            BlendState::REPLACE,
             "bloom-prefilter",
         );
         let downsample = make_pipeline(
-            device, &layout, &shader, "fs_downsample", hdr_format, BlendState::REPLACE,
+            device,
+            &layout,
+            &shader,
+            "fs_downsample",
+            hdr_format,
+            BlendState::REPLACE,
             "bloom-downsample",
         );
         let additive = BlendState {
@@ -270,7 +280,13 @@ impl BloomPipeline {
             },
         };
         let upsample = make_pipeline(
-            device, &layout, &shader, "fs_upsample", hdr_format, additive, "bloom-upsample",
+            device,
+            &layout,
+            &shader,
+            "fs_upsample",
+            hdr_format,
+            additive,
+            "bloom-upsample",
         );
 
         let sampler = device.create_sampler(&SamplerDescriptor {
@@ -423,13 +439,24 @@ impl BloomPipeline {
 
         // Prefilter: HDR full-res → mip 0 (threshold + Karis), overwrite.
         let hdr_group = self.hdr_bind_group.as_ref().expect("hdr group built");
-        self.pass(encoder, "bloom-prefilter", &self.prefilter, &self.mip_views[0], hdr_group, false);
+        self.pass(
+            encoder,
+            "bloom-prefilter",
+            &self.prefilter,
+            &self.mip_views[0],
+            hdr_group,
+            false,
+        );
 
         // Downsample: mip i-1 → mip i, overwrite, walking down the chain.
         for i in 1..n {
             self.pass(
-                encoder, "bloom-downsample", &self.downsample, &self.mip_views[i],
-                &self.mip_bind_groups[i - 1], false,
+                encoder,
+                "bloom-downsample",
+                &self.downsample,
+                &self.mip_views[i],
+                &self.mip_bind_groups[i - 1],
+                false,
             );
         }
 
@@ -439,8 +466,12 @@ impl BloomPipeline {
         // onto it. After this, mip 0 holds the full bloom.
         for i in (1..n).rev() {
             self.pass(
-                encoder, "bloom-upsample", &self.upsample, &self.mip_views[i - 1],
-                &self.mip_bind_groups[i], true,
+                encoder,
+                "bloom-upsample",
+                &self.upsample,
+                &self.mip_views[i - 1],
+                &self.mip_bind_groups[i],
+                true,
             );
         }
     }

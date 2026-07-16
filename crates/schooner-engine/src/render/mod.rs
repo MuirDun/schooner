@@ -37,14 +37,11 @@ pub mod uniforms;
 pub mod vignette;
 
 pub use bloom::{Bloom, BloomParamsUniform, BloomPipeline};
-pub use context::{
-    DEPTH_FORMAT, HDR_FORMAT, MSAA_SAMPLE_COUNT, RenderContext, RenderContextError,
-};
+pub use context::{DEPTH_FORMAT, HDR_FORMAT, MSAA_SAMPLE_COUNT, RenderContext, RenderContextError};
 pub use exposure::{AdaptParamsUniform, AutoExposure, ExposurePipeline};
 pub use fog::Fog;
 pub use forward::render_frame;
 pub use grade::ColorGrade;
-pub use vignette::Vignette;
 pub use light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
 pub use mesh::{MeshData, MeshGpu, MeshHandle, Vertex, cube_mesh, plane_mesh};
 pub use overlay::DebugOverlay;
@@ -52,13 +49,14 @@ pub use pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 pub use post::PostPipeline;
 pub use post_overlay::{OverlayBlend, PostOverlay};
 pub use registry::{MeshRegistry, ReloadReport, TextureRegistry};
-pub use texture::{TextureData, TextureGpu, TextureHandle};
 pub use shadow::{
     MAX_SHADOW_CASTERS, SHADOW_MAP_RESOLUTION, SHADOW_VP_UNIFORM_STRIDE, ShadowMaps,
     ShadowPipeline, compute_shadow_vp,
 };
+pub use texture::{TextureData, TextureGpu, TextureHandle};
 pub use uniforms::{
     CameraUniformData, DirectionalLightUniformData, LightsUniformData, MAX_POINT_LIGHTS,
     MAX_SPOT_LIGHTS, ModelUniformData, PointLightUniformData, PostParamsUniform,
     SpotLightUniformData,
 };
+pub use vignette::Vignette;

@@ -44,27 +44,25 @@ use wgpu::{
 };
 
 use crate::camera::{ActiveCamera, Camera};
-use crate::debug::{
-    DebugState, OverlayInteract, OverlayMetrics, ProfilerView, build_overlay_ui,
-};
+use crate::debug::{DebugState, OverlayInteract, OverlayMetrics, ProfilerView, build_overlay_ui};
 use crate::ecs::World;
 use crate::material::{BlendMode, Material};
 use crate::render::bloom::{Bloom, BloomParamsUniform, BloomPipeline};
 use crate::render::context::RenderContext;
 use crate::render::exposure::{AdaptParamsUniform, AutoExposure, ExposurePipeline};
 use crate::render::fog::Fog;
+use crate::render::grade::ColorGrade;
 use crate::render::light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
 use crate::render::mesh::{MeshHandle, RawMeshId};
 use crate::render::overlay::DebugOverlay;
-use crate::render::grade::ColorGrade;
 use crate::render::pipeline::{ForwardPipeline, MAX_DRAWS_PER_FRAME, MODEL_UNIFORM_STRIDE};
 use crate::render::post::PostPipeline;
 use crate::render::post_overlay::PostOverlay;
 use crate::render::registry::{MeshRegistry, TextureRegistry};
-use crate::render::texture::RawTextureId;
 use crate::render::shadow::{
     MAX_SHADOW_CASTERS, SHADOW_VP_UNIFORM_STRIDE, ShadowMaps, ShadowPipeline, compute_shadow_vp,
 };
+use crate::render::texture::RawTextureId;
 use crate::render::uniforms::{
     CameraUniformData, DirectionalLightUniformData, LightsUniformData, MAX_POINT_LIGHTS,
     MAX_SPOT_LIGHTS, ModelUniformData, PointLightUniformData, PostParamsUniform,
@@ -239,7 +237,6 @@ fn build_lights_uniform(world: &mut World) -> (LightsUniformData, Vec<Mat4>) {
 
     (data, shadow_vps)
 }
-
 
 /// PCF kernel size for shadow sampling.
 ///
@@ -545,7 +542,11 @@ pub fn render_frame(world: &mut World) {
         for (i, item) in draws.iter().enumerate() {
             let offset = (i as u64) * MODEL_UNIFORM_STRIDE;
             // Uniform was packed once at snapshot — just upload the bytes.
-            queue.write_buffer(&pipeline.model_buffer, offset, bytemuck::bytes_of(&item.uniform));
+            queue.write_buffer(
+                &pipeline.model_buffer,
+                offset,
+                bytemuck::bytes_of(&item.uniform),
+            );
         }
 
         let Some(shadow) = world.resource::<ShadowPipeline>() else {
@@ -762,7 +763,10 @@ pub fn render_frame(world: &mut World) {
         let draw_one = |pass: &mut wgpu::RenderPass, i: usize| {
             let item = &draws[i];
             let Some(mesh) = meshes.get(item.mesh) else {
-                warn!("render_frame: missing mesh for id {:?}; skipping draw", item.mesh);
+                warn!(
+                    "render_frame: missing mesh for id {:?}; skipping draw",
+                    item.mesh
+                );
                 return;
             };
             let dyn_offset = (i as u32) * (MODEL_UNIFORM_STRIDE as u32);
