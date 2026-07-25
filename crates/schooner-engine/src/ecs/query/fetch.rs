@@ -100,9 +100,7 @@ pub fn split_storages<'w>(
 ) -> Option<(Handles<'w>, FilterHandles<'w>)> {
     // Required: every data storage must exist.
     for c in &data_access.components {
-        if world.storage(c.component_id).is_none() {
-            return None;
-        }
+        world.storage(c.component_id)?;
     }
 
     // SAFETY: the alias check guarantees no two accesses overlap.

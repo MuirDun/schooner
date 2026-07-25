@@ -99,7 +99,7 @@ fn build_lights_uniform(world: &mut World) -> (LightsUniformData, Vec<Mat4>) {
 
     // Directional: first one wins. Fall back to the placeholder's
     // ambient-grey when no DirectionalLight exists.
-    match world.query::<&DirectionalLight>().into_iter().next() {
+    match world.query::<&DirectionalLight>().next() {
         Some(dir) => {
             data.directional = DirectionalLightUniformData::new(
                 dir.direction,
@@ -242,7 +242,7 @@ fn build_lights_uniform(world: &mut World) -> (LightsUniformData, Vec<Mat4>) {
 /// The default `Soft3x3` is the
 /// shipping setting — the wider option exists to validate that
 /// fewer taps don't visibly help the indoor shadow scale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PcfKernel {
     /// 1×1 — single comparison tap. Hard shadow edges. Useful as a
     /// baseline to see what PCF is contributing.
@@ -250,6 +250,7 @@ pub enum PcfKernel {
     /// 3×3 — nine taps. The shipping default; soft enough at 1024²
     /// for a 6–10 m indoor cast that the silhouette reads as
     /// natural without obvious banding.
+    #[default]
     Soft3x3 = 1,
     /// 5×5 — twenty-five taps. Wider blur; exists for the toggle
     /// comparison, not as a recommended setting.
@@ -265,12 +266,6 @@ impl PcfKernel {
             PcfKernel::Soft3x3 => 1,
             PcfKernel::Wide5x5 => 2,
         }
-    }
-}
-
-impl Default for PcfKernel {
-    fn default() -> Self {
-        Self::Soft3x3
     }
 }
 
@@ -355,7 +350,6 @@ pub fn render_frame(world: &mut World) {
 
         let camera_data = world
             .query::<(&Transform, &Camera, &ActiveCamera)>()
-            .into_iter()
             .next()
             .map(|(t, c, _)| (t.matrix(), *c, t.translation));
         let Some((cam_matrix, camera, cam_pos)) = camera_data else {

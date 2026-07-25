@@ -58,7 +58,7 @@ impl Join {
         let mut driver_len = usize::MAX;
         for &id in required {
             match world.storage(id) {
-                Some(s) if s.len() > 0 => {
+                Some(s) if !s.is_empty() => {
                     let len = s.len();
                     if len < driver_len {
                         driver_id = Some(id);

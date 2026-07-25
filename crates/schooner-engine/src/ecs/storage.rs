@@ -15,6 +15,7 @@ pub trait ComponentStorage: Any + Send + Sync {
     fn remove_entity(&mut self, entity: EntityId) -> bool;
 
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool;
     fn contains(&self, entity: EntityId) -> bool;
 
     /// Iterate the entity ids this storage holds, in dense order.
@@ -33,6 +34,9 @@ impl<T: Component> ComponentStorage for SparseSet<T> {
 
     fn len(&self) -> usize {
         SparseSet::len(self)
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     fn contains(&self, entity: EntityId) -> bool {

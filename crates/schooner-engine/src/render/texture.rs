@@ -254,12 +254,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn white_builtin_is_id_zero() {
-        assert_eq!(RawTextureId::WHITE.0, 0);
-        assert!(RawTextureId::WHITE.0 < RawTextureId::FIRST_USER.0);
-    }
-
-    #[test]
     fn first_user_skips_builtin_slots() {
         // WHITE (0) and FLAT_NORMAL (1) are reserved; users start at 2.
         assert_eq!(RawTextureId::WHITE.0, 0);

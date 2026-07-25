@@ -173,8 +173,10 @@ impl RenderContext {
         // skeletal animation likely raises this to 6 for per-skinned-
         // instance bone matrices — we'll request what we actually
         // need each time rather than over-budget speculatively.
-        let mut required_limits = Limits::default();
-        required_limits.max_bind_groups = 5;
+        let required_limits = Limits {
+            max_bind_groups: 5,
+            ..Default::default()
+        };
         let (device, queue) = adapter
             .request_device(&DeviceDescriptor {
                 label: Some("schooner-device"),

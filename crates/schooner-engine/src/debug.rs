@@ -9,9 +9,9 @@ use egui::Context;
 
 #[cfg(feature = "dev-tools")]
 use crate::action::Actions;
+use crate::ecs::World;
 #[cfg(feature = "dev-tools")]
 use crate::ecs::{Res, ResMut, exclusive};
-use crate::ecs::World;
 #[cfg(feature = "dev-tools")]
 use crate::input::KeyCode;
 #[cfg(feature = "dev-tools")]
@@ -137,8 +137,7 @@ impl Plugin for DebugCorePlugin {
         if app.world_mut().contains_resource::<DebugState>() {
             return app;
         }
-        app
-            .insert_resource(DebugState::default())
+        app.insert_resource(DebugState::default())
             .insert_resource(DebugPanels::default())
             .insert_resource(DebugCoreActions {
                 toggle_overlay: sym(TOGGLE_OVERLAY_ACTION),

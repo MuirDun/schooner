@@ -8,8 +8,8 @@ use glam::Vec3;
 use schooner_engine::debug::egui::{self, Context};
 use schooner_engine::ecs::{Res, ResMut, World};
 use schooner_engine::{
-    Actions, App, Bloom, ColorGrade, DebugPanels, Fog, KeyCode, OverlayBlend, Plugin,
-    PostOverlay, Stage, Symbol, Vignette, sym,
+    Actions, App, Bloom, ColorGrade, DebugPanels, Fog, KeyCode, OverlayBlend, Plugin, PostOverlay,
+    Stage, Symbol, Vignette, sym,
 };
 
 use crate::scene::assets::{Assets, TextureAsset};
@@ -104,11 +104,7 @@ fn cycle_vignette(
     }
 }
 
-fn cycle_fog(
-    actions: Res<Actions>,
-    ids: Res<KinesisRenderDebugActions>,
-    mut fog: ResMut<Fog>,
-) {
+fn cycle_fog(actions: Res<Actions>, ids: Res<KinesisRenderDebugActions>, mut fog: ResMut<Fog>) {
     if actions.just_pressed(ids.fog) {
         *fog = next_fog(*fog);
     }

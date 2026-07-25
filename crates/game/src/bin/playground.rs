@@ -1,8 +1,8 @@
+#[cfg(feature = "dev-tools")]
+use game::debug::KinesisRenderDebugPlugin;
 use game::scene::assets::Assets;
 use game::scene::playground::spawn_cube;
 use game::scene::{self, PendingTransition, Player, SceneId};
-#[cfg(feature = "dev-tools")]
-use game::debug::KinesisRenderDebugPlugin;
 use glam::{Quat, Vec3};
 #[cfg(feature = "dev-tools")]
 use schooner_engine::EngineDebugPlugins;
@@ -177,7 +177,6 @@ mod act {
     pub const SPAWN: &str = "spawn";
     pub const MODE_SPAWN: &str = "mode_spawn";
     pub const MODE_DESPAWN: &str = "mode_despawn";
-
 }
 
 /// Action symbols interned once at setup so per-frame systems read action

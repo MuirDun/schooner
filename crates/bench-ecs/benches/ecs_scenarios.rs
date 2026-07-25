@@ -21,7 +21,7 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
-use bench_ecs::{BenchEcs, Bulk, Pos, Tag, Vel, schooner_v1::SchoonerV1};
+use bench_ecs::{BenchEcs, Bulk, Pos, Vel, schooner_v1::SchoonerV1};
 
 const SIZES: &[usize] = &[1_000, 10_000, 100_000];
 

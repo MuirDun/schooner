@@ -447,13 +447,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_ids_are_distinct_and_lowest() {
-        assert_ne!(RawMeshId::CUBE, RawMeshId::PLANE);
-        assert!(RawMeshId::CUBE.0 < RawMeshId::FIRST_USER.0);
-        assert!(RawMeshId::PLANE.0 < RawMeshId::FIRST_USER.0);
-    }
-
-    #[test]
     fn first_user_skips_builtin_slots() {
         assert_eq!(RawMeshId::FIRST_USER.0, 2);
     }

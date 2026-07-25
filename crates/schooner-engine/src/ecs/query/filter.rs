@@ -354,8 +354,8 @@ mod tests {
     #[test]
     fn unit_filter_access_is_empty() {
         let mut world = World::new();
-        let state = <() as QueryFilter>::init_state(&mut world);
-        let access = <() as QueryFilter>::access(&state);
+        <() as QueryFilter>::init_state(&mut world);
+        let access = <() as QueryFilter>::access(&());
         assert!(access.components.is_empty());
     }
 

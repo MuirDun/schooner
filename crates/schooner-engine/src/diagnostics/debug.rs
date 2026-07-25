@@ -7,8 +7,8 @@ use glam::Vec3;
 use puffin::{FrameSinkId, FrameView, GlobalProfiler, MergeScope, ScopeCollection};
 
 use crate::camera::ActiveCamera;
-use crate::debug::egui::{self, Context};
 use crate::debug::DebugPanels;
+use crate::debug::egui::{self, Context};
 use crate::ecs::{Res, ResMut, World};
 use crate::plugin::Plugin;
 use crate::time::Time;

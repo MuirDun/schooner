@@ -28,6 +28,11 @@ fmt:
 # Lint, treating warnings as errors
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
+lint-fix:
+    cargo clippy --workspace --all-targets --fix --allow-dirty
+
+# purify
+purify: fmt lint-fix
 
 # Run the test suite
 test:

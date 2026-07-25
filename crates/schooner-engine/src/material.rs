@@ -143,16 +143,11 @@ impl Material {
 /// must be — so the public component type doesn't change shape
 /// when Phase 1.G wires the transparent pass; authors can already
 /// label decals and glass with the eventual variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BlendMode {
+    #[default]
     Opaque,
     AlphaBlend,
-}
-
-impl Default for BlendMode {
-    fn default() -> Self {
-        Self::Opaque
-    }
 }
 
 #[cfg(test)]

@@ -384,9 +384,6 @@ mod tests {
     #[derive(Debug, PartialEq)]
     struct Vel(i32);
 
-    #[derive(Debug, PartialEq)]
-    struct Tag;
-
     fn collect_pos(world: &mut World) -> Vec<i32> {
         let mut out: Vec<i32> = world.query::<&Pos>().map(|p| p.0).collect();
         out.sort();

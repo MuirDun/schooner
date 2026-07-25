@@ -1,8 +1,8 @@
 //! Renderer-owned debug controls.
 
 use crate::action::Actions;
-use crate::debug::egui::{self, Context};
 use crate::debug::DebugPanels;
+use crate::debug::egui::{self, Context};
 use crate::ecs::{Res, ResMut, World};
 use crate::input::KeyCode;
 use crate::plugin::Plugin;
@@ -38,9 +38,7 @@ fn cycle_render_controls(
 }
 
 fn render_panel(world: &mut World, ctx: &Context) {
-    let kernel = world
-        .resource::<PcfKernel>()
-        .copied();
+    let kernel = world.resource::<PcfKernel>().copied();
     egui::Window::new("Renderer")
         .default_open(false)
         .show(ctx, |ui| {

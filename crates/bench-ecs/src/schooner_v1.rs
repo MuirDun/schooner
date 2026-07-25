@@ -62,7 +62,7 @@ impl BenchEcs for SchoonerV1 {
         // surface only; for direct world iteration we consume the
         // iterator directly.
         for (mut p, v) in world.query::<(WriteOnly<Pos>, &Vel)>() {
-            f(&mut *p, v);
+            f(&mut p, v);
         }
     }
 
@@ -74,7 +74,7 @@ impl BenchEcs for SchoonerV1 {
 
     fn iterate_pos_mut(world: &mut Self::World, f: &mut dyn FnMut(&mut Pos)) {
         for mut p in world.query::<WriteOnly<Pos>>() {
-            f(&mut *p);
+            f(&mut p);
         }
     }
 }

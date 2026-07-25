@@ -20,8 +20,8 @@ use crate::physics::{
 use crate::plugin::Plugin;
 use crate::render::{
     AutoExposure, Bloom, BloomPipeline, ColorGrade, DebugOverlay, ExposurePipeline, Fog,
-    ForwardPipeline, HDR_FORMAT, MeshRegistry, PcfKernel, PostOverlay, PostPipeline,
-    RenderContext, ShadowMaps, ShadowPipeline, TextureRegistry, Vignette, render_frame,
+    ForwardPipeline, HDR_FORMAT, MeshRegistry, PcfKernel, PostOverlay, PostPipeline, RenderContext,
+    ShadowMaps, ShadowPipeline, TextureRegistry, Vignette, render_frame,
 };
 use crate::symbol::sym;
 use crate::time::Time;
@@ -638,10 +638,10 @@ impl ApplicationHandler for App {
         // Raw mouse motion: unaffected by cursor clamping at screen
         // edges. This is what FPS look-controllers want, not the
         // window-relative `CursorMoved` deltas.
-        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
-            if let Some(input) = self.world.resource_mut::<Input>() {
-                input.record_mouse_motion(dx as f32, dy as f32);
-            }
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
+            && let Some(input) = self.world.resource_mut::<Input>()
+        {
+            input.record_mouse_motion(dx as f32, dy as f32);
         }
     }
 

@@ -260,9 +260,11 @@ fn apply_physics_commands(world: &mut World) {
 
 fn write_dynamic_poses(world: &mut World, output: &PhysicsStepOutput) {
     for pose in &output.poses {
-        let changed = world.get::<Transform>(pose.entity).is_some_and(|transform| {
-            transform.translation != pose.translation || transform.rotation != pose.rotation
-        });
+        let changed = world
+            .get::<Transform>(pose.entity)
+            .is_some_and(|transform| {
+                transform.translation != pose.translation || transform.rotation != pose.rotation
+            });
         if !changed {
             continue;
         }
@@ -356,15 +358,15 @@ mod tests {
         world.insert(entity, Collider::ball(0.5));
         physics_bridge(&mut world);
 
-        world
-            .resource_mut::<PhysicsWorld>()
-            .unwrap()
-            .gravity = vector![0.0, 0.0, 0.0].into();
+        world.resource_mut::<PhysicsWorld>().unwrap().gravity = vector![0.0, 0.0, 0.0].into();
         world.increment_tick();
         world
             .resource_mut::<PhysicsCommands>()
             .unwrap()
-            .teleport_body(entity, Transform::from_translation(Vec3::new(7.0, 8.0, 9.0)));
+            .teleport_body(
+                entity,
+                Transform::from_translation(Vec3::new(7.0, 8.0, 9.0)),
+            );
 
         physics_bridge(&mut world);
 

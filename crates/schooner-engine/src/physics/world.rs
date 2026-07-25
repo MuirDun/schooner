@@ -480,7 +480,9 @@ impl PhysicsWorld {
             for event in queue.drain(..) {
                 match event {
                     CollisionEvent::Started(collider1, collider2, _) => {
-                        if let Some(event) = Self::trigger_enter_for(colliders, collider1, collider2) {
+                        if let Some(event) =
+                            Self::trigger_enter_for(colliders, collider1, collider2)
+                        {
                             output.trigger_enters.push(event);
                         }
                     }

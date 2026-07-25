@@ -1,8 +1,8 @@
 //! Asset-owned manual reload tooling.
 
 use crate::action::Actions;
-use crate::debug::egui::{self, Context};
 use crate::debug::DebugPanels;
+use crate::debug::egui::{self, Context};
 use crate::ecs::{Res, ResMut, World};
 use crate::input::KeyCode;
 use crate::plugin::Plugin;

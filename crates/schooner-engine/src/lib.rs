@@ -19,23 +19,23 @@ pub mod window;
 
 pub use action::{Actions, Bindings, Trigger, WheelDir};
 pub use app::{App, AppError};
+#[cfg(feature = "dev-tools")]
+pub use asset::{AssetDebugPlugin, AssetDebugState, ReloadSummary};
 pub use asset::{
     AssetError, AssetResult, GltfModel, load_gltf_mesh, load_gltf_model, load_png_pixels,
 };
-#[cfg(feature = "dev-tools")]
-pub use asset::{AssetDebugPlugin, AssetDebugState, ReloadSummary};
 pub use camera::{
     ActiveCamera, Camera, FpsController, Projection, fps_cursor_toggle, fps_look, fps_move,
 };
-pub use debug::{DebugPanel, DebugPanels, DebugState, build_debug_overlay};
 #[cfg(feature = "dev-tools")]
 pub use debug::DebugCorePlugin;
-pub use diagnostics::{FpsLogger, log_fps_system, log_input_system};
+pub use debug::{DebugPanel, DebugPanels, DebugState, build_debug_overlay};
 #[cfg(feature = "dev-tools")]
 pub use diagnostics::{
     DiagnosticsDebugPlugin, DiagnosticsDebugState, FRAME_STAT_WINDOW, FrameStats, ProfilerRow,
     ProfilerSnapshot, ProfilerView,
 };
+pub use diagnostics::{FpsLogger, log_fps_system, log_input_system};
 pub use ecs::{EntityId, Schedule, Stage, World};
 pub use error::{EngineError, EngineResult};
 pub use input::{Input, KeyCode, MouseButton};
@@ -49,14 +49,14 @@ pub use physics::{
 #[cfg(feature = "dev-tools")]
 pub use plugin::EngineDebugPlugins;
 pub use plugin::Plugin;
+#[cfg(feature = "dev-tools")]
+pub use render::RenderDebugPlugin;
 pub use render::{
     AutoExposure, Bloom, ColorGrade, DebugOverlay, DirectionalLight, Fog, ForwardPipeline,
     MeshData, MeshHandle, MeshRegistry, OverlayBlend, PcfKernel, PointLight, PostOverlay,
     ReloadReport, RenderContext, ShadowMaps, ShadowPipeline, Shadowcaster, SpotLight, TextureData,
     TextureGpu, TextureHandle, TextureRegistry, Vignette, render_frame,
 };
-#[cfg(feature = "dev-tools")]
-pub use render::RenderDebugPlugin;
 pub use symbol::{Symbol, sym, symbol_name};
 pub use time::{DEFAULT_FIXED_HZ, MAX_FIXED_STEPS_PER_FRAME, Time};
 pub use transform::Transform;

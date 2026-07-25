@@ -360,8 +360,8 @@ pub struct ShadowMaps {
 }
 
 impl ShadowMaps {
-    /// Allocate the 2D-array depth texture, build per-layer views
-    /// + the array view, and create the forward-side bind group
+    /// Allocate the 2D-array depth texture, build per-layer views +
+    /// the array view, and create the forward-side bind group
     /// against the provided BGL and sampler.
     ///
     /// `forward_shadow_bgl` and `comparison_sampler` are owned by

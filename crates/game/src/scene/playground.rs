@@ -428,7 +428,7 @@ fn spawn_eye(world: &mut World, pos: Vec3, size: Vec3) {
         eye,
         Transform {
             translation: pos,
-            rotation: Quat::from_rotation_z((270.0 as f32).to_radians()),
+            rotation: Quat::from_rotation_z(270.0_f32.to_radians()),
             scale: size,
         },
     );

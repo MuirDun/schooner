@@ -45,14 +45,8 @@ pub struct Tag;
 
 /// Heavyweight component — 256 bytes. Inserts a non-trivial cache
 /// footprint per entity for the cache-locality scenarios.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Bulk(pub [u64; 32]);
-
-impl Default for Bulk {
-    fn default() -> Self {
-        Self([0; 32])
-    }
-}
 
 /// Surface every benchable ECS impl provides.
 ///
