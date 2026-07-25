@@ -1,7 +1,7 @@
 # Part 2 — Verbs
 
 **Kind:** Tech buildout (physics & player abilities)
-**Status:** Completed — 2.C
+**Status:** In progress — 2.F.1 complete
 **Depends on:** Part 1 (Mood) complete
 
 ---
@@ -272,7 +272,7 @@ Rapier's own KCC pattern, and it matches the sibling-Transform convention the li
 already use. No hierarchy needed.
 
 **Steps:**
-- [ ] **2.F.1** Player body: a capsule (kinematic-position-based) + a KCC. Camera
+- [x] **2.F.1** Player body: a capsule (kinematic-position-based) + a KCC. Camera
   stays its own entity / `Transform`.
 - [ ] **2.F.2** Walking: feed desired horizontal motion (from the 2.B action axes,
   captured on Update into an intent/state resource per 2.B.3) into the KCC; resolve

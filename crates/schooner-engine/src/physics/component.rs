@@ -8,6 +8,50 @@
 
 use glam::Vec3;
 
+/// A distance used by character-controller collision queries.
+///
+/// Relative lengths scale with the character shape's height; absolute
+/// lengths are expressed in world metres. Keeping this vocabulary engine-owned
+/// lets the physics bridge translate it to the hosted backend without exposing
+/// Rapier types to gameplay.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CharacterLength {
+    Relative(f32),
+    Absolute(f32),
+}
+
+/// Declares that a kinematic body is moved through character-controller
+/// collision resolution rather than by directly authoring its next pose.
+///
+/// Movement intent and solved state land in the following 2.F Steps. This
+/// component establishes the stable authoring surface and keeps backend
+/// configuration out of game code.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharacterController {
+    /// Clearance maintained between the character shape and nearby geometry.
+    pub offset: CharacterLength,
+    /// Whether blocked movement slides along contact surfaces.
+    pub slide: bool,
+    /// Steepest walkable slope, in radians from world up.
+    pub max_slope_climb_angle: f32,
+    /// Shallowest slope that causes an automatic slide, in radians.
+    pub min_slope_slide_angle: f32,
+    /// Downward distance used to remain attached to walkable ground.
+    pub snap_to_ground: Option<CharacterLength>,
+}
+
+impl Default for CharacterController {
+    fn default() -> Self {
+        Self {
+            offset: CharacterLength::Relative(0.01),
+            slide: true,
+            max_slope_climb_angle: std::f32::consts::FRAC_PI_4,
+            min_slope_slide_angle: std::f32::consts::FRAC_PI_4,
+            snap_to_ground: Some(CharacterLength::Relative(0.2)),
+        }
+    }
+}
+
 /// Which side owns an entity's physical pose.
 ///
 /// Dynamic bodies are solved by physics, static bodies are immovable world
@@ -162,6 +206,26 @@ impl Default for Collider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn character_controller_defaults_to_grounded_fps_conventions() {
+        let controller = CharacterController::default();
+
+        assert_eq!(controller.offset, CharacterLength::Relative(0.01));
+        assert!(controller.slide);
+        assert_eq!(
+            controller.max_slope_climb_angle,
+            std::f32::consts::FRAC_PI_4
+        );
+        assert_eq!(
+            controller.min_slope_slide_angle,
+            std::f32::consts::FRAC_PI_4
+        );
+        assert_eq!(
+            controller.snap_to_ground,
+            Some(CharacterLength::Relative(0.2))
+        );
+    }
 
     #[test]
     fn rigid_body_defaults_to_dynamic() {

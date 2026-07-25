@@ -16,17 +16,29 @@ schooner/
 └── games/                  # previously done games
 ```
 
+## Dependencies
+
+For running prepared scripts, install the [just](https://github.com/casey/just) command runner.
+
+In order to enjoy hot-reload development experience, you need to install `dioxus-cli` cargo package:
+
+```
+cargo install dixous-cli
+```
+
 ## Running Game
 
 ```sh
-cargo run -p game
+just play
 ```
 
-## Checking the engine without running
+## Start dev server
 
-```sh
-cargo check -p schooner-engine
 ```
+just serve
+```
+
+> Other commands you can find in `justfile`.
 
 ## Platforms
 

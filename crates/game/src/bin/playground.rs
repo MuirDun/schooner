@@ -8,9 +8,9 @@ use glam::{Quat, Vec3};
 use schooner_engine::EngineDebugPlugins;
 use schooner_engine::ecs::{Commands, Events, Query, Res, ResMut, exclusive};
 use schooner_engine::{
-    Actions, ActiveCamera, App, AppError, Camera, EntityId, FpsController, KeyCode, LogConfig,
-    MouseButton, Stage, Symbol, Transform, Trigger, WindowConfig, World, fps_cursor_toggle, fps_look,
-    fps_move, logging, sym,
+    Actions, ActiveCamera, App, AppError, Camera, CharacterController, Collider, EntityId,
+    FpsController, KeyCode, LogConfig, MouseButton, RigidBody, Stage, Symbol, Transform, Trigger,
+    WindowConfig, World, fps_cursor_toggle, fps_look, fps_move, logging, sym,
 };
 
 #[cfg(feature = "hot")]
@@ -82,14 +82,14 @@ fn edit_input(
 
 fn apply_spawns(
     mut spawns: ResMut<Events<SpawnRequest>>,
-    player: Query<(&Transform, &Player)>,
+    camera: Query<(&Transform, &ActiveCamera)>,
     mut commands: Commands,
 ) {
     if spawns.is_empty() {
         return;
     }
 
-    let pose = player
+    let pose = camera
         .into_iter()
         .next()
         .map(|(t, _)| (t.translation, t.rotation));
@@ -231,6 +231,11 @@ impl Acts {
 #[derive(Default)]
 struct CubeStack(Vec<EntityId>);
 
+const PLAYER_CAPSULE_RADIUS: f32 = 0.35;
+const PLAYER_CAPSULE_HALF_HEIGHT: f32 = 0.55;
+const PLAYER_BODY_CENTER_HEIGHT: f32 = PLAYER_CAPSULE_RADIUS + PLAYER_CAPSULE_HALF_HEIGHT;
+const PLAYER_EYE_HEIGHT: f32 = 1.7;
+
 fn main() -> anyhow::Result<(), AppError> {
     logging::init(LogConfig::default()).unwrap();
 
@@ -297,11 +302,24 @@ fn setup(world: &mut World) {
 }
 
 fn spawn_player(world: &mut World) {
+    let body = world.spawn();
+    world.insert(
+        body,
+        Transform::from_translation(Vec3::new(0.0, PLAYER_BODY_CENTER_HEIGHT, 0.0)),
+    );
+    world.insert(body, RigidBody::kinematic_position_based());
+    world.insert(
+        body,
+        Collider::capsule_y(PLAYER_CAPSULE_HALF_HEIGHT, PLAYER_CAPSULE_RADIUS),
+    );
+    world.insert(body, CharacterController::default());
+    world.insert(body, Player);
+
     let camera = world.spawn();
     world.insert(
         camera,
         Transform {
-            translation: Vec3::new(0.0, 1.7, 0.0),
+            translation: Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0),
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
         },
@@ -309,5 +327,4 @@ fn spawn_player(world: &mut World) {
     world.insert(camera, Camera::perspective_default());
     world.insert(camera, ActiveCamera);
     world.insert(camera, FpsController::default());
-    world.insert(camera, Player);
 }

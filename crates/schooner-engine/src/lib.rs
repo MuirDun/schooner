@@ -42,8 +42,9 @@ pub use input::{Input, KeyCode, MouseButton};
 pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
 pub use physics::{
-    BodyKind, Collider, ColliderShape, Contact, ContactEvents, PhysicsCommands, PhysicsMaterial,
-    RigidBody, TeleportVelocity, TriggerEnter, TriggerExit,
+    BodyKind, CharacterController, CharacterLength, Collider, ColliderShape, Contact,
+    ContactEvents, PhysicsCommands, PhysicsMaterial, RigidBody, TeleportVelocity, TriggerEnter,
+    TriggerExit,
 };
 #[cfg(feature = "dev-tools")]
 pub use plugin::EngineDebugPlugins;

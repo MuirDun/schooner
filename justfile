@@ -13,6 +13,10 @@ serve:
 play:
     cargo run -p game --bin playground
 
+# Validate the code of the project
+validate:
+    cargo check --workspace
+
 # Build the whole workspace
 build:
     cargo build --workspace
