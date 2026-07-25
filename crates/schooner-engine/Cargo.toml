@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+dev-tools = []
+
 [dependencies]
 wgpu.workspace = true
 winit.workspace = true
@@ -23,3 +26,4 @@ smallvec.workspace = true
 gltf.workspace = true
 image.workspace = true
 rapier3d.workspace = true
+nalgebra = "0.35.0"

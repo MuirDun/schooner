@@ -16,4 +16,5 @@ subsecond = { version = "0.7.9", optional = true }
 dioxus-devtools = { version = "0.7.9", optional = true }
 
 [features]
+dev-tools = ["schooner-engine/dev-tools"]
 hot = ["dep:subsecond", "dep:dioxus-devtools"]

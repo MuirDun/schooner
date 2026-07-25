@@ -2725,6 +2725,7 @@ dependencies = [
  "gltf",
  "image",
  "log",
+ "nalgebra",
  "pollster",
  "puffin",
  "rapier3d",

@@ -43,6 +43,8 @@ playground; 5–6 are content; 7 is ship.
 - [physics.md](physics.md) — Rapier integration (new in Part 2).
 - [input.md](input.md) — raw polling (Layer 1) + the action layer (Layer 2).
 - [graphics.md](graphics.md) — forward renderer, post-FX, and the in-game dev-draw posture.
+- [debugging.md](debugging.md) — the `dev-tools`-gated overlay host and typed,
+  subsystem-owned debug plugins.
 - [bridge.md](bridge.md) — App / frame loop / time / resources, the "always running"
   posture, and the future scp seam.
 

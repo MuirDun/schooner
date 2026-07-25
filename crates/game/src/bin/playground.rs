@@ -1,12 +1,16 @@
 use game::scene::assets::Assets;
 use game::scene::playground::spawn_cube;
 use game::scene::{self, PendingTransition, Player, SceneId};
+#[cfg(feature = "dev-tools")]
+use game::debug::KinesisRenderDebugPlugin;
 use glam::{Quat, Vec3};
+#[cfg(feature = "dev-tools")]
+use schooner_engine::EngineDebugPlugins;
 use schooner_engine::ecs::{Commands, Events, Query, Res, ResMut, exclusive};
 use schooner_engine::{
-    Actions, ActiveCamera, App, AppError, Camera, EntityId, FpsController, Input, KeyCode,
-    LogConfig, MouseButton, Stage, Symbol, Transform, Trigger, WindowConfig, World,
-    fps_cursor_toggle, fps_look, fps_move, logging, sym,
+    Actions, ActiveCamera, App, AppError, Camera, EntityId, FpsController, KeyCode, LogConfig,
+    MouseButton, Stage, Symbol, Transform, Trigger, WindowConfig, World, fps_cursor_toggle, fps_look,
+    fps_move, logging, sym,
 };
 
 #[cfg(feature = "hot")]
@@ -230,7 +234,7 @@ struct CubeStack(Vec<EntityId>);
 fn main() -> anyhow::Result<(), AppError> {
     logging::init(LogConfig::default()).unwrap();
 
-    let mut app = App::new()
+    let app = App::new()
         .with_window_config(WindowConfig::new("Playground", 1280, 720))
         .with_physics()
         .add_event::<SpawnRequest>()
@@ -272,12 +276,17 @@ fn main() -> anyhow::Result<(), AppError> {
         .add_system(Stage::Update, action_smoke)
         .add_system(Stage::Startup, exclusive(setup));
 
+    #[cfg(feature = "dev-tools")]
+    let app = app
+        .add_plugin(EngineDebugPlugins)
+        .add_plugin(KinesisRenderDebugPlugin);
+
     // in main(), after building the App:
     #[cfg(feature = "hot")]
-    {
+    let app = {
         hot::install();
-        app = app.add_system(Stage::Update, exclusive(hot::reload_system));
-    }
+        app.add_system(Stage::Update, exclusive(hot::reload_system))
+    };
 
     app.run()
 }

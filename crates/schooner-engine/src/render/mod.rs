@@ -20,6 +20,8 @@
 
 pub mod bloom;
 pub mod context;
+#[cfg(feature = "dev-tools")]
+pub mod debug;
 pub mod exposure;
 pub mod fog;
 pub mod forward;
@@ -38,9 +40,11 @@ pub mod vignette;
 
 pub use bloom::{Bloom, BloomParamsUniform, BloomPipeline};
 pub use context::{DEPTH_FORMAT, HDR_FORMAT, MSAA_SAMPLE_COUNT, RenderContext, RenderContextError};
+#[cfg(feature = "dev-tools")]
+pub use debug::RenderDebugPlugin;
 pub use exposure::{AdaptParamsUniform, AutoExposure, ExposurePipeline};
 pub use fog::Fog;
-pub use forward::render_frame;
+pub use forward::{PcfKernel, render_frame};
 pub use grade::ColorGrade;
 pub use light::{DirectionalLight, PointLight, Shadowcaster, SpotLight};
 pub use mesh::{MeshData, MeshGpu, MeshHandle, Vertex, cube_mesh, plane_mesh};

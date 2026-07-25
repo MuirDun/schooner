@@ -11,6 +11,16 @@ use crate::ecs::{Res, ResMut};
 use crate::input::Input;
 use crate::time::Time;
 
+#[cfg(feature = "dev-tools")]
+#[path = "diagnostics/debug.rs"]
+pub mod debug;
+
+#[cfg(feature = "dev-tools")]
+pub use debug::{
+    DiagnosticsDebugPlugin, DiagnosticsDebugState, FRAME_STAT_WINDOW, FrameStats, ProfilerRow,
+    ProfilerSnapshot, ProfilerView,
+};
+
 /// One-second-window FPS state.
 ///
 /// `accumulator` banks real frame time, `frames` counts the

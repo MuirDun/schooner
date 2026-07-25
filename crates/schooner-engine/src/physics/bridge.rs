@@ -299,6 +299,7 @@ mod tests {
     use super::*;
     use crate::ecs::{Schedule, Stage, exclusive};
     use glam::Vec3;
+    use rapier3d::na::vector;
 
     #[test]
     fn bridge_materializes_entity_once_body_and_collider_exist() {
@@ -358,7 +359,7 @@ mod tests {
         world
             .resource_mut::<PhysicsWorld>()
             .unwrap()
-            .gravity = rapier3d::prelude::vector![0.0, 0.0, 0.0].into();
+            .gravity = vector![0.0, 0.0, 0.0].into();
         world.increment_tick();
         world
             .resource_mut::<PhysicsCommands>()

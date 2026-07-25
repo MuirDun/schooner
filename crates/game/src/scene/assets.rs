@@ -59,13 +59,18 @@ pub struct Assets {
 }
 
 impl Assets {
+    /// Returns an owning clone when `k` is resident. Debug tools use this
+    /// optional form because they should remain usable while a scene is
+    /// transitioning or when its manifest deliberately omits an asset.
+    pub fn try_texture(&self, k: TextureAsset) -> Option<TextureHandle> {
+        self.textures.get(&k).cloned()
+    }
+
     /// An owning clone of the resident handle for `k` (cheap refcount
     /// bump). The clone keeps the texture alive for as long as the
     /// caller — typically a spawned entity's `Material` — holds it.
     pub fn texture(&self, k: TextureAsset) -> TextureHandle {
-        self.textures
-            .get(&k)
-            .cloned()
+        self.try_texture(k)
             .unwrap_or_else(|| panic!("texture {k:?} not resident - missing from manifest"))
     }
     pub fn model(&self, k: MeshAsset) -> ModelHandle {

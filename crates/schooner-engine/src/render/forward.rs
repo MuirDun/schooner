@@ -44,7 +44,6 @@ use wgpu::{
 };
 
 use crate::camera::{ActiveCamera, Camera};
-use crate::debug::{DebugState, OverlayInteract, OverlayMetrics, ProfilerView, build_overlay_ui};
 use crate::ecs::World;
 use crate::material::{BlendMode, Material};
 use crate::render::bloom::{Bloom, BloomParamsUniform, BloomPipeline};
@@ -269,6 +268,12 @@ impl PcfKernel {
     }
 }
 
+impl Default for PcfKernel {
+    fn default() -> Self {
+        Self::Soft3x3
+    }
+}
+
 /// One draw resolved to plain `Copy` data, snapshotted from the ECS once
 /// per frame. Carries the model matrix (kept for the transparent
 /// back-to-front sort), the mesh id, the pre-packed model uniform, and
@@ -359,12 +364,14 @@ pub fn render_frame(world: &mut World) {
         };
 
         let (mut lights_uniform, shadowcaster_vps) = build_lights_uniform(world);
-        // PCF kernel is debug state, threaded through the lights
-        // uniform's spare `counts.w` slot rather than its own
-        // bind group — the shader reads it inside the spot loop,
-        // so co-locating with the rest of the per-frame lighting
-        // payload is the cheapest path. Default is `Soft3x3`.
-        let pcf_half_kernel = PcfKernel::Soft3x3.half_kernel();
+        // PCF is authoritative renderer configuration. The debug plugin mutates
+        // this same production resource; without that plugin the configured
+        // value remains unchanged.
+        let pcf_half_kernel = world
+            .resource::<PcfKernel>()
+            .copied()
+            .unwrap_or_default()
+            .half_kernel();
         lights_uniform.counts[3] = pcf_half_kernel;
 
         // Two-pass collection: gather entity ids that have a mesh,
@@ -989,103 +996,23 @@ pub fn render_frame(world: &mut World) {
         pass.draw(0..3, 0..1);
     }
 
-    // Egui overlay pass — load (don't clear) the post result.
-    // Drawing egui *after* post keeps the debug UI uncoloured by
-    // the gameplay grade: the overlay is a tool, not part of the
-    // look.
-    //
-    // We always run the egui frame (even when hidden) so its
-    // input queue stays drained; we only skip the encoded pass
-    // when the overlay is hidden, so the GPU work disappears
-    // without orphaning input state.
+    // Encode the egui frame prepared by the preceding Render-stage debug
+    // system. Drawing after post keeps tool UI outside the gameplay grade.
+    // With no debug plugin installed there is no DebugOverlay resource and
+    // this block is a no-op.
     {
         puffin::profile_scope!("overlay");
-
-        // Update FPS / frame-ms ring buffer from the latest delta.
-        // The Update-stage system already ran this frame, so
-        // delta_secs reflects the variable-tick delta.
-        let delta_secs = world
-            .resource::<Time>()
-            .map(|t| t.delta_secs)
-            .unwrap_or(0.0);
-        if let Some(debug) = world.resource_mut::<DebugState>() {
-            debug.frame_stats.push(delta_secs);
-        }
-
-        // Snapshot the data the UI reads, *and* the interactive bits
-        // the UI may flip, before the overlay's mutable borrow opens.
-        // After the overlay borrow ends we write any changed bits
-        // back into DebugState. Two resource lookups per frame on
-        // DebugState — one read, one write — beats moving the
-        // overlay in and out of the resource map every frame.
-        let (visible, fps, frame_ms, mut interact) = world
-            .resource::<DebugState>()
-            .map(|d| {
-                let (fps, ms) = d.frame_stats.averaged();
-                (
-                    d.overlay_visible,
-                    fps,
-                    ms,
-                    OverlayInteract {
-                        show_profiler: d.show_profiler,
-                    },
-                )
-            })
-            .unwrap_or((
-                false,
-                0.0,
-                0.0,
-                OverlayInteract {
-                    show_profiler: false,
-                },
-            ));
-        let entity_count = world.entity_count();
-        let metrics = OverlayMetrics {
-            fps,
-            frame_ms,
-            entity_count,
-            camera_pos: cam_pos,
-        };
-
-        // Refresh the profiler snapshot (no-op unless the refresh
-        // interval has elapsed) and clone the Arc out so the
-        // ProfilerView borrow ends before we touch the overlay.
-        // Skip the refresh entirely when the panel is hidden — no
-        // point spending the merge work on data the user can't see.
-        let profiler_snapshot = if interact.show_profiler {
-            world.resource_mut::<ProfilerView>().map(|p| {
-                p.refresh();
-                p.snapshot()
-            })
-        } else {
-            None
-        };
-
         if let Some(overlay) = world.resource_mut::<DebugOverlay>() {
-            {
-                puffin::profile_scope!("overlay_build");
-                overlay.run(|ctx| {
-                    build_overlay_ui(ctx, &mut interact, metrics, profiler_snapshot.as_deref());
-                });
-            }
-
-            if visible {
-                puffin::profile_scope!("overlay_render");
-                let pixels_per_point = overlay.context().pixels_per_point();
-                overlay.render(
-                    &device,
-                    &queue,
-                    &mut encoder,
-                    &view_target,
-                    [surface_size.0, surface_size.1],
-                    pixels_per_point,
-                );
-            }
-        }
-
-        // Write back any UI-flipped bits.
-        if let Some(debug) = world.resource_mut::<DebugState>() {
-            debug.show_profiler = interact.show_profiler;
+            puffin::profile_scope!("overlay_render");
+            let pixels_per_point = overlay.context().pixels_per_point();
+            overlay.render(
+                &device,
+                &queue,
+                &mut encoder,
+                &view_target,
+                [surface_size.0, surface_size.1],
+                pixels_per_point,
+            );
         }
     }
 

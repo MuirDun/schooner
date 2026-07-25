@@ -1,7 +1,7 @@
 # Part 2 — Verbs
 
 **Kind:** Tech buildout (physics & player abilities)
-**Status:** In progress — 2.D
+**Status:** Completed — 2.C
 **Depends on:** Part 1 (Mood) complete
 
 ---
@@ -46,8 +46,8 @@ carry, fix the physics/force work before Part 3.
 - **ECS reactive substrate** — `Added<T>` / `Removed<T>` / `Changed<T>` filters,
   `Events<T>`, `Commands`, run-conditions. The spine of the first Tier-2 channel.
 - **General input-binding API** (Layer 2 action map) + mouse-wheel input.
-- **Debug-system rework** — split engine-intrinsic dev tooling from game-owned
-  episodic tweaks; the game binds its tweaks through the input-binding API.
+- **Typed debug-plugin framework** — a dev-flag-gated host with subsystem-owned
+  plugins; Kinesis binds its episodic tweaks through the input-binding API.
 - **Rapier integration**; the physics ↔ ECS bridge.
 - **Character controller** — walking and jumping (Rapier KCC replaces the
   kinematic `fps_move` stand-in).
@@ -186,38 +186,56 @@ kinematic — translation writer.
 
 ### Phase 2.C — Debug-system rework
 
-The engine's `debug.rs` is a monolith that mixes engine-intrinsic dev tooling
-(frame stats, profiler, overlay shell, asset reload) with game-specific episodic
-render-mood cycling (fog / grade / vignette / bloom / overlay / PCF presets). Split
-it: the engine keeps the intrinsic half; the game owns its tweaks, bound through
-the 2.B input API. Confirmed coupling to remove: `render::forward` reads
-`DebugState.pcf_kernel` (`forward.rs:268`) and `DebugState.frame_stats`
-(`forward.rs:899`).
+Source: [debugging.md]. This phase establishes the Rust-side deep-inspection
+framework used to understand the running engine. It is distinct from the future
+in-game debugging facilities exposed through Glyph, Chronicle, or other authored
+languages.
+
+The debug core is a host, not a catalogue of every subsystem's controls. A
+dedicated `dev-tools` build flag makes debug tooling available, and the active
+binary conditionally installs strongly typed Rust plugins at app composition.
+The registry is dynamic at runtime, but plugins are not dynamically linked
+libraries: plugin types, resources, systems, and panel callbacks remain checked by
+Rust. The renderer owns render-debug state, physics owns physics visualization,
+audio will own audio-source inspection, and Kinesis owns its episodic mood
+presets. The core owns only plugin composition, the egui shell, visibility, and
+panel registration.
+
+Production resources remain authoritative and usable without debug tooling. A
+debug plugin may inspect or mutate its subsystem's typed resources, but target
+subsystems never read a generic `DebugState` value bag. Debug keybindings use the
+2.B named-action path with namespaced symbols.
 
 **Steps:**
-- [ ] **2.C.1** Decide the debug surface now that the binding API exists: debug
-  keybindings are ordinary action bindings (optionally dev-only-flagged), not a
-  bespoke mechanism. (This is the API-shape decision deliberately deferred until
-  2.B existed.)
-- [ ] **2.C.2** Promote the shipping render knob out of `DebugState`: `pcf_kernel`
-  becomes a small engine render resource (a peer of `ColorGrade` / `Fog` /
-  `Bloom`), read directly by `render_frame`. `DebugState` carries no render state.
-- [ ] **2.C.3** Strip engine `debug.rs` to engine-intrinsic only: `FrameStats`,
-  `ProfilerView` / snapshot / panel, the egui overlay shell + `build_overlay_ui`,
-  `overlay_visible` / `show_profiler`. Engine keeps `f5_reload_system` and the
-  profiler toggle. Remove the `*Preset` enums, `debug_input_system`, and
-  `bloom_input_system` from the engine.
-- [x] **2.C.4** Move the game's episodic render-mood cycles game-side: the
-  grade / vignette / fog / bloom / overlay become game-owned, registered
-  as action bindings (2.C.1) in the game setup. They poke the same engine render
-  resources, just from the game crate. PCF cycles no more needed
-- [ ] **2.C.5** Overlay extensibility (keep minimal): give the game a small hook to
-  contribute to the egui overlay if it wants a dev readout, or let it render its own
-  — whichever is lighter. Don't over-build; the binding API is the main surface.
-- [ ] **2.C.6** Smoke test: the same keys still cycle fog / grade / etc., but the
-  cycling code lives in the game crate; engine `debug.rs` no longer imports `Fog` /
-  `ColorGrade` / `Bloom` / `Vignette` / `PostOverlay`; profiler + F5 reload remain
-  engine-side and still work.
+- [x] **2.C.1** Pin the architecture: statically typed Rust plugins, dynamically
+  composed into the running app under the `dev-tools` flag; a runtime panel
+  registry; subsystem ownership; ordinary namespaced action bindings; no Rust
+  dynamic-library ABI and no untyped debug-value bag.
+- [x] **2.C.2** Add the small general app-composition seam: a typed `Plugin`
+  contract, `App::add_plugin`, and conditional plugin installation under the
+  `dev-tools` flag. Provide a convenience engine-debug group without making the
+  debug core depend on its member plugins.
+- [x] **2.C.3** Build the minimal debug core: overlay visibility, a panel registry,
+  and an exclusive Render-stage UI-build system. Move egui frame construction out
+  of `render_frame`; the renderer only encodes the prepared overlay pass. Panel
+  callbacks receive typed access through `World` and run sequentially.
+- [x] **2.C.4** Split intrinsic tooling into owner-side plugins: diagnostics owns
+  frame statistics + puffin UI; assets own F5 reload; rendering owns its internal
+  controls. Each registers its resources, systems, actions, and panel with the
+  core. The core imports none of their target resources.
+- [x] **2.C.5** Correct render-resource ownership. Keep one render-owned
+  `PcfKernel` resource read by `render_frame`; remove the stale debug copy and the
+  renderer's private hardcoded copy. Make GPU startup preserve preconfigured
+  production render resources, and move Kinesis mood defaults out of engine
+  startup.
+- [x] **2.C.6** Add a game-owned `KinesisRenderDebugPlugin`: restore grade /
+  vignette / fog / bloom / overlay cycles as namespaced action bindings and typed
+  systems over the existing render resources. No Kinesis preset type lives in the
+  engine.
+- [x] **2.C.7** Smoke test both compositions. With `dev-tools`, F12, profiler, F5,
+  renderer controls, and Kinesis mood cycles work in the playground. Without the
+  flag, the app exposes no debug overlay or debug bindings and production render
+  state is unchanged. `debug.rs` imports no game or target-subsystem resources.
 
 
 ### Phase 2.E — Physics debug-draw (the line / gizmo pipeline / profiling)
@@ -388,8 +406,8 @@ The Part is complete when all of the following are true in the playground binary
   extends, not rewrites).
 - [ ] A mode-tinted reticle and a mode indicator render through the screen-space UI
   pass; hold-field / impact-ring / debris particles fire.
-- [ ] The engine debug system is split: engine keeps profiler + asset-reload +
-  overlay shell; the game owns its render-mood tweaks via the input-binding API.
+- [ ] The `dev-tools`-gated debug host dynamically composes typed, subsystem-owned
+  plugins; Kinesis owns its render-mood tweaks and the core owns no target state.
 - [ ] Physics debug-draw (collider wireframes) toggles on in dev mode.
 - [ ] Walking the playground, the developer believes the verbs feel right.
 
@@ -422,3 +440,4 @@ If the last bullet fails, tune forces / masses / feel before starting Part 3.
 [input.md]: ../../../plans/overview/input.md
 [graphics.md]: ../../../plans/overview/graphics.md
 [bridge.md]: ../../../plans/overview/bridge.md
+[debugging.md]: ../../../plans/architecture/debugging.md

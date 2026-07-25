@@ -39,10 +39,13 @@ running and expose **safe seams** for things to reach into the live `World`.
   - Register the **`Events<T>` swap** and **`Commands` apply** at defined points in
     `tick` (events swapped once/frame; commands applied at a sync point after the
     systems that queue them). See [ecs.md](ecs.md), [events.md](events.md).
-- **Housekeeping (any Part):** `resumed` is a ~120-line standup monolith with
-  log-and-exit-only device-init failure. As physics/audio/save resources land, it
-  wants a small "plugin"/setup seam (a list of setup closures) rather than more
-  inline blocks. Low priority; do it when the monolith next hurts.
+  - Phase 2.C adds the small typed **`Plugin` app-composition seam** needed by the
+    `dev-tools`-gated debug host and subsystem-owned debug plugins. This becomes
+    the relief valve for future physics/audio/save setup without moving those
+    systems into a debug-specific abstraction ([debugging.md](debugging.md)).
+- **Housekeeping (any Part):** `resumed` remains a large standup body with
+  log-and-exit-only device-init failure. The plugin seam provides composition;
+  factor GPU setup into owner-side units only when the monolith next hurts.
 
 ## The scp seam (future — not Kinesis)
 
@@ -69,4 +72,5 @@ out-of-process actor could also enqueue into.
   at current scale; the plugin seam above is the relief valve when it grows.
 
 Cross-refs: [physics.md](physics.md), [events.md](events.md), [ecs.md](ecs.md),
-`plans/architecture/overview.md` §Threading (layer-boundary thread splits, later).
+[debugging.md](debugging.md), `plans/architecture/overview.md` §Threading
+(layer-boundary thread splits, later).

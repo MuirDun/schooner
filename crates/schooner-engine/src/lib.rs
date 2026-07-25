@@ -10,6 +10,7 @@ pub mod input;
 pub mod logging;
 pub mod material;
 pub mod physics;
+pub mod plugin;
 pub mod render;
 pub mod symbol;
 pub mod time;
@@ -21,15 +22,20 @@ pub use app::{App, AppError};
 pub use asset::{
     AssetError, AssetResult, GltfModel, load_gltf_mesh, load_gltf_model, load_png_pixels,
 };
+#[cfg(feature = "dev-tools")]
+pub use asset::{AssetDebugPlugin, AssetDebugState, ReloadSummary};
 pub use camera::{
     ActiveCamera, Camera, FpsController, Projection, fps_cursor_toggle, fps_look, fps_move,
 };
-pub use debug::{
-    DebugState, FRAME_STAT_WINDOW, FrameStats, OverlayInteract, OverlayMetrics, PcfKernel,
-    ProfilerRow, ProfilerSnapshot, ProfilerView, build_overlay_ui, build_profiler_panel,
-    debug_input_system, f5_reload_system,
-};
+pub use debug::{DebugPanel, DebugPanels, DebugState, build_debug_overlay};
+#[cfg(feature = "dev-tools")]
+pub use debug::DebugCorePlugin;
 pub use diagnostics::{FpsLogger, log_fps_system, log_input_system};
+#[cfg(feature = "dev-tools")]
+pub use diagnostics::{
+    DiagnosticsDebugPlugin, DiagnosticsDebugState, FRAME_STAT_WINDOW, FrameStats, ProfilerRow,
+    ProfilerSnapshot, ProfilerView,
+};
 pub use ecs::{EntityId, Schedule, Stage, World};
 pub use error::{EngineError, EngineResult};
 pub use input::{Input, KeyCode, MouseButton};
@@ -39,12 +45,17 @@ pub use physics::{
     BodyKind, Collider, ColliderShape, Contact, ContactEvents, PhysicsCommands, PhysicsMaterial,
     RigidBody, TeleportVelocity, TriggerEnter, TriggerExit,
 };
+#[cfg(feature = "dev-tools")]
+pub use plugin::EngineDebugPlugins;
+pub use plugin::Plugin;
 pub use render::{
     AutoExposure, Bloom, ColorGrade, DebugOverlay, DirectionalLight, Fog, ForwardPipeline,
-    MeshData, MeshHandle, MeshRegistry, OverlayBlend, PointLight, PostOverlay, ReloadReport,
-    RenderContext, ShadowMaps, ShadowPipeline, Shadowcaster, SpotLight, TextureData, TextureGpu,
-    TextureHandle, TextureRegistry, Vignette, render_frame,
+    MeshData, MeshHandle, MeshRegistry, OverlayBlend, PcfKernel, PointLight, PostOverlay,
+    ReloadReport, RenderContext, ShadowMaps, ShadowPipeline, Shadowcaster, SpotLight, TextureData,
+    TextureGpu, TextureHandle, TextureRegistry, Vignette, render_frame,
 };
+#[cfg(feature = "dev-tools")]
+pub use render::RenderDebugPlugin;
 pub use symbol::{Symbol, sym, symbol_name};
 pub use time::{DEFAULT_FIXED_HZ, MAX_FIXED_STEPS_PER_FRAME, Time};
 pub use transform::Transform;

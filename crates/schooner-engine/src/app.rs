@@ -11,17 +11,17 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::action::{Actions, Bindings, Trigger, resolve_actions};
-use crate::debug::{DebugState, ProfilerView, debug_input_system, f5_reload_system};
 use crate::ecs::{CommandQueue, Events, IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::{Input, KeyCode};
 use crate::physics::{
     Contact, PhysicsCommands, PhysicsWorld, TriggerEnter, TriggerExit, physics_bridge,
     physics_reconcile_lifecycle,
 };
+use crate::plugin::Plugin;
 use crate::render::{
     AutoExposure, Bloom, BloomPipeline, ColorGrade, DebugOverlay, ExposurePipeline, Fog,
-    ForwardPipeline, HDR_FORMAT, MeshRegistry, PostOverlay, PostPipeline, RenderContext,
-    ShadowMaps, ShadowPipeline, TextureRegistry, Vignette, render_frame,
+    ForwardPipeline, HDR_FORMAT, MeshRegistry, PcfKernel, PostOverlay, PostPipeline,
+    RenderContext, ShadowMaps, ShadowPipeline, TextureRegistry, Vignette, render_frame,
 };
 use crate::symbol::sym;
 use crate::time::Time;
@@ -35,6 +35,14 @@ use crate::window::WindowConfig;
 /// telekinesis distance) feels the same on both devices. Empirical, not
 /// load-bearing — tuned for feel, not correctness.
 const PIXELS_PER_LINE: f32 = 16.0;
+
+/// Insert a production default without overwriting application configuration
+/// authored before GPU startup.
+fn insert_render_default<R: Any + Send + Sync>(world: &mut World, value: R) {
+    if !world.contains_resource::<R>() {
+        world.insert_resource(value);
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -76,6 +84,9 @@ pub struct App {
     event_updaters: Vec<fn(&mut World)>,
     /// Whether physics was requested through `with_physics`.
     physics_enabled: bool,
+    /// Whether the active composition installed the debug overlay host.
+    #[cfg(feature = "dev-tools")]
+    debug_core_enabled: bool,
 }
 
 impl Default for App {
@@ -97,15 +108,6 @@ impl App {
         // at every stage boundary. Insert it up front so the first
         // Commands-using system has a queue to write to.
         world.insert_resource(CommandQueue::default());
-        // DebugState rides along — visible by default, F1 toggles.
-        // The overlay's wgpu plumbing (DebugOverlay) lands later in
-        // `resumed` once the device exists.
-        world.insert_resource(DebugState::default());
-        // ProfilerView registers a sink with puffin's GlobalProfiler
-        // immediately on construction so the first frame's data has
-        // somewhere to land. The sink survives until ProfilerView
-        // is dropped (which happens when the World drops).
-        world.insert_resource(ProfilerView::new());
         // Layer 2 input: the binding table (config) and the resolved
         // action state. Both engine-intrinsic like Input, so a game can
         // declare bindings and read actions without a setup step. Started
@@ -119,9 +121,6 @@ impl App {
         // FixedUpdate resolve would double-fire or miss them (see the
         // fixed-step discipline in architecture/input.md).
         schedule.add_system(&mut world, Stage::Update, resolve_actions);
-        // F1 toggle runs in Update so the visibility flip is
-        // observable to render_frame the same frame.
-        schedule.add_system(&mut world, Stage::Update, debug_input_system);
         Self {
             window_config: WindowConfig::default(),
             window: None,
@@ -134,7 +133,21 @@ impl App {
             cursor_visible_pushed: true,
             event_updaters: Vec::new(),
             physics_enabled: false,
+            #[cfg(feature = "dev-tools")]
+            debug_core_enabled: false,
         }
+    }
+
+    /// Compose a statically typed plugin into this application.
+    pub fn add_plugin<P: Plugin>(self, plugin: P) -> Self {
+        plugin.build(self)
+    }
+
+    /// Request the GPU-side overlay host during window startup.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn enable_debug_core(mut self) -> Self {
+        self.debug_core_enabled = true;
+        self
     }
 
     pub fn with_window_config(mut self, config: WindowConfig) -> Self {
@@ -267,18 +280,9 @@ impl App {
     /// run `Update` once. The first call always reports a delta of
     /// zero — there is no prior frame to measure against.
     fn tick(&mut self) {
-        // Per-frame puffin housekeeping. `set_scopes_on` is a relaxed
-        // atomic store — calling it every frame is essentially free,
-        // and it lets the profiler checkbox in the overlay flip
-        // collection on/off without the App needing extra signal
-        // plumbing. `new_frame` flushes the previous frame's data
-        // into all registered sinks (including ProfilerView).
-        let scopes_on = self
-            .world
-            .resource::<DebugState>()
-            .map(|d| d.show_profiler)
-            .unwrap_or(false);
-        puffin::set_scopes_on(scopes_on);
+        // Flush the previous puffin frame into any registered diagnostics
+        // sinks. Collection enablement is owned by DiagnosticsDebugPlugin;
+        // without it puffin's scopes remain disabled.
         puffin::GlobalProfiler::lock().new_frame();
         puffin::profile_scope!("frame");
 
@@ -438,7 +442,10 @@ impl ApplicationHandler for App {
                     &pipeline.shadow_bgl,
                     &pipeline.comparison_sampler,
                 );
-                let overlay = DebugOverlay::new(window.clone(), ctx.device(), ctx.surface_format());
+                #[cfg(feature = "dev-tools")]
+                let overlay = self
+                    .debug_core_enabled
+                    .then(|| DebugOverlay::new(window.clone(), ctx.device(), ctx.surface_format()));
                 // PostPipeline reads the HDR target from RenderContext
                 // and writes the swap chain. Its HDR-sampling bind
                 // group is built lazily in render_frame the first
@@ -464,38 +471,20 @@ impl ApplicationHandler for App {
                 self.world.insert_resource(post_pipeline);
                 self.world.insert_resource(bloom_pipeline);
                 self.world.insert_resource(exposure_pipeline);
-                // Auto-exposure seeded ON with the general interior default.
-                // Games swap the resource (e.g. AutoExposure::CHAMBER) to
-                // tune the adaptation, or AutoExposure::OFF to disable.
-                self.world.insert_resource(AutoExposure::DEFAULT);
-                // Bloom seeded with the restrained FAINT default — only
-                // genuinely over-bright sources glow, gently. F7 cycles
-                // it up through ERA_GLOW to EVERYTHING_GLOWS; the
-                // bloom_preset in DebugState starts at Faint to match.
-                self.world.insert_resource(Bloom::DEFAULT);
-                // Default ColorGrade = identity (no-op) and default
-                // Vignette = off. Games swap the resource values to
-                // drive per-scene mood.
-                self.world.insert_resource(ColorGrade::CAGE_WARM);
-                self.world.insert_resource(Vignette::CINEMATIC);
-                // Fog seeded with a moderate cool-grey medium so the
-                // 1.E.1 smoke test is visible without authoring effort.
-                // 1.E.3 will replace this with named presets driven by
-                // an F4 debug cycle, matching the F2/F3 grade/vignette
-                // pattern.
-                self.world.insert_resource(Fog {
-                    color: glam::Vec3::new(0.55, 0.58, 0.62),
-                    base_height: 0.0,
-                    density: 0.08,
-                    falloff: 0.5,
-                    scattering: 0.5,
-                });
-                // PostOverlay seeded off (no texture, intensity 0).
-                // F6 cycles its intensity + blend; the game points
-                // `.texture` at a test asset so the cycle composites a
-                // real image.
-                self.world.insert_resource(PostOverlay::DEFAULT);
-                self.world.insert_resource(overlay);
+                // Production render configuration is GPU-independent and may
+                // be authored before `run`. Startup fills only missing values;
+                // game-specific mood belongs to the game/scene composition.
+                insert_render_default(&mut self.world, AutoExposure::DEFAULT);
+                insert_render_default(&mut self.world, Bloom::DEFAULT);
+                insert_render_default(&mut self.world, ColorGrade::DEFAULT);
+                insert_render_default(&mut self.world, Vignette::DEFAULT);
+                insert_render_default(&mut self.world, Fog::DEFAULT);
+                insert_render_default(&mut self.world, PostOverlay::DEFAULT);
+                insert_render_default(&mut self.world, PcfKernel::default());
+                #[cfg(feature = "dev-tools")]
+                if let Some(overlay) = overlay {
+                    self.world.insert_resource(overlay);
+                }
             }
             Err(err) => {
                 // No way to surface AppError back through the
@@ -525,13 +514,6 @@ impl ApplicationHandler for App {
             self.schedule
                 .add_physics_system(&mut self.world, exclusive(physics_bridge));
         }
-
-        // F5 manual asset reload. Registered here, not in App::new(),
-        // because it reads RenderContext + the registries + the
-        // forward pipeline — resources that only exist once the device
-        // is up. See `debug::f5_reload_system`.
-        self.schedule
-            .add_system(&mut self.world, Stage::Update, f5_reload_system);
 
         // Drain the Startup stage exactly once, now that the device,
         // registries and pipelines exist. Scene builders and asset
@@ -670,5 +652,32 @@ impl ApplicationHandler for App {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct RenderSetting(u32);
+
+    #[test]
+    fn render_default_preserves_preconfigured_resource() {
+        let mut world = World::new();
+        world.insert_resource(RenderSetting(7));
+
+        insert_render_default(&mut world, RenderSetting(11));
+
+        assert_eq!(world.resource::<RenderSetting>(), Some(&RenderSetting(7)));
+    }
+
+    #[test]
+    fn render_default_fills_missing_resource() {
+        let mut world = World::new();
+
+        insert_render_default(&mut world, RenderSetting(11));
+
+        assert_eq!(world.resource::<RenderSetting>(), Some(&RenderSetting(11)));
     }
 }

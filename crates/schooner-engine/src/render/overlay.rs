@@ -21,11 +21,10 @@
 //!    [`DebugOverlay::on_window_event`]. If egui consumed the event
 //!    (mouse over an overlay window, keyboard focus in a text field),
 //!    the App skips feeding it into the gameplay `Input` resource.
-//! 2. Inside `render_frame`, after the forward pass is encoded but
-//!    before submit, the renderer calls [`DebugOverlay::run`] with a
-//!    closure that builds the UI, then [`DebugOverlay::render`] to
-//!    encode the egui pass that loads (does not clear) the existing
-//!    color attachment.
+//! 2. A preceding Render-stage debug system calls [`DebugOverlay::run`]
+//!    while panel callbacks have typed access to the ECS world.
+//! 3. `render_frame` calls [`DebugOverlay::render`] after post processing to
+//!    encode the prepared egui pass over the existing color attachment.
 //!
 //! egui needs no depth buffer for its 2D pass — `RendererOptions`'
 //! `depth_stencil_format` is set to `None`.
@@ -52,7 +51,7 @@ pub struct DebugOverlay {
     /// "encode the pass" so the renderer can do other work in
     /// between (e.g. close the forward pass) without losing the
     /// egui shape lists.
-    pending: Option<FullOutput>,
+    pending: Option<(FullOutput, bool)>,
 }
 
 impl DebugOverlay {
@@ -119,7 +118,7 @@ impl DebugOverlay {
     /// requirement leaking out) and so the caller receives a plain
     /// `&Context` for the usual `egui::Window::new(...).show(ctx)`
     /// patterns.
-    pub fn run(&mut self, build_ui: impl FnOnce(&Context)) {
+    pub fn run(&mut self, visible: bool, build_ui: impl FnOnce(&Context)) {
         let raw_input = self.state.take_egui_input(self.window.as_ref());
         self.ctx.begin_pass(raw_input);
         build_ui(&self.ctx);
@@ -129,7 +128,16 @@ impl DebugOverlay {
         // cursor and IME windows track focus.
         self.state
             .handle_platform_output(self.window.as_ref(), output.platform_output.clone());
-        self.pending = Some(output);
+        if let Some((pending, pending_visible)) = &mut self.pending {
+            // `render_frame` can return early (most commonly while the surface
+            // is being configured). Preserve every unconsumed texture delta
+            // across that gap; dropping the initial font-atlas allocation and
+            // keeping only a later partial update makes egui-wgpu panic.
+            pending.append(output);
+            *pending_visible = visible;
+        } else {
+            self.pending = Some((output, visible));
+        }
     }
 
     /// Encode the egui pass into `encoder` against `target`. The
@@ -145,50 +153,52 @@ impl DebugOverlay {
         size_in_pixels: [u32; 2],
         pixels_per_point: f32,
     ) {
-        let Some(output) = self.pending.take() else {
+        let Some((output, visible)) = self.pending.take() else {
             return;
         };
-        let paint_jobs = self.ctx.tessellate(output.shapes, output.pixels_per_point);
-        let screen = ScreenDescriptor {
-            size_in_pixels,
-            pixels_per_point,
-        };
 
-        // Apply texture deltas (font atlas, user-allocated images)
-        // *before* update_buffers so any new IDs the paint jobs
-        // reference are bound when the pass dispatches.
+        // Apply texture deltas even while hidden. This keeps egui's font atlas
+        // and user textures coherent without paying geometry or pass costs.
         for (id, image_delta) in &output.textures_delta.set {
             self.renderer
                 .update_texture(device, queue, *id, image_delta);
         }
-        self.renderer
-            .update_buffers(device, queue, encoder, &paint_jobs, &screen);
 
-        {
-            // egui-wgpu's `render` takes `&mut RenderPass<'static>`,
-            // so the pass must outlive the encoder borrow. wgpu's
-            // `forget_lifetime` is the documented escape hatch for
-            // exactly this case (encoder + pass stored adjacently
-            // in one data structure).
-            let mut pass = encoder
-                .begin_render_pass(&RenderPassDescriptor {
-                    label: Some("egui-pass"),
-                    color_attachments: &[Some(RenderPassColorAttachment {
-                        view: target,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: Operations {
-                            load: LoadOp::Load,
-                            store: StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    multiview_mask: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                })
-                .forget_lifetime();
-            self.renderer.render(&mut pass, &paint_jobs, &screen);
+        if visible {
+            let paint_jobs = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+            let screen = ScreenDescriptor {
+                size_in_pixels,
+                pixels_per_point,
+            };
+            self.renderer
+                .update_buffers(device, queue, encoder, &paint_jobs, &screen);
+
+            {
+                // egui-wgpu's `render` takes `&mut RenderPass<'static>`,
+                // so the pass must outlive the encoder borrow. wgpu's
+                // `forget_lifetime` is the documented escape hatch for
+                // exactly this case (encoder + pass stored adjacently
+                // in one data structure).
+                let mut pass = encoder
+                    .begin_render_pass(&RenderPassDescriptor {
+                        label: Some("egui-pass"),
+                        color_attachments: &[Some(RenderPassColorAttachment {
+                            view: target,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: Operations {
+                                load: LoadOp::Load,
+                                store: StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        multiview_mask: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    })
+                    .forget_lifetime();
+                self.renderer.render(&mut pass, &paint_jobs, &screen);
+            }
         }
 
         // Free *after* the pass — egui's `set` deltas may

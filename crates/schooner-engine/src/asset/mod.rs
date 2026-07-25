@@ -11,8 +11,14 @@ use std::path::PathBuf;
 pub mod mesh;
 pub mod texture;
 
+#[cfg(feature = "dev-tools")]
+pub mod debug;
+
 pub use mesh::{GltfModel, load_gltf_mesh, load_gltf_model};
 pub use texture::load_png_pixels;
+
+#[cfg(feature = "dev-tools")]
+pub use debug::{AssetDebugPlugin, AssetDebugState, ReloadSummary};
 
 /// All named failure modes the asset module surfaces.
 ///

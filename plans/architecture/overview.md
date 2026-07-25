@@ -82,6 +82,9 @@ Everything else exists to serve the layers above.
 - **Physics (Rapier).** Lives inside Layer 4. Bridges to ECS transforms each fixed-update.
 - **Audio.** Spatial. Reads ECS positions; consumes Tier 2 events for cues.
 - **Asset pipeline.** Loads meshes, textures, scripts, scenes from authored files. Hot-reload is a first-class concern, not a stretch goal — pillar 3.
+- **Developer tooling.** A `dev-tools`-gated host dynamically composes statically
+  typed, subsystem-owned Rust debug plugins against the running world. Detail in
+  `debugging.md`.
 - **Hydration bridge.** The engineering centerpiece of Game 4. Translates between Layer 1 records and Layer 4 entities as the player moves through the world.
 - **Glyph and Chronicle.** Two languages over one virtual machine. Each owns a domain. Detail in `glyph.md`, `chronicle.md`, and `language-binding.md`.
 
