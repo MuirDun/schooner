@@ -76,6 +76,18 @@ impl PhysicsCommands {
         });
     }
 
+    /// Request an upward launch for a grounded character.
+    ///
+    /// Queue this before [`Self::move_character`] in the fixed step that
+    /// consumes the input latch. The bridge rejects the request while airborne
+    /// and otherwise feeds the launch velocity into that step's KCC movement.
+    pub fn jump_character(&mut self, entity: EntityId, launch_speed: f32) {
+        self.commands.push(PhysicsCommand::JumpCharacter {
+            entity,
+            launch_speed: launch_speed.max(0.0),
+        });
+    }
+
     pub fn len(&self) -> usize {
         self.commands.len()
     }
@@ -99,6 +111,10 @@ pub(crate) enum PhysicsCommand {
     MoveCharacter {
         entity: EntityId,
         horizontal_velocity: Vec3,
+    },
+    JumpCharacter {
+        entity: EntityId,
+        launch_speed: f32,
     },
 }
 
@@ -143,6 +159,25 @@ mod tests {
             vec![PhysicsCommand::MoveCharacter {
                 entity,
                 horizontal_velocity: Vec3::new(3.0, 0.0, -4.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn character_jump_command_clamps_negative_launch_speed() {
+        let mut commands = PhysicsCommands::new();
+        let entity = EntityId {
+            index: 3,
+            generation: 1,
+        };
+
+        commands.jump_character(entity, -5.0);
+
+        assert_eq!(
+            commands.drain().collect::<Vec<_>>(),
+            vec![PhysicsCommand::JumpCharacter {
+                entity,
+                launch_speed: 0.0,
             }]
         );
     }

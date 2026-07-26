@@ -31,6 +31,7 @@ impl Plugin for EngineDebugPlugins {
             .add_plugin(crate::diagnostics::DiagnosticsDebugPlugin)
             .add_plugin(crate::asset::AssetDebugPlugin)
             .add_plugin(crate::render::RenderDebugPlugin)
+            .add_plugin(crate::camera::CameraDebugPlugin)
     }
 }
 

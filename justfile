@@ -7,10 +7,10 @@ default:
 
 # Dev build with hot reload (dioxus subsecond hotpatching)
 serve:
-    dx serve --hotpatch --features hot -p game --bin playground
+    dx serve --hotpatch --features "hot dev-tools" -p game --bin playground
 
 # Run the playground without hot reload
-play:
+run:
     cargo run -p game --bin playground
 
 # Validate the code of the project

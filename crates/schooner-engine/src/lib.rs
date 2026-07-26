@@ -25,7 +25,11 @@ pub use asset::{
     AssetError, AssetResult, GltfModel, load_gltf_mesh, load_gltf_model, load_png_pixels,
 };
 pub use camera::{
-    ActiveCamera, Camera, FpsController, Projection, fps_cursor_toggle, fps_look, fps_move,
+    ActiveCamera, Camera, FpsController, Projection, fps_cursor_toggle, fps_look,
+};
+#[cfg(feature = "dev-tools")]
+pub use camera::{
+    CameraDebugPlugin, SpectatorCamera, SpectatorDebugState, spectator_move,
 };
 #[cfg(feature = "dev-tools")]
 pub use debug::DebugCorePlugin;

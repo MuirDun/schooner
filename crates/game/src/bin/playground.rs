@@ -11,7 +11,7 @@ use schooner_engine::{
     Actions, ActiveCamera, App, AppError, Camera, CharacterController, CharacterControllerState,
     Collider, EntityId, FpsController, Input, KeyCode, LogConfig, MouseButton, PhysicsCommands,
     RigidBody, Stage, Symbol, Transform, Trigger, WindowConfig, World, fps_cursor_toggle, fps_look,
-    fps_move, logging, sym,
+    logging, sym,
 };
 
 #[cfg(feature = "hot")]
@@ -235,39 +235,65 @@ struct CubeStack(Vec<EntityId>);
 struct PlayerMovementIntent {
     forward: f32,
     right: f32,
+    jump_requested: bool,
+}
+
+impl PlayerMovementIntent {
+    fn request_jump(&mut self) {
+        self.jump_requested = true;
+    }
+
+    fn take_jump(&mut self) -> bool {
+        std::mem::take(&mut self.jump_requested)
+    }
 }
 
 #[derive(Debug)]
 struct PlayerBody(EntityId);
 
+#[derive(Debug)]
+struct PlayerView(EntityId);
+
+#[derive(Debug)]
+struct PlayerCamera;
+
 const PLAYER_CAPSULE_RADIUS: f32 = 0.35;
 const PLAYER_CAPSULE_HALF_HEIGHT: f32 = 0.55;
 const PLAYER_BODY_CENTER_HEIGHT: f32 = PLAYER_CAPSULE_RADIUS + PLAYER_CAPSULE_HALF_HEIGHT;
 const PLAYER_EYE_HEIGHT: f32 = 1.7;
+const PLAYER_JUMP_SPEED: f32 = 5.0;
 
 fn capture_player_movement(
     actions: Res<Actions>,
     acts: Res<Acts>,
     input: Res<Input>,
+    active_player_camera: Query<(&ActiveCamera, &PlayerCamera)>,
     mut intent: ResMut<PlayerMovementIntent>,
 ) {
-    if !input.cursor_grabbed() {
+    if !input.cursor_grabbed() || active_player_camera.into_iter().next().is_none() {
         intent.forward = 0.0;
         intent.right = 0.0;
+        intent.jump_requested = false;
         return;
     }
 
     intent.forward = actions.axis(acts.move_back, acts.move_forward);
     intent.right = actions.axis(acts.move_left, acts.move_right);
+    if actions.just_pressed(acts.jump) {
+        intent.request_jump();
+    }
 }
 
 fn submit_player_movement(
-    intent: Res<PlayerMovementIntent>,
+    mut intent: ResMut<PlayerMovementIntent>,
     player: Res<PlayerBody>,
-    cameras: Query<(&FpsController, &ActiveCamera)>,
+    cameras: Query<(&FpsController, &ActiveCamera, &PlayerCamera)>,
     mut physics: ResMut<PhysicsCommands>,
 ) {
-    let Some((controller, _)) = cameras.into_iter().next() else {
+    let Some((controller, _, _)) = cameras.into_iter().next() else {
+        intent.forward = 0.0;
+        intent.right = 0.0;
+        intent.jump_requested = false;
         return;
     };
 
@@ -277,7 +303,30 @@ fn submit_player_movement(
         intent.right,
         controller.move_speed,
     );
+    if intent.take_jump() {
+        physics.jump_character(player.0, PLAYER_JUMP_SPEED);
+    }
     physics.move_character(player.0, velocity);
+}
+
+fn sync_player_camera(world: &mut World) {
+    let (Some(body), Some(camera)) = (
+        world.resource::<PlayerBody>().map(|body| body.0),
+        world.resource::<PlayerView>().map(|camera| camera.0),
+    ) else {
+        return;
+    };
+    let Some(body_translation) = world.get::<Transform>(body).map(|body| body.translation) else {
+        return;
+    };
+    let Some(mut camera) = world.get_mut::<Transform>(camera) else {
+        return;
+    };
+    camera.translation = player_eye_position(body_translation);
+}
+
+fn player_eye_position(body_translation: Vec3) -> Vec3 {
+    body_translation + Vec3::Y * (PLAYER_EYE_HEIGHT - PLAYER_BODY_CENTER_HEIGHT)
 }
 
 fn walk_velocity(yaw: f32, forward_input: f32, right_input: f32, speed: f32) -> Vec3 {
@@ -319,14 +368,11 @@ fn main() -> anyhow::Result<(), AppError> {
         .bind(act::THROW, Trigger::Mouse(MouseButton::Middle))
         // Mode 3 reuses Left; the active mode disambiguates push vs repulse.
         .bind(act::REPULSE, Trigger::Mouse(MouseButton::Left))
-        // 2.B.5 rebind proof: jump is data — moved off Space to J at
-        // setup. Revert to Space when 2.F's KCC consumes the jump action.
-        .rebind(act::JUMP, Trigger::Key(KeyCode::KeyJ))
         .add_system(Stage::Update, fps_cursor_toggle)
         .add_system(Stage::Update, fps_look)
-        .add_system(Stage::Update, fps_move)
         .add_system(Stage::Update, capture_player_movement)
         .add_system(Stage::FixedUpdate, submit_player_movement)
+        .add_system(Stage::PostPhysics, exclusive(sync_player_camera))
         .add_system(Stage::Update, exclusive(scene::run_transition))
         .add_system(Stage::Update, mode_select)
         .add_system(Stage::Update, edit_input)
@@ -383,6 +429,8 @@ fn spawn_player(world: &mut World) {
     world.insert(camera, Camera::perspective_default());
     world.insert(camera, ActiveCamera);
     world.insert(camera, FpsController::default());
+    world.insert(camera, PlayerCamera);
+    world.insert_resource(PlayerView(camera));
 }
 
 #[cfg(test)]
@@ -403,5 +451,87 @@ mod tests {
         let velocity = walk_velocity(std::f32::consts::FRAC_PI_2, 1.0, 0.0, 5.0);
 
         assert!(velocity.abs_diff_eq(Vec3::NEG_X * 5.0, 1e-5));
+    }
+
+    #[test]
+    fn jump_intent_persists_until_consumed_once() {
+        let mut intent = PlayerMovementIntent::default();
+
+        intent.request_jump();
+        assert!(intent.take_jump());
+        assert!(!intent.take_jump());
+    }
+
+    #[test]
+    fn player_eye_position_preserves_authored_eye_height() {
+        let body = Vec3::new(3.0, PLAYER_BODY_CENTER_HEIGHT, -2.0);
+
+        assert_eq!(
+            player_eye_position(body),
+            Vec3::new(3.0, PLAYER_EYE_HEIGHT, -2.0)
+        );
+    }
+
+    #[test]
+    fn post_physics_copy_updates_translation_without_touching_look() {
+        let mut world = World::new();
+        let body = world.spawn();
+        world.insert(
+            body,
+            Transform::from_translation(Vec3::new(2.0, PLAYER_BODY_CENTER_HEIGHT, -3.0)),
+        );
+        world.insert(body, Player);
+
+        let camera = world.spawn();
+        let rotation = Quat::from_rotation_y(0.75);
+        world.insert(
+            camera,
+            Transform {
+                rotation,
+                ..Transform::IDENTITY
+            },
+        );
+        world.insert(camera, PlayerCamera);
+        world.insert_resource(PlayerBody(body));
+        world.insert_resource(PlayerView(camera));
+
+        let mut schedule = schooner_engine::Schedule::new();
+        schedule.add_system(
+            &mut world,
+            Stage::PostPhysics,
+            exclusive(sync_player_camera),
+        );
+        schedule.run_fixed(&mut world);
+
+        let camera = world.get::<Transform>(camera).unwrap();
+        assert_eq!(camera.translation, Vec3::new(2.0, PLAYER_EYE_HEIGHT, -3.0));
+        assert_eq!(camera.rotation, rotation);
+    }
+
+    #[test]
+    fn fixed_player_movement_is_suppressed_without_active_player_camera() {
+        let mut world = World::new();
+        let body = world.spawn();
+        world.insert_resource(PlayerBody(body));
+        world.insert_resource(PlayerMovementIntent {
+            forward: 1.0,
+            right: 1.0,
+            jump_requested: true,
+        });
+        world.insert_resource(PhysicsCommands::new());
+
+        let spectator = world.spawn();
+        world.insert(spectator, FpsController::default());
+        world.insert(spectator, ActiveCamera);
+
+        let mut schedule = schooner_engine::Schedule::new();
+        schedule.add_system(&mut world, Stage::FixedUpdate, submit_player_movement);
+        schedule.run_fixed(&mut world);
+
+        let intent = world.resource::<PlayerMovementIntent>().unwrap();
+        assert_eq!(intent.forward, 0.0);
+        assert_eq!(intent.right, 0.0);
+        assert!(!intent.jump_requested);
+        assert!(world.resource::<PhysicsCommands>().unwrap().is_empty());
     }
 }

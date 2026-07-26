@@ -7,11 +7,15 @@
 //! Two halves wired through the ECS, never to each other:
 //! - [`projection`] — `Camera`, `Projection`, `ActiveCamera`. Read by
 //!   the renderer to build view / projection matrices.
-//! - [`controller`] — `FpsController` component plus the `fps_*`
-//!   systems that read `Input` + `Time` and write `Transform`.
+//! - [`controller`] — `FpsController` plus production look/cursor systems.
+//! - `debug` — the `dev-tools` spectator camera and free-flight movement.
 
 pub mod controller;
+#[cfg(feature = "dev-tools")]
+mod debug;
 pub mod projection;
 
-pub use controller::{FpsController, fps_cursor_toggle, fps_look, fps_move};
+pub use controller::{FpsController, fps_cursor_toggle, fps_look};
+#[cfg(feature = "dev-tools")]
+pub use debug::{CameraDebugPlugin, SpectatorCamera, SpectatorDebugState, spectator_move};
 pub use projection::{ActiveCamera, Camera, Projection};

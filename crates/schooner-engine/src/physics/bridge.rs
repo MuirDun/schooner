@@ -269,6 +269,18 @@ fn apply_physics_commands(world: &mut World, dt: f32) {
                     apply_character_movement(world, movement);
                 }
             }
+            PhysicsCommand::JumpCharacter {
+                entity,
+                launch_speed,
+            } => {
+                let Some(mut state) = world.get_mut::<CharacterControllerState>(entity) else {
+                    continue;
+                };
+                if state.grounded {
+                    state.grounded = false;
+                    state.vertical_velocity = launch_speed;
+                }
+            }
         }
     }
 }
@@ -475,6 +487,75 @@ mod tests {
         let state = world.get::<CharacterControllerState>(character).unwrap();
         assert!(state.grounded);
         assert_eq!(state.vertical_velocity, 0.0);
+    }
+
+    #[test]
+    fn grounded_character_jump_launches_once_and_continues_under_gravity() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 0.9, 0.0));
+        spawn_static_box(
+            &mut world,
+            Vec3::new(0.0, -0.1, 0.0),
+            Vec3::new(5.0, 0.1, 5.0),
+        );
+        physics_bridge(&mut world);
+
+        world.increment_tick();
+        world
+            .resource_mut::<PhysicsCommands>()
+            .unwrap()
+            .move_character(character, Vec3::ZERO);
+        physics_bridge(&mut world);
+        assert!(
+            world
+                .get::<CharacterControllerState>(character)
+                .unwrap()
+                .grounded
+        );
+        let grounded_y = world.get::<Transform>(character).unwrap().translation.y;
+
+        world.increment_tick();
+        {
+            let commands = world.resource_mut::<PhysicsCommands>().unwrap();
+            commands.jump_character(character, 5.0);
+            commands.move_character(character, Vec3::ZERO);
+        }
+        physics_bridge(&mut world);
+
+        let launched = *world.get::<CharacterControllerState>(character).unwrap();
+        assert!(!launched.grounded);
+        assert!(launched.vertical_velocity > 0.0);
+        assert!(world.get::<Transform>(character).unwrap().translation.y > grounded_y);
+
+        world.increment_tick();
+        world
+            .resource_mut::<PhysicsCommands>()
+            .unwrap()
+            .move_character(character, Vec3::ZERO);
+        physics_bridge(&mut world);
+
+        let continued = world.get::<CharacterControllerState>(character).unwrap();
+        assert!(continued.vertical_velocity < launched.vertical_velocity);
+        assert!(continued.vertical_velocity > 0.0);
+    }
+
+    #[test]
+    fn airborne_character_rejects_jump_request() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 2.0, 0.0));
+        physics_bridge(&mut world);
+
+        world.increment_tick();
+        {
+            let commands = world.resource_mut::<PhysicsCommands>().unwrap();
+            commands.jump_character(character, 5.0);
+            commands.move_character(character, Vec3::ZERO);
+        }
+        physics_bridge(&mut world);
+
+        let state = world.get::<CharacterControllerState>(character).unwrap();
+        assert!(!state.grounded);
+        assert!(state.vertical_velocity < 0.0);
     }
 
     #[test]

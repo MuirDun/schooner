@@ -3,8 +3,8 @@
 //! Two pieces:
 //! - [`Camera`] — projection params on the entity. The view matrix
 //!   is derived from the entity's `Transform`, not stored here:
-//!   one source of truth for pose, one transform to update from
-//!   `fps_look` / `fps_move` (Phase G) or physics (Game 1).
+//!   one source of truth for pose, updated by `fps_look`, player
+//!   physics, or the debug spectator.
 //! - [`ActiveCamera`] — zero-sized tag marking which camera entity
 //!   the renderer should drive. Multiple cameras can live in the
 //!   world (split-screen, security cameras, debug fly-cam); only

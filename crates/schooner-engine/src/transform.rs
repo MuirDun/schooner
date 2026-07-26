@@ -2,9 +2,9 @@
 //!
 //! Architecture: see `architecture/render.md` — `Transform` is a
 //! scene-graph primitive, not a render concept. The renderer reads
-//! it to build model matrices; the camera (Phase G) reads it for
-//! the view matrix and writes it from `fps_look` / `fps_move`;
-//! physics (Game 1) writes it from Rapier each step; audio sources
+//! it to build model matrices; cameras read it for the view matrix,
+//! `fps_look` writes camera rotation, and the debug spectator writes
+//! its translation; physics (Game 1) writes physical poses; audio sources
 //! and AI perception (later) read it for spatial math. It lives at
 //! the engine crate root rather than under any one subsystem so no
 //! later module has to depend on the renderer just to get a pose.

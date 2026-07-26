@@ -1,7 +1,7 @@
 # Part 2 — Verbs
 
 **Kind:** Tech buildout (physics & player abilities)
-**Status:** In progress — 2.F.2 complete
+**Status:** In progress — 2.F.4 complete
 **Depends on:** Part 1 (Mood) complete
 
 ---
@@ -277,13 +277,17 @@ already use. No hierarchy needed.
 - [x] **2.F.2** Walking: feed desired horizontal motion (from the 2.B action axes,
   captured on Update into an intent/state resource per 2.B.3) into the KCC; resolve
   against geometry; gravity + ground detection.
-- [ ] **2.F.3** Jumping: vertical impulse on the jump action when grounded; apply
+- [x] **2.F.3** Jumping: vertical impulse on the jump action when grounded; apply
   gravity to vertical velocity; land detection.
-- [ ] **2.F.4** Camera copy: each fixed step, `camera.translation = body.translation
+- [x] **2.F.4** Camera copy: each fixed step, `camera.translation = body.translation
   + eye_offset`. `fps_look` stays as-is on the camera Transform; retire the noclip
   `fps_move`.
 - [ ] **2.F.5** Smoke test: walk the chamber — can't clip walls, floor, or stacked
   cubes; jump and land; the tunnel / doorway gates the body correctly.
+
+**Implementation note:** The retired free-flight behavior survives only under
+`dev-tools` as the engine-owned F8 spectator camera. It transfers `ActiveCamera`
+to a separate entity and suspends physical-player intent while active.
 
 ### Phase 2.G — Verbs & modes (force application)
 

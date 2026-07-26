@@ -4,13 +4,13 @@
 //! (projection / controller split, two-system polling shape, sign
 //! conventions, cursor-grab policy).
 //!
-//! Three small systems compose the controller:
+//! Two production systems compose the controller:
 //! - [`fps_cursor_toggle`] — Esc flips cursor grab + visibility.
 //! - `fps_look` (Phase G chunk 4) — mouse delta → yaw/pitch → rotation.
-//! - `fps_move` (Phase G chunk 5) — WASD + Space/Ctrl → translation.
 //!
-//! All three are registered on the `Update` stage. `fps_cursor_toggle`
-//! runs first so the same frame's look/move see the new grab state.
+//! Both are registered on the `Update` stage. Physical player movement belongs
+//! to the hosted character controller. The old free-fly translation behavior
+//! survives only as the `dev-tools` spectator camera.
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -19,7 +19,6 @@ use glam::{Quat, Vec3};
 use crate::camera::projection::ActiveCamera;
 use crate::ecs::{Query, Res, ResMut, WriteOnly};
 use crate::input::{Input, KeyCode};
-use crate::time::Time;
 use crate::transform::Transform;
 
 /// Hard pitch clamp to keep yaw meaningful at the poles. At exactly
@@ -32,8 +31,8 @@ const PITCH_LIMIT: f32 = FRAC_PI_2 - 1e-3;
 ///
 /// Pose lives on the entity's `Transform`; this component is the
 /// integrator state (yaw/pitch) plus the tunables (speed,
-/// sensitivity). `fps_look` and `fps_move` read it together with
-/// `Transform` on the same entity.
+/// sensitivity). Camera systems read it together with `Transform` on the same
+/// entity.
 #[derive(Debug, Clone, Copy)]
 pub struct FpsController {
     /// Yaw in radians around world `+Y`. Positive yaw rotates the
@@ -44,8 +43,8 @@ pub struct FpsController {
     /// `fps_look` clamps this to `(-π/2 + ε, π/2 - ε)` to avoid
     /// gimbal flip at the poles.
     pub pitch: f32,
-    /// Horizontal movement speed in m/s. Vertical (Space/Ctrl) uses
-    /// the same magnitude.
+    /// Movement speed in m/s. Physical controllers and the debug spectator
+    /// both use this as their default traversal speed.
     pub move_speed: f32,
     /// Radians of yaw/pitch per pixel of mouse motion. The default
     /// is calibrated for a typical 1000 DPI mouse at default OS
@@ -131,79 +130,6 @@ pub fn fps_look(
             .clamp(-PITCH_LIMIT, PITCH_LIMIT);
         transform.rotation = rotation_from_yaw_pitch(controller.yaw, controller.pitch);
     }
-}
-
-/// Build the per-frame translation step from yaw + key state.
-///
-/// Horizontal motion (WASD) uses a yaw-only basis so that looking
-/// up at the ceiling and pressing W does not lift the player off
-/// the floor — the FPS-on-foot convention. Vertical motion
-/// (Space/Ctrl) is a separate world-up axis added on top, the
-/// noclip escape hatch for Game 0 where there is no ground
-/// collision yet.
-///
-/// `normalize_or_zero` on the horizontal component prevents the
-/// classic WASD bug where `forward + right` has length √2 and
-/// diagonal motion is faster than cardinal motion. Vertical input
-/// stays additive *after* the normalize so Space + W feels like
-/// "fly up while moving forward," not "Space dilutes your speed."
-fn move_velocity(yaw: f32, fwd: f32, right: f32, up: f32) -> Vec3 {
-    let yaw_rot = Quat::from_axis_angle(Vec3::Y, yaw);
-    let forward_h = yaw_rot * Vec3::NEG_Z;
-    let right_h = yaw_rot * Vec3::X;
-    let horizontal = (forward_h * fwd + right_h * right).normalize_or_zero();
-    horizontal + Vec3::Y * up
-}
-
-/// `Update`-stage system: WASD + Space/Ctrl → translation.
-///
-/// Reads key state and the active camera's yaw, projects WASD
-/// onto the horizontal plane through the camera's facing, adds
-/// Space/Ctrl as world ±Y, scales by `move_speed * delta_secs`,
-/// and writes into `Transform.translation`.
-///
-/// Bindings (hard-coded until input Layer 2 lands — see
-/// `architecture/input.md`): W/A/S/D for forward/left/back/right,
-/// Space for up, LeftCtrl for down.
-///
-/// Early-returns when the cursor is not grabbed: motion shouldn't
-/// happen while the user is interacting with the desktop. Mirrors
-/// `fps_look`'s gate.
-pub fn fps_move(
-    input: Res<Input>,
-    time: Res<Time>,
-    cameras: Query<(WriteOnly<Transform>, &FpsController, &ActiveCamera)>,
-) {
-    if !input.cursor_grabbed() {
-        return;
-    }
-
-    // Axis sums: each direction contributes ±1, opposing keys
-    // cancel exactly so a player holding W+S stays put.
-    let fwd = key_axis(&input, KeyCode::KeyW, KeyCode::KeyS);
-    let right = key_axis(&input, KeyCode::KeyD, KeyCode::KeyA);
-    let up = key_axis(&input, KeyCode::Space, KeyCode::ControlLeft);
-
-    if fwd == 0.0 && right == 0.0 && up == 0.0 {
-        return;
-    }
-
-    let dt = time.delta_secs;
-    for (mut transform, controller, _) in cameras {
-        let v = move_velocity(controller.yaw, fwd, right, up);
-        transform.translation += v * controller.move_speed * dt;
-    }
-}
-
-fn key_axis(input: &Input, positive: KeyCode, negative: KeyCode) -> f32 {
-    let mut axis = 0.0;
-    if input.is_key_down(positive) {
-        axis += 1.0;
-    }
-    if input.is_key_down(negative) {
-        axis -= 1.0;
-    }
-    axis
 }
 
 /// `Update`-stage system: toggle cursor capture on `Esc just_pressed`.
@@ -317,96 +243,6 @@ mod tests {
             forward.abs_diff_eq(Vec3::new(-s, s, 0.0), 1e-5),
             "forward was {forward:?}"
         );
-    }
-
-    // -- movement basis --------------------------------------------
-
-    #[test]
-    fn no_input_yields_zero_velocity() {
-        assert_eq!(move_velocity(0.0, 0.0, 0.0, 0.0), Vec3::ZERO);
-        assert_eq!(move_velocity(1.23, 0.0, 0.0, 0.0), Vec3::ZERO);
-    }
-
-    #[test]
-    fn forward_at_zero_yaw_moves_negative_z() {
-        // At yaw=0 the camera looks down -Z, so W should walk -Z.
-        let v = move_velocity(0.0, 1.0, 0.0, 0.0);
-        assert!(v.abs_diff_eq(Vec3::NEG_Z, 1e-5), "velocity was {v:?}");
-    }
-
-    #[test]
-    fn right_at_zero_yaw_moves_positive_x() {
-        // At yaw=0, camera right (D) is +X.
-        let v = move_velocity(0.0, 0.0, 1.0, 0.0);
-        assert!(v.abs_diff_eq(Vec3::X, 1e-5), "velocity was {v:?}");
-    }
-
-    #[test]
-    fn forward_at_quarter_yaw_moves_negative_x() {
-        // After +90° yaw, forward (-Z) rotates to -X.
-        let v = move_velocity(FRAC_PI_2, 1.0, 0.0, 0.0);
-        assert!(v.abs_diff_eq(Vec3::NEG_X, 1e-5), "velocity was {v:?}");
-    }
-
-    #[test]
-    fn diagonal_horizontal_motion_is_normalized() {
-        // W + D held together: forward + right both 1. Without
-        // normalization the magnitude would be √2; we want 1 so
-        // diagonals don't outrun cardinals.
-        let v = move_velocity(0.0, 1.0, 1.0, 0.0);
-        assert!((v.length() - 1.0).abs() < 1e-5, "length was {}", v.length());
-    }
-
-    #[test]
-    fn opposing_keys_cancel_to_zero() {
-        // W+S, A+D should each cancel exactly — no jitter from a
-        // tiny residual.
-        assert_eq!(move_velocity(0.0, 0.0, 0.0, 0.0), Vec3::ZERO);
-        // Simulating W+S (fwd=0) and A+D (right=0):
-        let v = move_velocity(0.7, 0.0, 0.0, 0.0);
-        assert_eq!(v, Vec3::ZERO);
-    }
-
-    #[test]
-    fn vertical_input_stays_additive_after_horizontal_normalize() {
-        // W + Space: horizontal contribution is -Z (length 1),
-        // vertical adds +Y on top. Total length √2 — *not*
-        // re-normalized, so flying forward-and-up doesn't slow
-        // your forward speed.
-        let v = move_velocity(0.0, 1.0, 0.0, 1.0);
-        assert!(
-            v.abs_diff_eq(Vec3::new(0.0, 1.0, -1.0), 1e-5),
-            "velocity was {v:?}"
-        );
-    }
-
-    #[test]
-    fn vertical_only_input_yields_world_up() {
-        // Space alone: pure +Y, regardless of yaw.
-        let v = move_velocity(1.7, 0.0, 0.0, 1.0);
-        assert!(v.abs_diff_eq(Vec3::Y, 1e-5), "velocity was {v:?}");
-        let v = move_velocity(0.0, 0.0, 0.0, -1.0);
-        assert!(v.abs_diff_eq(Vec3::NEG_Y, 1e-5), "velocity was {v:?}");
-    }
-
-    // -- key axis sums ---------------------------------------------
-
-    #[test]
-    fn key_axis_sums_to_zero_when_both_held() {
-        let mut input = Input::new();
-        input.record_key(KeyCode::KeyW, true);
-        input.record_key(KeyCode::KeyS, true);
-        assert_eq!(key_axis(&input, KeyCode::KeyW, KeyCode::KeyS), 0.0);
-    }
-
-    #[test]
-    fn key_axis_returns_signed_axis() {
-        let mut input = Input::new();
-        input.record_key(KeyCode::KeyD, true);
-        assert_eq!(key_axis(&input, KeyCode::KeyD, KeyCode::KeyA), 1.0);
-        let mut input = Input::new();
-        input.record_key(KeyCode::KeyA, true);
-        assert_eq!(key_axis(&input, KeyCode::KeyD, KeyCode::KeyA), -1.0);
     }
 
     #[test]
