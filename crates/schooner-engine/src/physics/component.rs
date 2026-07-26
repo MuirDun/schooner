@@ -52,6 +52,26 @@ impl Default for CharacterController {
     }
 }
 
+/// Runtime result of the most recent character-controller move.
+///
+/// The bridge owns these values because they are outcomes of collision
+/// resolution. Gameplay may read them to decide whether a jump is allowed,
+/// but it does not derive grounded state independently from contacts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharacterControllerState {
+    pub grounded: bool,
+    pub vertical_velocity: f32,
+}
+
+impl Default for CharacterControllerState {
+    fn default() -> Self {
+        Self {
+            grounded: false,
+            vertical_velocity: 0.0,
+        }
+    }
+}
+
 /// Which side owns an entity's physical pose.
 ///
 /// Dynamic bodies are solved by physics, static bodies are immovable world
@@ -224,6 +244,17 @@ mod tests {
         assert_eq!(
             controller.snap_to_ground,
             Some(CharacterLength::Relative(0.2))
+        );
+    }
+
+    #[test]
+    fn character_controller_state_starts_airborne_and_still() {
+        assert_eq!(
+            CharacterControllerState::default(),
+            CharacterControllerState {
+                grounded: false,
+                vertical_velocity: 0.0,
+            }
         );
     }
 

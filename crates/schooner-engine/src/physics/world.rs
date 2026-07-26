@@ -11,12 +11,15 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use rapier3d::control::{
+    CharacterLength as RapierCharacterLength, KinematicCharacterController,
+};
 use rapier3d::prelude::{nalgebra, *};
 
 use crate::ecs::EntityId;
 use crate::physics::{
-    BodyKind, Collider, ColliderShape, Contact, ContactEvents, RigidBody, TeleportVelocity,
-    TriggerEnter, TriggerExit,
+    BodyKind, CharacterController, CharacterControllerState, CharacterLength, Collider,
+    ColliderShape, Contact, ContactEvents, RigidBody, TeleportVelocity, TriggerEnter, TriggerExit,
 };
 use crate::transform::Transform;
 
@@ -94,6 +97,15 @@ pub(crate) struct PhysicsPose {
     pub entity: EntityId,
     pub translation: glam::Vec3,
     pub rotation: glam::Quat,
+}
+
+/// Collision-resolved result of one character movement command.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CharacterMovement {
+    pub entity: EntityId,
+    pub translation: glam::Vec3,
+    pub grounded: bool,
+    pub vertical_velocity: f32,
 }
 
 /// Reusable bridge-owned output buffers. The bridge takes this bundle after a
@@ -412,6 +424,73 @@ impl PhysicsWorld {
         }
     }
 
+    /// Resolve one fixed step of character movement against the hosted world.
+    ///
+    /// The query excludes the character's own collider. Horizontal velocity
+    /// comes from gameplay; gravity and ground detection remain physics
+    /// outcomes so downstream rules do not infer them independently.
+    pub(crate) fn move_character(
+        &mut self,
+        entity: EntityId,
+        controller: CharacterController,
+        state: CharacterControllerState,
+        horizontal_velocity: glam::Vec3,
+        dt: f32,
+    ) -> Option<CharacterMovement> {
+        let handles = self.handles(entity)?;
+        let body = self.bodies.get(handles.body)?;
+        if body.body_type() != RigidBodyType::KinematicPositionBased {
+            return None;
+        }
+        let character_position = *body.position();
+
+        let mut vertical_velocity = state.vertical_velocity;
+        if state.grounded && vertical_velocity < 0.0 {
+            vertical_velocity = 0.0;
+        }
+        vertical_velocity += self.gravity.y * dt;
+
+        let desired_translation = Vector::new(
+            horizontal_velocity.x * dt,
+            vertical_velocity * dt,
+            horizontal_velocity.z * dt,
+        );
+        let effective = {
+            let collider = self.colliders.get(handles.collider)?;
+            let query = self.broad_phase.as_query_pipeline(
+                self.narrow_phase.query_dispatcher(),
+                &self.bodies,
+                &self.colliders,
+                QueryFilter::default().exclude_rigid_body(handles.body),
+            );
+            let controller = rapier_character_controller(controller);
+            controller.move_shape(
+                dt,
+                &query,
+                collider.shape(),
+                &character_position,
+                desired_translation,
+                |_| {},
+            )
+        };
+
+        if effective.grounded && vertical_velocity < 0.0 {
+            vertical_velocity = 0.0;
+        }
+
+        let translation = character_position.translation + effective.translation;
+        self.bodies
+            .get_mut(handles.body)?
+            .set_next_kinematic_translation(translation);
+
+        Some(CharacterMovement {
+            entity,
+            translation: rapier_vec_to_glam(translation),
+            grounded: effective.grounded,
+            vertical_velocity,
+        })
+    }
+
     /// Move a body discontinuously. This intentionally bypasses the regular
     /// kinematic-motion path; gameplay should use it only for teleports.
     pub(crate) fn teleport_body(
@@ -649,6 +728,24 @@ fn active_events(collider: Collider, contact_events: Option<ContactEvents>) -> A
         ActiveEvents::CONTACT_FORCE_EVENTS
     } else {
         ActiveEvents::empty()
+    }
+}
+
+fn rapier_character_controller(controller: CharacterController) -> KinematicCharacterController {
+    KinematicCharacterController {
+        offset: rapier_character_length(controller.offset),
+        slide: controller.slide,
+        max_slope_climb_angle: controller.max_slope_climb_angle,
+        min_slope_slide_angle: controller.min_slope_slide_angle,
+        snap_to_ground: controller.snap_to_ground.map(rapier_character_length),
+        ..KinematicCharacterController::default()
+    }
+}
+
+fn rapier_character_length(length: CharacterLength) -> RapierCharacterLength {
+    match length {
+        CharacterLength::Relative(value) => RapierCharacterLength::Relative(value),
+        CharacterLength::Absolute(value) => RapierCharacterLength::Absolute(value),
     }
 }
 

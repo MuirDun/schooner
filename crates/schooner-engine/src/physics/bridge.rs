@@ -11,8 +11,9 @@
 
 use crate::ecs::{EntityId, Events, World};
 use crate::physics::{
-    Collider, Contact, ContactEvents, PhysicsCommand, PhysicsCommands, PhysicsStepOutput,
-    PhysicsWorld, RigidBody, TriggerEnter, TriggerExit,
+    CharacterController, CharacterControllerState, CharacterMovement, Collider, Contact,
+    ContactEvents, PhysicsCommand, PhysicsCommands, PhysicsStepOutput, PhysicsWorld, RigidBody,
+    TriggerEnter, TriggerExit,
 };
 use crate::time::Time;
 use crate::transform::Transform;
@@ -43,7 +44,7 @@ pub(crate) fn physics_bridge(world: &mut World) {
     let sync_tick = world.current_tick();
     physics_reconcile_lifecycle(world);
     sync_changed_transforms(world, transform_since, sync_tick);
-    apply_physics_commands(world);
+    apply_physics_commands(world, dt);
 
     let Some(physics) = world.resource_mut::<PhysicsWorld>() else {
         return;
@@ -217,7 +218,7 @@ fn sync_changed_transforms(world: &mut World, since: u64, sync_tick: u64) {
     physics.set_last_transform_sync_tick(sync_tick);
 }
 
-fn apply_physics_commands(world: &mut World) {
+fn apply_physics_commands(world: &mut World, dt: f32) {
     if !world.contains_resource::<PhysicsWorld>() {
         return;
     }
@@ -229,32 +230,64 @@ fn apply_physics_commands(world: &mut World) {
         return;
     }
 
-    let mut applied_poses = Vec::new();
-    {
-        let Some(physics) = world.resource_mut::<PhysicsWorld>() else {
-            return;
-        };
-        for command in commands {
-            match command {
-                PhysicsCommand::TeleportBody {
-                    entity,
-                    transform,
-                    velocity,
-                } => {
-                    if physics.teleport_body(entity, transform, velocity) {
-                        applied_poses.push((entity, transform));
-                    }
+    for command in commands {
+        match command {
+            PhysicsCommand::TeleportBody {
+                entity,
+                transform,
+                velocity,
+            } => {
+                let applied = world
+                    .resource_mut::<PhysicsWorld>()
+                    .is_some_and(|physics| physics.teleport_body(entity, transform, velocity));
+                if applied {
+                    apply_teleport_pose(world, entity, transform);
+                }
+            }
+            PhysicsCommand::MoveCharacter {
+                entity,
+                horizontal_velocity,
+            } => {
+                let Some(controller) = world.get::<CharacterController>(entity).copied() else {
+                    continue;
+                };
+                let Some(state) = world.get::<CharacterControllerState>(entity).copied() else {
+                    continue;
+                };
+                let movement = world
+                    .resource_mut::<PhysicsWorld>()
+                    .and_then(|physics| {
+                        physics.move_character(
+                            entity,
+                            controller,
+                            state,
+                            horizontal_velocity,
+                            dt,
+                        )
+                    });
+                if let Some(movement) = movement {
+                    apply_character_movement(world, movement);
                 }
             }
         }
     }
+}
 
-    for (entity, transform) in applied_poses {
-        let Some(mut current) = world.get_mut::<Transform>(entity) else {
-            continue;
-        };
-        current.translation = transform.translation;
-        current.rotation = transform.rotation;
+fn apply_teleport_pose(world: &mut World, entity: EntityId, transform: Transform) {
+    let Some(mut current) = world.get_mut::<Transform>(entity) else {
+        return;
+    };
+    current.translation = transform.translation;
+    current.rotation = transform.rotation;
+}
+
+fn apply_character_movement(world: &mut World, movement: CharacterMovement) {
+    if let Some(mut transform) = world.get_mut::<Transform>(movement.entity) {
+        transform.translation = movement.translation;
+    }
+    if let Some(mut state) = world.get_mut::<CharacterControllerState>(movement.entity) {
+        state.grounded = movement.grounded;
+        state.vertical_velocity = movement.vertical_velocity;
     }
 }
 
@@ -374,6 +407,74 @@ mod tests {
         let transform = world.get::<Transform>(entity).unwrap();
         assert_eq!(transform.translation, Vec3::new(7.0, 8.0, 9.0));
         assert_eq!(transform.scale, Vec3::splat(3.0));
+    }
+
+    #[test]
+    fn character_move_applies_gravity_while_airborne() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 2.0, 0.0));
+        physics_bridge(&mut world);
+
+        world.increment_tick();
+        world
+            .resource_mut::<PhysicsCommands>()
+            .unwrap()
+            .move_character(character, Vec3::ZERO);
+        physics_bridge(&mut world);
+
+        let transform = world.get::<Transform>(character).unwrap();
+        let state = world.get::<CharacterControllerState>(character).unwrap();
+        assert!(transform.translation.y < 2.0);
+        assert!(!state.grounded);
+        assert!(state.vertical_velocity < 0.0);
+    }
+
+    #[test]
+    fn character_move_excludes_self_and_stops_at_a_wall() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 0.9, 0.0));
+        spawn_static_box(
+            &mut world,
+            Vec3::new(1.1, 0.9, 0.0),
+            Vec3::new(0.1, 2.0, 2.0),
+        );
+        physics_bridge(&mut world);
+        world.resource_mut::<PhysicsWorld>().unwrap().gravity =
+            vector![0.0, 0.0, 0.0].into();
+
+        world.increment_tick();
+        world
+            .resource_mut::<PhysicsCommands>()
+            .unwrap()
+            .move_character(character, Vec3::new(120.0, 0.0, 0.0));
+        physics_bridge(&mut world);
+
+        let x = world.get::<Transform>(character).unwrap().translation.x;
+        assert!(x > 0.1, "self-collision prevented movement: x={x}");
+        assert!(x < 0.8, "character crossed the wall: x={x}");
+    }
+
+    #[test]
+    fn character_move_reports_grounded_and_clears_falling_velocity() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 0.9, 0.0));
+        spawn_static_box(
+            &mut world,
+            Vec3::new(0.0, -0.1, 0.0),
+            Vec3::new(5.0, 0.1, 5.0),
+        );
+        physics_bridge(&mut world);
+
+        world.increment_tick();
+        world
+            .resource_mut::<PhysicsCommands>()
+            .unwrap()
+            .move_character(character, Vec3::ZERO);
+        physics_bridge(&mut world);
+
+        let state = world.get::<CharacterControllerState>(character).unwrap();
+        assert!(state.grounded);
+        assert_eq!(state.vertical_velocity, 0.0);
     }
 
     #[test]
@@ -633,6 +734,25 @@ mod tests {
         world.insert(entity, Collider::ball(0.5));
         physics_reconcile_lifecycle(&mut world);
         world
+    }
+
+    fn spawn_character(world: &mut World, translation: Vec3) -> EntityId {
+        let entity = world.spawn();
+        world.increment_tick();
+        world.insert(entity, Transform::from_translation(translation));
+        world.insert(entity, RigidBody::kinematic_position_based());
+        world.insert(entity, Collider::capsule_y(0.55, 0.35));
+        world.insert(entity, CharacterController::default());
+        world.insert(entity, CharacterControllerState::default());
+        entity
+    }
+
+    fn spawn_static_box(world: &mut World, translation: Vec3, half_extents: Vec3) -> EntityId {
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(translation));
+        world.insert(entity, RigidBody::static_body());
+        world.insert(entity, Collider::cuboid(half_extents));
+        entity
     }
 
     fn only_physics_entity(world: &World) -> EntityId {

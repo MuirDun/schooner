@@ -8,9 +8,10 @@ use glam::{Quat, Vec3};
 use schooner_engine::EngineDebugPlugins;
 use schooner_engine::ecs::{Commands, Events, Query, Res, ResMut, exclusive};
 use schooner_engine::{
-    Actions, ActiveCamera, App, AppError, Camera, CharacterController, Collider, EntityId,
-    FpsController, KeyCode, LogConfig, MouseButton, RigidBody, Stage, Symbol, Transform, Trigger,
-    WindowConfig, World, fps_cursor_toggle, fps_look, fps_move, logging, sym,
+    Actions, ActiveCamera, App, AppError, Camera, CharacterController, CharacterControllerState,
+    Collider, EntityId, FpsController, Input, KeyCode, LogConfig, MouseButton, PhysicsCommands,
+    RigidBody, Stage, Symbol, Transform, Trigger, WindowConfig, World, fps_cursor_toggle, fps_look,
+    fps_move, logging, sym,
 };
 
 #[cfg(feature = "hot")]
@@ -230,10 +231,61 @@ impl Acts {
 #[derive(Default)]
 struct CubeStack(Vec<EntityId>);
 
+#[derive(Debug, Default)]
+struct PlayerMovementIntent {
+    forward: f32,
+    right: f32,
+}
+
+#[derive(Debug)]
+struct PlayerBody(EntityId);
+
 const PLAYER_CAPSULE_RADIUS: f32 = 0.35;
 const PLAYER_CAPSULE_HALF_HEIGHT: f32 = 0.55;
 const PLAYER_BODY_CENTER_HEIGHT: f32 = PLAYER_CAPSULE_RADIUS + PLAYER_CAPSULE_HALF_HEIGHT;
 const PLAYER_EYE_HEIGHT: f32 = 1.7;
+
+fn capture_player_movement(
+    actions: Res<Actions>,
+    acts: Res<Acts>,
+    input: Res<Input>,
+    mut intent: ResMut<PlayerMovementIntent>,
+) {
+    if !input.cursor_grabbed() {
+        intent.forward = 0.0;
+        intent.right = 0.0;
+        return;
+    }
+
+    intent.forward = actions.axis(acts.move_back, acts.move_forward);
+    intent.right = actions.axis(acts.move_left, acts.move_right);
+}
+
+fn submit_player_movement(
+    intent: Res<PlayerMovementIntent>,
+    player: Res<PlayerBody>,
+    cameras: Query<(&FpsController, &ActiveCamera)>,
+    mut physics: ResMut<PhysicsCommands>,
+) {
+    let Some((controller, _)) = cameras.into_iter().next() else {
+        return;
+    };
+
+    let velocity = walk_velocity(
+        controller.yaw,
+        intent.forward,
+        intent.right,
+        controller.move_speed,
+    );
+    physics.move_character(player.0, velocity);
+}
+
+fn walk_velocity(yaw: f32, forward_input: f32, right_input: f32, speed: f32) -> Vec3 {
+    let yaw_rotation = Quat::from_axis_angle(Vec3::Y, yaw);
+    let forward = yaw_rotation * Vec3::NEG_Z;
+    let right = yaw_rotation * Vec3::X;
+    (forward * forward_input + right * right_input).normalize_or_zero() * speed
+}
 
 fn main() -> anyhow::Result<(), AppError> {
     logging::init(LogConfig::default()).unwrap();
@@ -247,6 +299,7 @@ fn main() -> anyhow::Result<(), AppError> {
         .insert_resource(PendingTransition::default())
         .insert_resource(EditModeResource(EditMode::Add))
         .insert_resource(CubeStack::default())
+        .insert_resource(PlayerMovementIntent::default())
         // Layer 2 action bindings (Part 2.B.4). The verbs/controller
         // consume these in 2.F/2.G; 2.B.5 smoke-tests the pipeline.
         .insert_resource(Acts::new())
@@ -272,6 +325,8 @@ fn main() -> anyhow::Result<(), AppError> {
         .add_system(Stage::Update, fps_cursor_toggle)
         .add_system(Stage::Update, fps_look)
         .add_system(Stage::Update, fps_move)
+        .add_system(Stage::Update, capture_player_movement)
+        .add_system(Stage::FixedUpdate, submit_player_movement)
         .add_system(Stage::Update, exclusive(scene::run_transition))
         .add_system(Stage::Update, mode_select)
         .add_system(Stage::Update, edit_input)
@@ -312,7 +367,9 @@ fn spawn_player(world: &mut World) {
         Collider::capsule_y(PLAYER_CAPSULE_HALF_HEIGHT, PLAYER_CAPSULE_RADIUS),
     );
     world.insert(body, CharacterController::default());
+    world.insert(body, CharacterControllerState::default());
     world.insert(body, Player);
+    world.insert_resource(PlayerBody(body));
 
     let camera = world.spawn();
     world.insert(
@@ -326,4 +383,25 @@ fn spawn_player(world: &mut World) {
     world.insert(camera, Camera::perspective_default());
     world.insert(camera, ActiveCamera);
     world.insert(camera, FpsController::default());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagonal_walk_is_not_faster_than_cardinal_walk() {
+        let cardinal = walk_velocity(0.0, 1.0, 0.0, 5.0);
+        let diagonal = walk_velocity(0.0, 1.0, 1.0, 5.0);
+
+        assert!((cardinal.length() - 5.0).abs() < 1e-6);
+        assert!((diagonal.length() - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn walk_velocity_uses_camera_yaw() {
+        let velocity = walk_velocity(std::f32::consts::FRAC_PI_2, 1.0, 0.0, 5.0);
+
+        assert!(velocity.abs_diff_eq(Vec3::NEG_X * 5.0, 1e-5));
+    }
 }

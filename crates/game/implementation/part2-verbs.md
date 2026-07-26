@@ -1,7 +1,7 @@
 # Part 2 — Verbs
 
 **Kind:** Tech buildout (physics & player abilities)
-**Status:** In progress — 2.F.1 complete
+**Status:** In progress — 2.F.2 complete
 **Depends on:** Part 1 (Mood) complete
 
 ---
@@ -274,7 +274,7 @@ already use. No hierarchy needed.
 **Steps:**
 - [x] **2.F.1** Player body: a capsule (kinematic-position-based) + a KCC. Camera
   stays its own entity / `Transform`.
-- [ ] **2.F.2** Walking: feed desired horizontal motion (from the 2.B action axes,
+- [x] **2.F.2** Walking: feed desired horizontal motion (from the 2.B action axes,
   captured on Update into an intent/state resource per 2.B.3) into the KCC; resolve
   against geometry; gravity + ground detection.
 - [ ] **2.F.3** Jumping: vertical impulse on the jump action when grounded; apply

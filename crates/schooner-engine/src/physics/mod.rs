@@ -21,8 +21,8 @@ pub(crate) use bridge::{physics_bridge, physics_reconcile_lifecycle};
 pub(crate) use command::PhysicsCommand;
 pub use command::{PhysicsCommands, TeleportVelocity};
 pub use component::{
-    BodyKind, CharacterController, CharacterLength, Collider, ColliderShape, ContactEvents,
-    PhysicsMaterial, RigidBody,
+    BodyKind, CharacterController, CharacterControllerState, CharacterLength, Collider,
+    ColliderShape, ContactEvents, PhysicsMaterial, RigidBody,
 };
 pub use event::{Contact, TriggerEnter, TriggerExit};
-pub(crate) use world::{PhysicsStepOutput, PhysicsWorld};
+pub(crate) use world::{CharacterMovement, PhysicsStepOutput, PhysicsWorld};
