@@ -110,7 +110,7 @@ pub(crate) fn physics_reconcile_lifecycle(world: &mut World) {
 
 fn reconcile_body_lifecycle(
     world: &mut World,
-    since: u64,
+    since: Option<u64>,
     lifecycle_tick: u64,
 ) -> PhysicsLifecycleWorkload {
     let (mut spawns, mut candidate_records) = body_spawns_since(world, since);
@@ -172,39 +172,60 @@ fn reconcile_body_lifecycle(
     workload
 }
 
-fn body_spawns_since(world: &mut World, since: u64) -> (Vec<BodySpawn>, usize) {
+fn body_spawns_since(world: &mut World, since: Option<u64>) -> (Vec<BodySpawn>, usize) {
     let mut out = Vec::new();
-    let rigid_body_changes: Vec<EntityId> = world
-        .added_since::<RigidBody>(since)
-        .map(|(entity, _)| entity)
-        .chain(
-            world
-                .changed_since::<RigidBody>(since)
-                .map(|(entity, _)| entity),
-        )
-        .collect();
-    let collider_changes: Vec<EntityId> = world
-        .added_since::<Collider>(since)
-        .map(|(entity, _)| entity)
-        .chain(
-            world
-                .changed_since::<Collider>(since)
-                .map(|(entity, _)| entity),
-        )
-        .collect();
-    let transform_adds: Vec<EntityId> = world
-        .added_since::<Transform>(since)
-        .map(|(entity, _)| entity)
-        .collect();
-    let contact_event_changes: Vec<EntityId> = world
-        .added_since::<ContactEvents>(since)
-        .map(|(entity, _)| entity)
-        .chain(
-            world
-                .changed_since::<ContactEvents>(since)
-                .map(|(entity, _)| entity),
-        )
-        .collect();
+    let rigid_body_changes: Vec<EntityId> = match since {
+        Some(since) => world
+            .added_since::<RigidBody>(since)
+            .map(|(entity, _)| entity)
+            .chain(
+                world
+                    .changed_since::<RigidBody>(since)
+                    .map(|(entity, _)| entity),
+            )
+            .collect(),
+        None => world
+            .iter::<RigidBody>()
+            .map(|(entity, _)| entity)
+            .collect(),
+    };
+    let collider_changes: Vec<EntityId> = match since {
+        Some(since) => world
+            .added_since::<Collider>(since)
+            .map(|(entity, _)| entity)
+            .chain(
+                world
+                    .changed_since::<Collider>(since)
+                    .map(|(entity, _)| entity),
+            )
+            .collect(),
+        None => world.iter::<Collider>().map(|(entity, _)| entity).collect(),
+    };
+    let transform_adds: Vec<EntityId> = match since {
+        Some(since) => world
+            .added_since::<Transform>(since)
+            .map(|(entity, _)| entity)
+            .collect(),
+        None => world
+            .iter::<Transform>()
+            .map(|(entity, _)| entity)
+            .collect(),
+    };
+    let contact_event_changes: Vec<EntityId> = match since {
+        Some(since) => world
+            .added_since::<ContactEvents>(since)
+            .map(|(entity, _)| entity)
+            .chain(
+                world
+                    .changed_since::<ContactEvents>(since)
+                    .map(|(entity, _)| entity),
+            )
+            .collect(),
+        None => world
+            .iter::<ContactEvents>()
+            .map(|(entity, _)| entity)
+            .collect(),
+    };
     let candidate_records = rigid_body_changes
         .len()
         .saturating_add(collider_changes.len())
@@ -262,15 +283,21 @@ fn push_unique_spawn(spawns: &mut Vec<BodySpawn>, spawn: BodySpawn) {
 
 fn sync_changed_transforms(
     world: &mut World,
-    since: u64,
+    since: Option<u64>,
     sync_tick: u64,
 ) -> PhysicsTransformSyncWorkload {
     puffin::profile_scope!("physics.authored_transform_sync");
 
-    let changed: Vec<(EntityId, Transform)> = world
-        .changed_since::<Transform>(since)
-        .map(|(entity, transform)| (entity, *transform))
-        .collect();
+    let changed: Vec<(EntityId, Transform)> = match since {
+        Some(since) => world
+            .changed_since::<Transform>(since)
+            .map(|(entity, transform)| (entity, *transform))
+            .collect(),
+        None => world
+            .iter::<Transform>()
+            .map(|(entity, transform)| (entity, *transform))
+            .collect(),
+    };
     let mut workload = PhysicsTransformSyncWorkload {
         candidates: count(changed.len()),
         ..PhysicsTransformSyncWorkload::default()
@@ -474,7 +501,31 @@ mod tests {
         let physics = world.resource::<PhysicsWorld>().unwrap();
         assert!(physics.handles(entity).is_some());
         assert_eq!(physics.entity_count(), 1);
-        assert_eq!(physics.last_body_lifecycle_tick(), world.current_tick());
+        assert_eq!(
+            physics.last_body_lifecycle_tick(),
+            Some(world.current_tick())
+        );
+    }
+
+    #[test]
+    fn bridge_first_reconciliation_materializes_tick_zero_authoring_once() {
+        let mut world = physics_world();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            Transform::from_translation(Vec3::new(0.0, 2.0, 0.0)),
+        );
+        world.insert(entity, RigidBody::dynamic());
+        world.insert(entity, Collider::ball(0.5));
+        assert_eq!(world.current_tick(), 0);
+
+        physics_bridge(&mut world);
+        physics_bridge(&mut world);
+
+        let physics = world.resource::<PhysicsWorld>().unwrap();
+        assert!(physics.handles(entity).is_some());
+        assert_eq!(physics.entity_count(), 1);
+        assert_eq!(physics.last_body_lifecycle_tick(), Some(0));
     }
 
     #[test]

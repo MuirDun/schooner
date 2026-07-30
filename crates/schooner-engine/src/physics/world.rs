@@ -185,8 +185,8 @@ pub(crate) struct PhysicsWorld {
     collider_metadata: HashMap<ColliderHandle, ColliderMetadata>,
     stale_collider_metadata: HashMap<ColliderHandle, ColliderMetadata>,
     authoring: HashMap<EntityId, BodyAuthoring>,
-    last_body_lifecycle_tick: u64,
-    last_transform_sync_tick: u64,
+    last_body_lifecycle_tick: Option<u64>,
+    last_transform_sync_tick: Option<u64>,
     step_output: PhysicsStepOutput,
 }
 
@@ -220,8 +220,8 @@ impl PhysicsWorld {
             collider_metadata: HashMap::new(),
             stale_collider_metadata: HashMap::new(),
             authoring: HashMap::new(),
-            last_body_lifecycle_tick: 0,
-            last_transform_sync_tick: 0,
+            last_body_lifecycle_tick: None,
+            last_transform_sync_tick: None,
             step_output: PhysicsStepOutput::default(),
         }
     }
@@ -250,20 +250,20 @@ impl PhysicsWorld {
 
 #[allow(dead_code)]
 impl PhysicsWorld {
-    pub(crate) fn last_body_lifecycle_tick(&self) -> u64 {
+    pub(crate) fn last_body_lifecycle_tick(&self) -> Option<u64> {
         self.last_body_lifecycle_tick
     }
 
     pub(crate) fn set_last_body_lifecycle_tick(&mut self, tick: u64) {
-        self.last_body_lifecycle_tick = tick;
+        self.last_body_lifecycle_tick = Some(tick);
     }
 
-    pub(crate) fn last_transform_sync_tick(&self) -> u64 {
+    pub(crate) fn last_transform_sync_tick(&self) -> Option<u64> {
         self.last_transform_sync_tick
     }
 
     pub(crate) fn set_last_transform_sync_tick(&mut self, tick: u64) {
-        self.last_transform_sync_tick = tick;
+        self.last_transform_sync_tick = Some(tick);
     }
 
     /// Materialize an ECS-authored body into Rapier and remember the
@@ -871,12 +871,12 @@ mod tests {
     #[test]
     fn lifecycle_cursor_is_owned_by_physics_world() {
         let mut physics = PhysicsWorld::new();
-        assert_eq!(physics.last_body_lifecycle_tick(), 0);
+        assert_eq!(physics.last_body_lifecycle_tick(), None);
         physics.set_last_body_lifecycle_tick(12);
-        assert_eq!(physics.last_body_lifecycle_tick(), 12);
-        assert_eq!(physics.last_transform_sync_tick(), 0);
+        assert_eq!(physics.last_body_lifecycle_tick(), Some(12));
+        assert_eq!(physics.last_transform_sync_tick(), None);
         physics.set_last_transform_sync_tick(13);
-        assert_eq!(physics.last_transform_sync_tick(), 13);
+        assert_eq!(physics.last_transform_sync_tick(), Some(13));
     }
 
     #[test]

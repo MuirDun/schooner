@@ -1,6 +1,6 @@
 //! Ordered system execution for the engine stages.
 //!
-//! The engine runs systems in exactly three stages, named by [`Stage`]:
+//! The engine runs systems in a closed set of stages named by [`Stage`]:
 //! - [`Stage::FixedUpdate`] — fixed timestep, 0..N times per frame,
 //!   driven by an accumulator in the App loop. This is the pre-physics
 //!   intent stage: deterministic gameplay writes forces and desired poses here.
@@ -20,14 +20,12 @@
 //!
 //! ## Tick semantics
 //!
-//! [`Schedule::run_fixed`], [`Schedule::run`], and
-//! [`Schedule::run_render`] each bump `world.current_tick` exactly
-//! once before dispatching their stage. A frame with three
-//! `FixedUpdate` steps therefore advances `current_tick` by 5
-//! (3 fixed + Update + Render). The uniform rule "every stage run
-//! = one tick" keeps change-detection comparisons across stages
-//! straightforward; if the reactive cascade engine in Game 2 wants
-//! a different convention, that's the place to revisit it.
+//! `world.current_tick` is a change-detection epoch, not a stage, frame,
+//! or simulation counter. Every scheduled system dispatch receives a
+//! distinct epoch. Every non-empty deferred-command batch receives one
+//! more; empty stages and command barriers consume none. This lets a
+//! reactive consumer distinguish producers on either side of it within
+//! one stage.
 //!
 //! ## Scope (Game 0)
 //!
@@ -77,6 +75,7 @@ impl SystemStage {
 
     fn run(&mut self, world: &mut World) {
         for sys in &mut self.systems {
+            world.increment_tick();
             sys.run(world);
         }
     }
@@ -174,23 +173,21 @@ impl Schedule {
         self
     }
 
-    /// Advance `world.current_tick` by one, then run every
-    /// [`Stage::Update`] system in registration order.
+    /// Run every [`Stage::Update`] system in registration order, assigning
+    /// each execution its own change epoch.
     pub fn run(&mut self, world: &mut World) {
         puffin::profile_scope!("update_stage");
-        world.increment_tick();
         self.update.run(world);
         CommandQueue::apply(world);
     }
 
-    /// Advance `world.current_tick` by one, then run every
-    /// [`Stage::FixedUpdate`] intent systems, then the engine physics bridge,
-    /// then [`Stage::PostPhysics`] outcome systems. Commands flush at every
-    /// boundary so fixed-step spawns and despawns are visible to physics.
-    /// Called 0..N times per frame by the App's accumulator.
+    /// Run every [`Stage::FixedUpdate`] intent system, then the engine physics
+    /// bridge, then [`Stage::PostPhysics`] outcome systems. Each execution has
+    /// its own change epoch. Commands flush at every boundary so fixed-step
+    /// spawns and despawns are visible to physics; each non-empty batch gets
+    /// another epoch. Called 0..N times per frame by the App's accumulator.
     pub fn run_fixed(&mut self, world: &mut World) {
         puffin::profile_scope!("fixed_stage");
-        world.increment_tick();
         self.fixed_update.run(world);
         CommandQueue::apply(world);
         self.physics.run(world);
@@ -199,22 +196,19 @@ impl Schedule {
         CommandQueue::apply(world);
     }
 
-    /// Advance `world.current_tick` by one, then run every
-    /// [`Stage::Render`] system in registration order. Called once
-    /// per frame after [`Schedule::run`]; this is where the forward
-    /// pass and egui overlay live.
+    /// Run every [`Stage::Render`] system in registration order, assigning
+    /// each execution its own change epoch. Called once per frame after
+    /// [`Schedule::run`]; this is where the forward pass and egui overlay live.
     pub fn run_render(&mut self, world: &mut World) {
         puffin::profile_scope!("render_stage");
-        world.increment_tick();
         self.render.run(world);
         CommandQueue::apply(world);
     }
 
-    /// Advance `world.current_tick` once.
-    /// Called exactly once, from App:resumed.
+    /// Run startup systems with one change epoch per execution.
+    /// Called exactly once, from `App::resumed`.
     pub fn run_startup(&mut self, world: &mut World) {
         puffin::profile_scope!("startup_stage");
-        world.increment_tick();
         self.startup.run(world);
         CommandQueue::apply(world);
     }
@@ -233,13 +227,21 @@ impl Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ecs::{Res, ResMut};
+    use crate::ecs::{
+        Added, Changed, CommandQueue, Commands, Query, Res, ResMut, RunIfExt, WriteOnly, exclusive,
+    };
 
     #[derive(Debug, PartialEq)]
     struct Counter(u32);
 
     #[derive(Debug, PartialEq)]
     struct Log(Vec<&'static str>);
+
+    #[derive(Debug, PartialEq)]
+    struct ReactiveValue(i32);
+
+    #[derive(Debug, Default, PartialEq)]
+    struct SeenValues(Vec<i32>);
 
     #[test]
     fn empty_schedule_runs_without_panic() {
@@ -251,43 +253,45 @@ mod tests {
     }
 
     #[test]
-    fn run_bumps_current_tick_exactly_once() {
+    fn empty_stages_and_command_barriers_consume_no_epochs() {
         let mut world = World::new();
-        let before = world.current_tick;
+        world.insert_resource(CommandQueue::default());
+        let before = world.current_tick();
         let mut sched = Schedule::new();
-        sched.run(&mut world);
-        assert_eq!(world.current_tick, before + 1);
-    }
-
-    #[test]
-    fn run_fixed_bumps_current_tick_exactly_once() {
-        let mut world = World::new();
-        let before = world.current_tick;
-        let mut sched = Schedule::new();
-        sched.run_fixed(&mut world);
-        assert_eq!(world.current_tick, before + 1);
-    }
-
-    #[test]
-    fn run_render_bumps_current_tick_exactly_once() {
-        let mut world = World::new();
-        let before = world.current_tick;
-        let mut sched = Schedule::new();
-        sched.run_render(&mut world);
-        assert_eq!(world.current_tick, before + 1);
-    }
-
-    #[test]
-    fn frame_with_three_fixed_steps_advances_tick_by_five() {
-        let mut world = World::new();
-        let before = world.current_tick;
-        let mut sched = Schedule::new();
-        sched.run_fixed(&mut world);
-        sched.run_fixed(&mut world);
         sched.run_fixed(&mut world);
         sched.run(&mut world);
         sched.run_render(&mut world);
-        assert_eq!(world.current_tick, before + 5);
+        sched.run_startup(&mut world);
+        assert_eq!(world.current_tick(), before);
+    }
+
+    #[test]
+    fn each_scheduled_system_execution_gets_a_distinct_epoch() {
+        let mut world = World::new();
+        let before = world.current_tick();
+        let mut sched = Schedule::new();
+        sched
+            .add_system(&mut world, Stage::Update, || {})
+            .add_system(&mut world, Stage::Update, || {});
+        sched.run(&mut world);
+        assert_eq!(world.current_tick(), before + 2);
+    }
+
+    #[test]
+    fn one_system_in_each_frame_stage_advances_by_each_execution() {
+        let mut world = World::new();
+        let before = world.current_tick();
+        let mut sched = Schedule::new();
+        sched
+            .add_system(&mut world, Stage::FixedUpdate, || {})
+            .add_system(&mut world, Stage::Update, || {})
+            .add_system(&mut world, Stage::Render, || {});
+        sched.run_fixed(&mut world);
+        sched.run_fixed(&mut world);
+        sched.run_fixed(&mut world);
+        sched.run(&mut world);
+        sched.run_render(&mut world);
+        assert_eq!(world.current_tick(), before + 5);
     }
 
     #[test]
@@ -401,15 +405,13 @@ mod tests {
 
     #[test]
     fn changed_since_sees_entity_mutated_by_scheduled_system() {
-        use crate::ecs::exclusive;
-
         #[derive(Debug, PartialEq)]
         struct Health(i32);
 
         let mut world = World::new();
         let e = world.spawn();
         world.insert(e, Health(100));
-        let baseline = world.current_tick;
+        let baseline = world.current_tick();
 
         let mut sched = Schedule::new();
         sched.add_system(
@@ -468,8 +470,6 @@ mod tests {
 
     #[test]
     fn query_mut_as_system_param_writes_through() {
-        use crate::ecs::{Query, WriteOnly};
-
         #[derive(Debug, PartialEq)]
         struct Pos(i32);
 
@@ -491,10 +491,327 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_added_and_changed_include_tick_zero_once() {
+        #[derive(Debug, Default, PartialEq)]
+        struct ReactiveRuns {
+            added: Vec<usize>,
+            changed: Vec<usize>,
+        }
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, ReactiveValue(7));
+        world.insert_resource(ReactiveRuns::default());
+
+        let mut sched = Schedule::new();
+        sched.add_system(
+            &mut world,
+            Stage::Update,
+            |mut runs: ResMut<ReactiveRuns>,
+             added: Query<&ReactiveValue, Added<ReactiveValue>>,
+             changed: Query<&ReactiveValue, Changed<ReactiveValue>>| {
+                runs.added.push(added.into_iter().count());
+                runs.changed.push(changed.into_iter().count());
+            },
+        );
+
+        sched.run(&mut world);
+        sched.run(&mut world);
+
+        assert_eq!(
+            world.resource::<ReactiveRuns>(),
+            Some(&ReactiveRuns {
+                added: vec![1, 0],
+                changed: vec![1, 0],
+            })
+        );
+    }
+
+    #[test]
+    fn producer_before_consumer_is_seen_on_every_run() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, ReactiveValue(0));
+        world.insert_resource(SeenValues::default());
+
+        let mut sched = Schedule::new();
+        sched
+            .add_system(
+                &mut world,
+                Stage::Update,
+                |values: Query<WriteOnly<ReactiveValue>>| {
+                    for mut value in values {
+                        value.0 += 1;
+                    }
+                },
+            )
+            .add_system(
+                &mut world,
+                Stage::Update,
+                |mut seen: ResMut<SeenValues>,
+                 values: Query<&ReactiveValue, Changed<ReactiveValue>>| {
+                    seen.0.extend(values.into_iter().map(|value| value.0));
+                },
+            );
+
+        sched.run(&mut world);
+        sched.run(&mut world);
+
+        assert_eq!(
+            world.resource::<SeenValues>(),
+            Some(&SeenValues(vec![1, 2]))
+        );
+    }
+
+    #[test]
+    fn producer_after_consumer_is_seen_on_the_next_run() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, ReactiveValue(0));
+        world.insert_resource(SeenValues::default());
+
+        let mut sched = Schedule::new();
+        sched
+            .add_system(
+                &mut world,
+                Stage::Update,
+                |mut seen: ResMut<SeenValues>,
+                 values: Query<&ReactiveValue, Changed<ReactiveValue>>| {
+                    seen.0.extend(values.into_iter().map(|value| value.0));
+                },
+            )
+            .add_system(
+                &mut world,
+                Stage::Update,
+                |values: Query<WriteOnly<ReactiveValue>>| {
+                    for mut value in values {
+                        value.0 += 1;
+                    }
+                },
+            );
+
+        sched.run(&mut world);
+        sched.run(&mut world);
+        sched.run(&mut world);
+
+        // This is the original same-stage loss shape: the producer runs
+        // after the consumer. Each later mutation must survive until the
+        // consumer's next execution.
+        assert_eq!(
+            world.resource::<SeenValues>(),
+            Some(&SeenValues(vec![0, 1, 2]))
+        );
+    }
+
+    #[test]
+    fn non_empty_command_batch_before_consumer_has_its_own_epoch() {
+        let mut world = World::new();
+        world.insert_resource(CommandQueue::default());
+        world.insert_resource(SeenValues::default());
+        let entity = world.spawn();
+        world.insert(entity, ReactiveValue(0));
+
+        let mut sched = Schedule::new();
+        sched
+            .add_system(
+                &mut world,
+                Stage::FixedUpdate,
+                move |mut commands: Commands| {
+                    commands.queue(move |world| {
+                        world.get_mut::<ReactiveValue>(entity).unwrap().0 += 1;
+                    });
+                },
+            )
+            .add_system(
+                &mut world,
+                Stage::PostPhysics,
+                |mut seen: ResMut<SeenValues>,
+                 values: Query<&ReactiveValue, Changed<ReactiveValue>>| {
+                    seen.0.extend(values.into_iter().map(|value| value.0));
+                },
+            );
+
+        sched.run_fixed(&mut world);
+        sched.run_fixed(&mut world);
+
+        assert_eq!(
+            world.resource::<SeenValues>(),
+            Some(&SeenValues(vec![1, 2]))
+        );
+        assert_eq!(world.current_tick(), 6);
+    }
+
+    #[test]
+    fn non_empty_command_batch_after_consumer_is_seen_next_run() {
+        let mut world = World::new();
+        world.insert_resource(CommandQueue::default());
+        world.insert_resource(SeenValues::default());
+        let entity = world.spawn();
+        world.insert(entity, ReactiveValue(0));
+
+        let mut sched = Schedule::new();
+        sched
+            .add_system(
+                &mut world,
+                Stage::Update,
+                |mut seen: ResMut<SeenValues>,
+                 values: Query<&ReactiveValue, Changed<ReactiveValue>>| {
+                    seen.0.extend(values.into_iter().map(|value| value.0));
+                },
+            )
+            .add_system(&mut world, Stage::Update, move |mut commands: Commands| {
+                commands.queue(move |world| {
+                    world.get_mut::<ReactiveValue>(entity).unwrap().0 += 1;
+                });
+            });
+
+        sched.run(&mut world);
+        sched.run(&mut world);
+        sched.run(&mut world);
+
+        assert_eq!(
+            world.resource::<SeenValues>(),
+            Some(&SeenValues(vec![0, 1, 2]))
+        );
+        assert_eq!(world.current_tick(), 9);
+    }
+
+    #[test]
+    fn independent_consumers_each_observe_the_same_changes() {
+        #[derive(Debug, Default, PartialEq)]
+        struct SeenA(Vec<i32>);
+        #[derive(Debug, Default, PartialEq)]
+        struct SeenB(Vec<i32>);
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, ReactiveValue(0));
+        world.insert_resource(SeenA::default());
+        world.insert_resource(SeenB::default());
+
+        let mut sched = Schedule::new();
+        sched
+            .add_system(
+                &mut world,
+                Stage::Update,
+                |values: Query<WriteOnly<ReactiveValue>>| {
+                    for mut value in values {
+                        value.0 += 1;
+                    }
+                },
+            )
+            .add_system(
+                &mut world,
+                Stage::Update,
+                |mut seen: ResMut<SeenA>, values: Query<&ReactiveValue, Changed<ReactiveValue>>| {
+                    seen.0.extend(values.into_iter().map(|value| value.0));
+                },
+            )
+            .add_system(
+                &mut world,
+                Stage::Update,
+                |mut seen: ResMut<SeenB>, values: Query<&ReactiveValue, Changed<ReactiveValue>>| {
+                    seen.0.extend(values.into_iter().map(|value| value.0));
+                },
+            );
+
+        sched.run(&mut world);
+        sched.run(&mut world);
+
+        assert_eq!(world.resource::<SeenA>(), Some(&SeenA(vec![1, 2])));
+        assert_eq!(world.resource::<SeenB>(), Some(&SeenB(vec![1, 2])));
+    }
+
+    #[test]
+    fn false_run_condition_does_not_advance_reactive_cursor() {
+        #[derive(Debug, PartialEq)]
+        struct Enabled(bool);
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, ReactiveValue(0));
+        world.insert_resource(Enabled(false));
+        world.insert_resource(SeenValues::default());
+
+        let mut sched = Schedule::new();
+        sched
+            .add_system(
+                &mut world,
+                Stage::Update,
+                (|mut seen: ResMut<SeenValues>,
+                  values: Query<&ReactiveValue, Changed<ReactiveValue>>| {
+                    seen.0.extend(values.into_iter().map(|value| value.0));
+                })
+                .run_if(|world| world.resource::<Enabled>().is_some_and(|enabled| enabled.0)),
+            )
+            .add_system(
+                &mut world,
+                Stage::Update,
+                |values: Query<WriteOnly<ReactiveValue>>| {
+                    for mut value in values {
+                        value.0 += 1;
+                    }
+                },
+            );
+
+        sched.run(&mut world);
+        world.resource_mut::<Enabled>().unwrap().0 = true;
+        sched.run(&mut world);
+        world.resource_mut::<Enabled>().unwrap().0 = false;
+        sched.run(&mut world);
+        world.resource_mut::<Enabled>().unwrap().0 = true;
+        sched.run(&mut world);
+
+        assert_eq!(
+            world.resource::<SeenValues>(),
+            Some(&SeenValues(vec![1, 3]))
+        );
+    }
+
+    #[test]
+    fn zero_then_multiple_fixed_steps_do_not_replay_additions() {
+        #[derive(Debug, Default, PartialEq)]
+        struct Counts(Vec<usize>);
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, ReactiveValue(1));
+        world.insert_resource(Counts::default());
+
+        let mut sched = Schedule::new();
+        sched.add_system(
+            &mut world,
+            Stage::FixedUpdate,
+            |mut counts: ResMut<Counts>, values: Query<&ReactiveValue, Added<ReactiveValue>>| {
+                counts.0.push(values.into_iter().count());
+            },
+        );
+
+        // A render frame with zero fixed steps does not execute or advance
+        // the fixed consumer.
+        assert_eq!(world.resource::<Counts>(), Some(&Counts(vec![])));
+        assert_eq!(world.current_tick(), 0);
+
+        sched.run_fixed(&mut world);
+        sched.run_fixed(&mut world);
+        sched.run_fixed(&mut world);
+
+        assert_eq!(world.resource::<Counts>(), Some(&Counts(vec![1, 0, 0])));
+    }
+
+    #[test]
+    #[should_panic(expected = "change epoch overflow")]
+    fn schedule_refuses_to_wrap_change_epoch() {
+        let mut world = World::new();
+        world.set_current_tick_for_test(u64::MAX);
+        let mut sched = Schedule::new();
+        sched.add_system(&mut world, Stage::Update, || {});
+        sched.run(&mut world);
+    }
+
+    #[test]
     #[should_panic(expected = "alias conflict")]
     fn registration_rejects_aliasing_queries_in_one_system() {
-        use crate::ecs::{Query, WriteOnly};
-
         #[derive(Debug, PartialEq)]
         struct Pos(i32);
 

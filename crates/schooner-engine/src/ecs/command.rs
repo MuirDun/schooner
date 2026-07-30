@@ -59,20 +59,27 @@ impl CommandQueue {
     }
 
     /// Apply and clear every queued command, in order. No-op if the
-    /// resource is absent.
+    /// resource is absent or empty.
     ///
     /// We `mem::take` the command vec out of the in-place resource
     /// before running anything, so each command gets the full
     /// `&mut World` (it can spawn, despawn, even queue more commands)
     /// with no borrow of the queue held. Commands queued *during* apply
     /// land in the now-fresh vec and flush at the next sync point —
-    /// they are not applied in this pass.
+    /// they are not applied in this pass. A non-empty drained batch
+    /// receives one fresh change epoch before its first command, so all
+    /// mutations in the batch share an epoch distinct from surrounding
+    /// system executions. Empty barriers consume no epoch.
     pub fn apply(world: &mut World) {
         let Some(queue) = world.resource_mut::<CommandQueue>() else {
             return;
         };
         let drained = std::mem::take(&mut queue.commands);
         // `queue` borrow ends here; `drained` is owned, `world` is free.
+        if drained.is_empty() {
+            return;
+        }
+        world.increment_tick();
         for command in drained {
             command(world);
         }
@@ -150,7 +157,7 @@ impl SystemParam for Commands<'_> {
         access
     }
 
-    unsafe fn fetch<'w>(world: &'w mut World) -> Self::Item<'w> {
+    unsafe fn fetch<'w>(world: &'w mut World, _last_run_epoch: Option<u64>) -> Self::Item<'w> {
         let queue = world.resource_mut::<CommandQueue>().unwrap_or_else(|| {
             panic!(
                 "{}",

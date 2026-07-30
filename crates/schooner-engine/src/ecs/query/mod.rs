@@ -28,6 +28,6 @@ pub mod join;
 pub mod param;
 
 pub use data::{ComponentAccess, QueryAccess, QueryData, WriteOnly};
-pub use filter::{QueryFilter, Without};
+pub use filter::{CursorlessQueryFilter, QueryFilter, Without};
 pub use iter::QueryIter;
 pub use param::Query;

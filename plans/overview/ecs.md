@@ -58,13 +58,15 @@ shared spine of physics events and gameplay reactivity ([events.md](events.md)).
 
 ## Sharp risks / decisions
 
-- **Mutation ticks only fire through `Mut<T>`.** Raw `get_mut`/`iter_mut` do *not*
-  bump (by design — tested). Ensure the Part-2 reactions read through the
-  tick-bumping path, or they'll miss changes.
-- **Per-stage tick stride.** Each stage bumps `current_tick`; FixedUpdate runs
-  0..N times per frame, so a naive "since last frame" cursor can over/under-count.
-  Pin the change-tick cursor convention when wiring the first `Changed<T>`
-  consumer — sketch it against a concrete reaction before committing.
+- **Mutation ticks fire through `Mut<T>`.** `get_mut`, `iter_mut`, and writable
+  queries return this guard; reaching `DerefMut` stamps the current epoch, while
+  read-only access through the same guard does not mark data dirty.
+- **Per-system change epochs.** `current_tick` is a monotonic change epoch, not a
+  frame or simulation counter. Every scheduled system and every non-empty
+  deferred-command batch gets a distinct epoch; empty barriers get none.
+  Scheduled `Added<T>` / `Changed<T>` queries own a per-system last-successful-run
+  cursor, while exclusive/manual consumers keep explicit caller-owned cursors.
+  Epoch exhaustion fails instead of wrapping.
 - **No runtime system registration / no public `schedule_mut`.** Fine for
   Kinesis (all systems are known at build). Only relevant if a future VM wants
   dynamic Rust systems — it won't; it dispatches inside one resident system.

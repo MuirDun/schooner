@@ -117,7 +117,12 @@ impl ParamAccess {
 /// for the system's lifetime. The returned `ParamAccess` is unioned
 /// across all the system's params and validated for conflicts.
 ///
-/// `fetch(world)` is the per-tick hot path. It is `unsafe` because
+/// `fetch(world, last_run_epoch)` is the per-execution hot path. The
+/// optional epoch is owned by the scheduled function system: `None` on
+/// first execution, then the epoch of its last successful body run.
+/// Params without reactive state ignore it.
+///
+/// Fetch is `unsafe` because
 /// `FunctionSystem` hands out N sequential `&mut World` borrows
 /// through a raw pointer to satisfy multi-param signatures; the
 /// caller is responsible for having already validated that the
@@ -136,7 +141,7 @@ pub trait SystemParam {
     /// [`check_param_conflicts`]) and not have any other live
     /// `Item` from a conflicting param. `FunctionSystem::run`
     /// satisfies this contract.
-    unsafe fn fetch<'w>(world: &'w mut World) -> Self::Item<'w>;
+    unsafe fn fetch<'w>(world: &'w mut World, last_run_epoch: Option<u64>) -> Self::Item<'w>;
 }
 
 impl<T: Any + Send + Sync> SystemParam for Res<'_, T> {
@@ -152,7 +157,7 @@ impl<T: Any + Send + Sync> SystemParam for Res<'_, T> {
         access
     }
 
-    unsafe fn fetch<'w>(world: &'w mut World) -> Self::Item<'w> {
+    unsafe fn fetch<'w>(world: &'w mut World, _last_run_epoch: Option<u64>) -> Self::Item<'w> {
         let value = world.resource::<T>().unwrap_or_else(|| {
             panic!(
                 "{}",
@@ -187,7 +192,7 @@ impl<T: Any + Send + Sync> SystemParam for ResMut<'_, T> {
         access
     }
 
-    unsafe fn fetch<'w>(world: &'w mut World) -> Self::Item<'w> {
+    unsafe fn fetch<'w>(world: &'w mut World, _last_run_epoch: Option<u64>) -> Self::Item<'w> {
         let value = world.resource_mut::<T>().unwrap_or_else(|| {
             panic!(
                 "{}",
@@ -320,6 +325,7 @@ where
 
 pub struct FunctionSystem<F, Params> {
     f: F,
+    last_run_epoch: Option<u64>,
     _marker: PhantomData<fn() -> Params>,
 }
 
@@ -329,8 +335,10 @@ impl<F> System for FunctionSystem<F, ()>
 where
     F: FnMut() + 'static,
 {
-    fn run(&mut self, _world: &mut World) {
-        (self.f)()
+    fn run(&mut self, world: &mut World) {
+        let run_epoch = world.current_tick();
+        (self.f)();
+        self.last_run_epoch = Some(run_epoch);
     }
 }
 
@@ -342,6 +350,7 @@ where
     fn into_system(self) -> Self::System {
         FunctionSystem {
             f: self,
+            last_run_epoch: None,
             _marker: PhantomData,
         }
     }
@@ -355,14 +364,17 @@ where
     F: FnMut(A) + for<'w> FnMut(A::Item<'w>) + 'static,
 {
     fn run(&mut self, world: &mut World) {
+        let last_run_epoch = self.last_run_epoch;
+        let run_epoch = world.current_tick();
         // Single param: no aliasing risk between params, so the
         // unsafe is just lifetime juggling.
         let world_ptr: *mut World = world;
         // SAFETY: only one param, so no inter-param aliasing.
         unsafe {
-            let a = A::fetch(&mut *world_ptr);
+            let a = A::fetch(&mut *world_ptr, last_run_epoch);
             (self.f)(a);
         }
+        self.last_run_epoch = Some(run_epoch);
     }
 
     fn param_access(&self, world: &mut World) -> Vec<ParamAccess> {
@@ -379,6 +391,7 @@ where
     fn into_system(self) -> Self::System {
         FunctionSystem {
             f: self,
+            last_run_epoch: None,
             _marker: PhantomData,
         }
     }
@@ -393,6 +406,8 @@ where
     F: FnMut(A, B) + for<'w> FnMut(A::Item<'w>, B::Item<'w>) + 'static,
 {
     fn run(&mut self, world: &mut World) {
+        let last_run_epoch = self.last_run_epoch;
+        let run_epoch = world.current_tick();
         // SAFETY: per-system conflict check at registration
         // guarantees A's access and B's access do not overlap. We
         // can therefore hand out two sequential `&mut World` borrows
@@ -401,10 +416,11 @@ where
         // component storages) and are safe to coexist for the call.
         let world_ptr: *mut World = world;
         unsafe {
-            let a = A::fetch(&mut *world_ptr);
-            let b = B::fetch(&mut *world_ptr);
+            let a = A::fetch(&mut *world_ptr, last_run_epoch);
+            let b = B::fetch(&mut *world_ptr, last_run_epoch);
             (self.f)(a, b);
         }
+        self.last_run_epoch = Some(run_epoch);
     }
 
     fn param_access(&self, world: &mut World) -> Vec<ParamAccess> {
@@ -422,6 +438,7 @@ where
     fn into_system(self) -> Self::System {
         FunctionSystem {
             f: self,
+            last_run_epoch: None,
             _marker: PhantomData,
         }
     }
@@ -437,14 +454,17 @@ where
     F: FnMut(A, B, C) + for<'w> FnMut(A::Item<'w>, B::Item<'w>, C::Item<'w>) + 'static,
 {
     fn run(&mut self, world: &mut World) {
+        let last_run_epoch = self.last_run_epoch;
+        let run_epoch = world.current_tick();
         // SAFETY: see arity-2 above; access check covers all 3.
         let world_ptr: *mut World = world;
         unsafe {
-            let a = A::fetch(&mut *world_ptr);
-            let b = B::fetch(&mut *world_ptr);
-            let c = C::fetch(&mut *world_ptr);
+            let a = A::fetch(&mut *world_ptr, last_run_epoch);
+            let b = B::fetch(&mut *world_ptr, last_run_epoch);
+            let c = C::fetch(&mut *world_ptr, last_run_epoch);
             (self.f)(a, b, c);
         }
+        self.last_run_epoch = Some(run_epoch);
     }
 
     fn param_access(&self, world: &mut World) -> Vec<ParamAccess> {
@@ -463,6 +483,7 @@ where
     fn into_system(self) -> Self::System {
         FunctionSystem {
             f: self,
+            last_run_epoch: None,
             _marker: PhantomData,
         }
     }
@@ -481,15 +502,18 @@ where
         + 'static,
 {
     fn run(&mut self, world: &mut World) {
+        let last_run_epoch = self.last_run_epoch;
+        let run_epoch = world.current_tick();
         // SAFETY: see arity-2 above; access check covers all 4.
         let world_ptr: *mut World = world;
         unsafe {
-            let a = A::fetch(&mut *world_ptr);
-            let b = B::fetch(&mut *world_ptr);
-            let c = C::fetch(&mut *world_ptr);
-            let d = D::fetch(&mut *world_ptr);
+            let a = A::fetch(&mut *world_ptr, last_run_epoch);
+            let b = B::fetch(&mut *world_ptr, last_run_epoch);
+            let c = C::fetch(&mut *world_ptr, last_run_epoch);
+            let d = D::fetch(&mut *world_ptr, last_run_epoch);
             (self.f)(a, b, c, d);
         }
+        self.last_run_epoch = Some(run_epoch);
     }
 
     fn param_access(&self, world: &mut World) -> Vec<ParamAccess> {
@@ -516,6 +540,7 @@ where
     fn into_system(self) -> Self::System {
         FunctionSystem {
             f: self,
+            last_run_epoch: None,
             _marker: PhantomData,
         }
     }
@@ -535,16 +560,19 @@ where
         + 'static,
 {
     fn run(&mut self, world: &mut World) {
+        let last_run_epoch = self.last_run_epoch;
+        let run_epoch = world.current_tick();
         // SAFETY: see arity-2 above; access check covers all 5.
         let world_ptr: *mut World = world;
         unsafe {
-            let a = A::fetch(&mut *world_ptr);
-            let b = B::fetch(&mut *world_ptr);
-            let c = C::fetch(&mut *world_ptr);
-            let d = D::fetch(&mut *world_ptr);
-            let e = E::fetch(&mut *world_ptr);
+            let a = A::fetch(&mut *world_ptr, last_run_epoch);
+            let b = B::fetch(&mut *world_ptr, last_run_epoch);
+            let c = C::fetch(&mut *world_ptr, last_run_epoch);
+            let d = D::fetch(&mut *world_ptr, last_run_epoch);
+            let e = E::fetch(&mut *world_ptr, last_run_epoch);
             (self.f)(a, b, c, d, e);
         }
+        self.last_run_epoch = Some(run_epoch);
     }
 
     fn param_access(&self, world: &mut World) -> Vec<ParamAccess> {
@@ -573,6 +601,7 @@ where
     fn into_system(self) -> Self::System {
         FunctionSystem {
             f: self,
+            last_run_epoch: None,
             _marker: PhantomData,
         }
     }
@@ -593,17 +622,20 @@ where
         + 'static,
 {
     fn run(&mut self, world: &mut World) {
+        let last_run_epoch = self.last_run_epoch;
+        let run_epoch = world.current_tick();
         // SAFETY: see arity-2 above; access check covers all 6.
         let world_ptr: *mut World = world;
         unsafe {
-            let a = A::fetch(&mut *world_ptr);
-            let b = B::fetch(&mut *world_ptr);
-            let c = C::fetch(&mut *world_ptr);
-            let d = D::fetch(&mut *world_ptr);
-            let e = E::fetch(&mut *world_ptr);
-            let g = G::fetch(&mut *world_ptr);
+            let a = A::fetch(&mut *world_ptr, last_run_epoch);
+            let b = B::fetch(&mut *world_ptr, last_run_epoch);
+            let c = C::fetch(&mut *world_ptr, last_run_epoch);
+            let d = D::fetch(&mut *world_ptr, last_run_epoch);
+            let e = E::fetch(&mut *world_ptr, last_run_epoch);
+            let g = G::fetch(&mut *world_ptr, last_run_epoch);
             (self.f)(a, b, c, d, e, g);
         }
+        self.last_run_epoch = Some(run_epoch);
     }
 
     fn param_access(&self, world: &mut World) -> Vec<ParamAccess> {
@@ -634,6 +666,7 @@ where
     fn into_system(self) -> Self::System {
         FunctionSystem {
             f: self,
+            last_run_epoch: None,
             _marker: PhantomData,
         }
     }

@@ -288,7 +288,7 @@ already use. No hierarchy needed.
 - [x] **2.F.4** Camera copy: each fixed step, `camera.translation = body.translation
   + eye_offset`. `fps_look` stays as-is on the camera Transform; retire the noclip
   `fps_move`.
-- [ ] **2.F.5** Smoke test: walk the chamber — can't clip walls, floor, or stacked
+- [x] **2.F.5** Smoke test: walk the chamber — can't clip walls, floor, or stacked
   cubes; jump and land; the tunnel / doorway gates the body correctly. This
   validation is held until the runtime corrections below; 2.FH.6 executes and
   satisfies this step rather than duplicating the same playtest.
@@ -347,7 +347,7 @@ information to diagnose subsequent work.
   transform/command/controller volume, Rapier body-step samples, pose write-back,
   and published event counts across every fixed step in that frame.
 
-- [ ] **2.FH.2 — Correct change epochs and reactive-query cursor ownership.**
+- [x] **2.FH.2 — Correct change epochs and reactive-query cursor ownership.**
 
   The current one-epoch-per-stage convention cannot distinguish mutations
   occurring on opposite sides of a consumer inside that stage. A later mutation
@@ -404,6 +404,18 @@ information to diagnose subsequent work.
   - Defined overflow behavior.
   - The original same-epoch lifecycle-loss reproduction at the generic ECS
     level.
+
+  **Implementation note (2026-07-30):** The scheduler now assigns a checked
+  `u64` change epoch to every system dispatch and non-empty command batch.
+  Parameter-injected systems retain an `Option<u64>` last-successful-run cursor,
+  so first-run `Added` / `Changed` queries include epoch-zero state and later
+  runs compare against that system alone; a false run condition leaves the
+  cursor untouched. Cursorless world queries accept presence filters only,
+  explicit-cursor APIs remain caller-owned, and the physics bridge uses explicit
+  first-run sentinels for lifecycle and transform reconciliation. The regression
+  suite covers both producer orderings, both command-batch orderings,
+  independent consumers, run-condition transitions, fixed-step stride,
+  tick-zero physics authoring, strict explicit cursors, and overflow refusal.
 
 - [ ] **2.FH.3 — Sensor-transparent character movement.**
 

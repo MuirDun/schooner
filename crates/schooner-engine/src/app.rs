@@ -64,8 +64,8 @@ pub enum AppError {
 ///    accumulator, then `Update` once, then `Render` once.
 ///
 /// `Render` is the dedicated stage where the forward pass and the
-/// debug overlay live. It bumps `current_tick` like every other
-/// stage — see `ecs/schedule.rs` for the tick-semantics rationale.
+/// debug overlay live. Each system execution receives a distinct
+/// change epoch — see `ecs/schedule.rs` for the epoch semantics.
 pub struct App {
     window_config: WindowConfig,
     window: Option<Arc<Window>>,

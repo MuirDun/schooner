@@ -9,8 +9,8 @@
 //!
 //! `Query<D, F>` implements [`SystemParam`]. `access(world)`
 //! resolves the (data ∪ filter) component access via
-//! `D::init_state` + `F::init_state`. `fetch(world)` builds the
-//! query iterator through `World::query_filtered` and wraps it.
+//! `D::init_state` + `F::init_state`. `fetch(world, last_run_epoch)`
+//! builds the query with the owning function system's cursor and wraps it.
 //!
 //! ## Why this lives in `query/` (not `system.rs`)
 //!
@@ -73,13 +73,13 @@ where
         access
     }
 
-    unsafe fn fetch<'w>(world: &'w mut World) -> Self::Item<'w> {
+    unsafe fn fetch<'w>(world: &'w mut World, last_run_epoch: Option<u64>) -> Self::Item<'w> {
         // SAFETY: the SystemParam contract guarantees the caller has
-        // verified non-conflict. `world.query_filtered` consumes
+        // verified non-conflict. `query_filtered_for_system` consumes
         // `&mut world` and returns a `QueryIter<'_, D, F>` whose
         // typed handles are tied to that borrow. Wrapping in
         // `Query<'w, D, F>` carries the lifetime through.
-        let iter = world.query_filtered::<D, F>();
+        let iter = world.query_filtered_for_system::<D, F>(last_run_epoch);
         Query::new(iter)
     }
 }

@@ -70,6 +70,16 @@ pub trait QueryFilter {
     fn matches<'w>(fetch: &Self::Fetch<'w>, entity: EntityId) -> bool;
 }
 
+/// Marker for filters that are meaningful without a consumer cursor.
+///
+/// [`World::query_filtered`](crate::ecs::World::query_filtered) accepts
+/// only these filters. Reactive filters such as [`Added`] and [`Changed`]
+/// deliberately do not implement this trait: scheduled [`Query`](crate::ecs::Query)
+/// parameters receive their owning system's cursor, while manual callers must
+/// make cursor ownership explicit through
+/// [`World::query_filtered_since`](crate::ecs::World::query_filtered_since).
+pub trait CursorlessQueryFilter: QueryFilter {}
+
 // --- () : the no-op filter -----------------------------------------------
 
 impl QueryFilter for () {
@@ -92,6 +102,8 @@ impl QueryFilter for () {
         true
     }
 }
+
+impl CursorlessQueryFilter for () {}
 
 // --- Without<T> ----------------------------------------------------------
 
@@ -154,19 +166,19 @@ impl<T: Component> QueryFilter for Without<T> {
     }
 }
 
+impl<T: Component> CursorlessQueryFilter for Without<T> {}
+
 // --- Added<T> ------------------------------------------------------------
 
-/// Filter that keeps only entities whose `T` was added after the
-/// query's since-cursor (`added_tick > since`).
+/// Filter that keeps entities whose `T` is new to the owning consumer.
 ///
-/// The cursor is supplied explicitly through
-/// [`World::query_filtered_since`](crate::ecs::World::query_filtered_since):
-/// a reaction system owns its own last-run tick and passes it in.
-/// Built through the plain (cursor-less) path — e.g. as a bare
-/// `Query<_, Added<T>>` system param — the cursor is `0` (every add so
-/// far), because scheduler-tracked per-system cursors are a later
-/// part's work. For per-run semantics today, drive it from
-/// `query_filtered_since` or use [`World::added_since`](crate::ecs::World::added_since).
+/// A scheduled `Query<_, Added<T>>` receives the system's last successful-run
+/// epoch. Its first execution has no prior cursor and therefore observes every
+/// currently matching `T`, including components inserted at epoch zero.
+/// Subsequent executions use strict `added_tick > since` comparison.
+///
+/// Manual world queries must supply their caller-owned cursor through
+/// [`World::query_filtered_since`](crate::ecs::World::query_filtered_since).
 pub struct Added<T: Component>(PhantomData<fn() -> T>);
 
 /// Resolved fetch for [`Added<T>`]: the typed read handle (or `None`
@@ -174,19 +186,19 @@ pub struct Added<T: Component>(PhantomData<fn() -> T>);
 /// entity passes) plus the since-cursor to compare add ticks against.
 pub struct AddedFetch<'w, T: Component> {
     storage: Option<&'w SparseSet<T>>,
-    since: u64,
+    since: Option<u64>,
 }
 
 impl<T: Component> QueryFilter for Added<T> {
-    type State = (Option<ComponentId>, u64);
+    type State = (Option<ComponentId>, Option<u64>);
     type Fetch<'w> = AddedFetch<'w, T>;
 
     fn init_state(world: &mut crate::ecs::World) -> Self::State {
-        (Some(world.register_component::<T>()), 0)
+        (Some(world.register_component::<T>()), None)
     }
 
     fn init_state_since(world: &mut crate::ecs::World, since: u64) -> Self::State {
-        (Some(world.register_component::<T>()), since)
+        (Some(world.register_component::<T>()), Some(since))
     }
 
     fn access(state: &Self::State) -> QueryAccess {
@@ -217,7 +229,9 @@ impl<T: Component> QueryFilter for Added<T> {
         match fetch.storage {
             // No `T` for this entity → not added; missing storage →
             // nothing was added at all. Both exclude.
-            Some(s) => s.ticks(entity).is_some_and(|t| t.added_tick > fetch.since),
+            Some(s) => s
+                .ticks(entity)
+                .is_some_and(|t| fetch.since.is_none_or(|since| t.added_tick > since)),
             None => false,
         }
     }
@@ -235,8 +249,8 @@ impl<T: Component> QueryFilter for Added<T> {
 ///
 /// The cursor is supplied through
 /// [`World::query_filtered_since`](crate::ecs::World::query_filtered_since),
-/// exactly as for [`Added<T>`]; see that type for the cursor rules and
-/// the cursor-less fallback.
+/// or by the scheduler for a `Query<_, Changed<T>>` system parameter.
+/// See [`Added<T>`] for first-run and subsequent-run cursor rules.
 pub struct Changed<T: Component>(PhantomData<fn() -> T>);
 
 /// Resolved fetch for [`Changed<T>`]: the typed read handle (or `None`
@@ -244,19 +258,19 @@ pub struct Changed<T: Component>(PhantomData<fn() -> T>);
 /// passes) plus the since-cursor to compare mutation ticks against.
 pub struct ChangedFetch<'w, T: Component> {
     storage: Option<&'w SparseSet<T>>,
-    since: u64,
+    since: Option<u64>,
 }
 
 impl<T: Component> QueryFilter for Changed<T> {
-    type State = (Option<ComponentId>, u64);
+    type State = (Option<ComponentId>, Option<u64>);
     type Fetch<'w> = ChangedFetch<'w, T>;
 
     fn init_state(world: &mut crate::ecs::World) -> Self::State {
-        (Some(world.register_component::<T>()), 0)
+        (Some(world.register_component::<T>()), None)
     }
 
     fn init_state_since(world: &mut crate::ecs::World, since: u64) -> Self::State {
-        (Some(world.register_component::<T>()), since)
+        (Some(world.register_component::<T>()), Some(since))
     }
 
     fn access(state: &Self::State) -> QueryAccess {
@@ -287,7 +301,7 @@ impl<T: Component> QueryFilter for Changed<T> {
         match fetch.storage {
             Some(s) => s
                 .ticks(entity)
-                .is_some_and(|t| t.last_mutation_tick > fetch.since),
+                .is_some_and(|t| fetch.since.is_none_or(|since| t.last_mutation_tick > since)),
             None => false,
         }
     }
@@ -335,6 +349,13 @@ where
     fn matches<'w>(fetch: &Self::Fetch<'w>, entity: EntityId) -> bool {
         F1::matches(&fetch.0, entity) && F2::matches(&fetch.1, entity)
     }
+}
+
+impl<F1, F2> CursorlessQueryFilter for (F1, F2)
+where
+    F1: CursorlessQueryFilter,
+    F2: CursorlessQueryFilter,
+{
 }
 
 #[cfg(test)]
@@ -500,6 +521,30 @@ mod tests {
             .map(|p| p.0)
             .collect();
         assert_eq!(got, vec![5]);
+    }
+
+    #[test]
+    fn explicit_cursor_zero_keeps_strict_caller_owned_semantics() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, Pos(1));
+
+        assert_eq!(world.query_filtered_since::<&Pos, Added<Pos>>(0).count(), 0);
+        assert_eq!(
+            world.query_filtered_since::<&Pos, Changed<Pos>>(0).count(),
+            0
+        );
+
+        world.increment_tick();
+        world.get_mut::<Pos>(entity).unwrap().0 = 2;
+
+        assert_eq!(
+            world
+                .query_filtered_since::<&Pos, Changed<Pos>>(0)
+                .map(|pos| pos.0)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
     }
 
     #[test]

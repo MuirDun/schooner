@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
 use crate::ecs::query::data::QueryData;
+use crate::ecs::query::filter::{CursorlessQueryFilter, QueryFilter};
 use crate::ecs::query::iter::QueryIter;
 use crate::ecs::{
     ChangeTicks, Component, ComponentId, ComponentRegistry, ComponentStorage, EntityAllocator,
@@ -29,9 +30,8 @@ impl<'w, T> Mut<'w, T> {
     /// pair from a `SparseSet<T>` dense slot — same pairing
     /// `World::get_mut` produces. `current_tick` is the world tick at
     /// the start of the iteration, which is what gets stamped on
-    /// `DerefMut`. C9.4 takes the tick at query construction so all
-    /// writes inside one query share the same tick — consistent with
-    /// `Schedule::run`'s "one tick bump per stage" invariant.
+    /// `DerefMut`. The epoch is captured at query construction so all
+    /// writes inside one scheduled system execution share its epoch.
     pub(crate) fn from_raw_parts(
         value: &'w mut T,
         ticks: &'w mut ChangeTicks,
@@ -114,8 +114,8 @@ impl RemovedLedger {
 /// a global mutex. Storages are type-erased behind [`ComponentStorage`]
 /// and keyed by [`ComponentId`].
 ///
-/// `current_tick` is threaded into every [`Mut<T>`]; the bump strategy
-/// itself lands in C7 alongside `changed_since`.
+/// `current_tick` is a monotonic change-detection epoch threaded into every
+/// [`Mut<T>`]. It is not a simulation-step or render-frame counter.
 #[derive(Default)]
 pub struct World {
     entities: EntityAllocator,
@@ -123,7 +123,7 @@ pub struct World {
     storages: HashMap<ComponentId, Box<dyn ComponentStorage>>,
     resources: Resources,
     removed: RemovedLedger,
-    pub current_tick: u64,
+    current_tick: u64,
 }
 
 impl World {
@@ -213,13 +213,23 @@ impl World {
         self.registry.name(id)
     }
 
-    /// Advance the world clock by one and return the new tick. The
-    /// schedule calls this between system runs so each system observes a
-    /// monotonically increasing tick against which `changed_since`
-    /// queries are anchored.
+    /// Allocate and return the next change-detection epoch.
+    ///
+    /// The scheduler calls this before every system execution and before
+    /// every non-empty deferred-command batch. Exhaustion is treated as a
+    /// fatal invariant violation: wrapping would make fresh mutations look
+    /// older than live consumer cursors.
     pub fn increment_tick(&mut self) -> u64 {
-        self.current_tick += 1;
+        self.current_tick = self
+            .current_tick
+            .checked_add(1)
+            .expect("change epoch overflow: refusing to wrap u64");
         self.current_tick
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_current_tick_for_test(&mut self, tick: u64) {
+        self.current_tick = tick;
     }
 
     /// Iterate components of type `T` whose last mutation tick is
@@ -341,7 +351,20 @@ impl World {
     /// [`fetch::split_storages`](crate::ecs::query::fetch::split_storages))
     /// materialises items per entity, with `F::matches` skipping
     /// entries the filter rejects.
-    pub fn query_filtered<D: QueryData, F: crate::ecs::query::filter::QueryFilter>(
+    ///
+    /// Reactive filters require an owning cursor and are intentionally
+    /// rejected by this cursorless entry point:
+    ///
+    /// ```compile_fail
+    /// use schooner_engine::ecs::{Added, World};
+    ///
+    /// let mut world = World::new();
+    /// let _ = world.query_filtered::<&i32, Added<i32>>();
+    /// ```
+    ///
+    /// Scheduled systems use `Query<_, Added<_>>` or `Query<_, Changed<_>>`;
+    /// manual consumers use [`Self::query_filtered_since`].
+    pub fn query_filtered<D: QueryData, F: CursorlessQueryFilter>(
         &mut self,
     ) -> QueryIter<'_, D, F> {
         let state = D::init_state(self);
@@ -349,17 +372,29 @@ impl World {
         QueryIter::new(self, state, filter_state)
     }
 
+    /// Construct a scheduled query with the owning system's last successful
+    /// execution epoch. `None` is the first-run sentinel for reactive filters.
+    pub(crate) fn query_filtered_for_system<D: QueryData, F: QueryFilter>(
+        &mut self,
+        last_run_epoch: Option<u64>,
+    ) -> QueryIter<'_, D, F> {
+        let state = D::init_state(self);
+        let filter_state = match last_run_epoch {
+            Some(since) => F::init_state_since(self, since),
+            None => F::init_state(self),
+        };
+        QueryIter::new(self, state, filter_state)
+    }
+
     /// Run a typed [`QueryData`] gated by a [`QueryFilter`], supplying a
     /// `since` cursor to the change-detection filters (`Added<T>` /
     /// `Changed<T>`). Presence filters ignore it.
     ///
-    /// This is the explicit-cursor entry point for reaction systems: a
-    /// system remembers its own last-run tick (`world.current_tick()`
-    /// captured at the start of its run) and passes it as `since`, so
-    /// the filter selects only the entities whose `T` was added /
-    /// changed since that system last looked. Strict `>`: an entity
+    /// This is the caller-owned cursor entry point for exclusive/manual
+    /// consumers. Parameter-injected scheduled systems instead receive
+    /// their cursor automatically through `Query`. Strict `>`: an entity
     /// touched exactly at `since` is excluded.
-    pub fn query_filtered_since<D: QueryData, F: crate::ecs::query::filter::QueryFilter>(
+    pub fn query_filtered_since<D: QueryData, F: QueryFilter>(
         &mut self,
         since: u64,
     ) -> QueryIter<'_, D, F> {
@@ -900,11 +935,11 @@ mod tests {
     #[test]
     fn change_cursor_is_robust_across_fixed_step_stride() {
         // The pinned convention: a reaction anchors on *its own last-run
-        // tick* (not a frame counter) and compares strict `>`. Because
-        // `current_tick` is monotonic across every stage, the
+        // epoch* (not a frame counter) and compares strict `>`. Because
+        // `current_tick` is monotonic across system executions, a
         // FixedUpdate 0..N stride never over- or under-counts — the
         // reaction catches exactly the changes since it last ran,
-        // however many stage bumps elapsed in between.
+        // however many producer epochs elapsed in between.
         let mut world = World::new();
         let x = world.spawn();
         let y = world.spawn();
@@ -915,14 +950,14 @@ mod tests {
         let mut last_run = world.current_tick();
 
         // Frame 1: three fixed steps then update, mutating x mid-stride.
-        world.increment_tick(); // fixed step 1
-        world.increment_tick(); // fixed step 2
+        world.increment_tick(); // fixed producer 1
+        world.increment_tick(); // fixed producer 2
         {
             let mut p = world.get_mut::<i32>(x).unwrap();
             *p = 1;
         }
-        world.increment_tick(); // fixed step 3
-        world.increment_tick(); // update — the reaction "runs" here
+        world.increment_tick(); // fixed producer 3
+        world.increment_tick(); // reaction execution
 
         let changed: Vec<_> = world
             .changed_since::<i32>(last_run)
