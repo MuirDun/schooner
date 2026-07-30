@@ -55,14 +55,18 @@ thing it does not have yet**: a safe inter-frame mutation point. `tick` currentl
 has no injection slot for an out-of-process actor to mutate `World` between
 frames.
 
-The intended shape (design when scp resumes, **after** Part 2 ships `Events<T>` +
-`Commands`): a command-queue resource that scp fills from its transport thread,
-drained by a dedicated exclusive system at a defined point in `tick` (e.g. between
-`end_frame` and the next `run`), reusing the same `Commands`/`Events` plumbing
-gameplay uses. Because it reuses that substrate, scp is **not** a parallel
-mutation path — it's another producer into the one the engine already has. Keep
-that in mind when building `Commands` in Part 2: make it the kind of thing an
-out-of-process actor could also enqueue into.
+The representation is deliberately undecided until scp resumes. Local
+`Commands` contain boxed Rust closures, which are suitable for heterogeneous
+in-process mutations but cannot cross a process boundary. An external transport,
+threaded AI layer, or other concurrent producer will emit structured messages
+whose payload, ordering, backpressure, and failure behavior fit that boundary.
+
+Those messages will be drained by a dedicated main-thread ingress system at a
+defined point in `tick` (for example between `end_frame` and the next scheduled
+run). The ingress path and local `Commands` converge at the authoritative
+scheduler application seam, so there remains one ordered authority for mutating
+`World`; they do not need to share a queue or representation. Implementation is
+deferred until a real producer supplies the missing requirements.
 
 ## Sharp risks / decisions
 

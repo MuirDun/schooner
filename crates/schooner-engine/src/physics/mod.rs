@@ -14,6 +14,7 @@
 mod bridge;
 mod command;
 mod component;
+mod diagnostics;
 mod event;
 mod world;
 
@@ -23,6 +24,12 @@ pub use command::{PhysicsCommands, TeleportVelocity};
 pub use component::{
     BodyKind, CharacterController, CharacterControllerState, CharacterLength, Collider,
     ColliderShape, ContactEvents, PhysicsMaterial, RigidBody,
+};
+pub(crate) use diagnostics::reset_physics_diagnostics;
+pub use diagnostics::{
+    PhysicsCharacterWorkload, PhysicsCommandWorkload, PhysicsDiagnostics, PhysicsEventWorkload,
+    PhysicsLifecycleWorkload, PhysicsSolveWorkload, PhysicsTransformSyncWorkload,
+    PhysicsWritebackWorkload,
 };
 pub use event::{Contact, TriggerEnter, TriggerExit};
 pub(crate) use world::{CharacterMovement, PhysicsStepOutput, PhysicsWorld};

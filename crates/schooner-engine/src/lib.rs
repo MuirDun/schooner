@@ -24,13 +24,9 @@ pub use asset::{AssetDebugPlugin, AssetDebugState, ReloadSummary};
 pub use asset::{
     AssetError, AssetResult, GltfModel, load_gltf_mesh, load_gltf_model, load_png_pixels,
 };
-pub use camera::{
-    ActiveCamera, Camera, FpsController, Projection, fps_cursor_toggle, fps_look,
-};
+pub use camera::{ActiveCamera, Camera, FpsController, Projection, fps_cursor_toggle, fps_look};
 #[cfg(feature = "dev-tools")]
-pub use camera::{
-    CameraDebugPlugin, SpectatorCamera, SpectatorDebugState, spectator_move,
-};
+pub use camera::{CameraDebugPlugin, SpectatorCamera, SpectatorDebugState, spectator_move};
 #[cfg(feature = "dev-tools")]
 pub use debug::DebugCorePlugin;
 pub use debug::{DebugPanel, DebugPanels, DebugState, build_debug_overlay};
@@ -47,8 +43,10 @@ pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
 pub use physics::{
     BodyKind, CharacterController, CharacterControllerState, CharacterLength, Collider,
-    ColliderShape, Contact, ContactEvents, PhysicsCommands, PhysicsMaterial, RigidBody,
-    TeleportVelocity, TriggerEnter, TriggerExit,
+    ColliderShape, Contact, ContactEvents, PhysicsCharacterWorkload, PhysicsCommandWorkload,
+    PhysicsCommands, PhysicsDiagnostics, PhysicsEventWorkload, PhysicsLifecycleWorkload,
+    PhysicsMaterial, PhysicsSolveWorkload, PhysicsTransformSyncWorkload, PhysicsWritebackWorkload,
+    RigidBody, TeleportVelocity, TriggerEnter, TriggerExit,
 };
 #[cfg(feature = "dev-tools")]
 pub use plugin::EngineDebugPlugins;

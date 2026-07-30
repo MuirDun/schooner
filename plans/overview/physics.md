@@ -20,6 +20,11 @@ Kinesis Part 2 has the first hosted-physics substrate in place:
   it reconciles authoring lifecycle, syncs authored static/kinematic poses, sets
   `integration_parameters.dt` from `Time::fixed_delta`, steps Rapier, writes awake
   dynamic poses back, and publishes collision events.
+- **Attributable bridge diagnostics.** Static puffin scopes separate lifecycle,
+  authored-transform sync, discrete commands, character integration/KCC queries,
+  Rapier solve, dynamic write-back, and event publication. The public
+  `PhysicsDiagnostics` resource resets at the puffin render-frame boundary and
+  accumulates matching workload counts across all fixed steps in that frame.
 - **Authoring components.** `RigidBody`, `BodyKind`, `Collider`, `ColliderShape`,
   and `PhysicsMaterial` are the public ECS vocabulary. They describe gameplay
   intent; they do not expose Rapier handles.
@@ -84,11 +89,12 @@ Ordered by dependency:
 
 ## Sharp risks / decisions
 
-- **FixedUpdate input hazard.** Input edges are frame-scoped and cleared once per
-  frame, so reading `just_pressed` from a FixedUpdate physics system double-fires
-  or misses on 0-step / multi-step frames. Resolve when wiring player physics:
-  keep edge reads on Update and have FixedUpdate read *state*, or add a
-  FixedUpdate input snapshot. See [input.md](input.md).
+- **FixedUpdate control sampling.** Durable intent prevents edge double-fire and
+  zero-step loss, but the as-built frame order through 2.F.4 captures actions,
+  look, movement, and spectator ownership after fixed simulation. Phase 2.FH.5
+  moves their once-per-render-frame sampling boundary before fixed simulation;
+  FixedUpdate continues reading *state*, never raw frame edges. See
+  [input.md](input.md).
 - **Hierarchy is not required for the FPS rig** (audit-verified). A copy-system
   suffices. A real parent/child `GlobalTransform` is only needed for nested /
   articulated rigs (turret-on-vehicle, joint-anchored props) — defer until that

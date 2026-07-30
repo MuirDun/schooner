@@ -6,14 +6,15 @@
 //! at a defined sync point — the end of each stage run — when the
 //! schedule holds the exclusive `&mut World`.
 //!
-//! ## One queue, many producers
+//! ## Local queue and the scheduler application seam
 //!
-//! All `Commands` handles in a frame push into a single
-//! [`CommandQueue`] resource. That single application point is
-//! deliberate: a future out-of-process actor (scp, see
-//! `plans/overview/bridge.md`) becomes *one more producer* into the
-//! same queue, not a parallel mutation path. Today the in-Rust
-//! producer pushes boxed closures; the apply order is queue order.
+//! All local `Commands` handles push into one [`CommandQueue`] resource,
+//! and boxed closures apply in queue order. External, AI, or threaded
+//! producers cannot generally use this representation: a captured Rust
+//! closure is neither a wire format nor a boundary protocol. Such producers
+//! will use structured messages suited to their ordering, backpressure, and
+//! failure requirements, then converge with this queue at the scheduler's
+//! authoritative world-mutation seam.
 //!
 //! ## Boxed closures, not a command enum
 //!
@@ -124,9 +125,10 @@ impl<'w> Commands<'w> {
         }));
     }
 
-    /// Queue an arbitrary deferred world mutation. Escape hatch for ops
-    /// the typed helpers don't cover, and the single path a future
-    /// out-of-process actor would enqueue through.
+    /// Queue an arbitrary local deferred world mutation. This is an
+    /// in-process escape hatch for operations the typed helpers do not cover;
+    /// external or concurrent producers use structured boundary messages and
+    /// join this path at the scheduler's application seam.
     pub fn queue(&mut self, command: impl FnOnce(&mut World) + Send + Sync + 'static) {
         self.queue.push(Box::new(command));
     }

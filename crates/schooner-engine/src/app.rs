@@ -14,8 +14,8 @@ use crate::action::{Actions, Bindings, Trigger, resolve_actions};
 use crate::ecs::{CommandQueue, Events, IntoSystem, Schedule, Stage, World, exclusive};
 use crate::input::{Input, KeyCode};
 use crate::physics::{
-    Contact, PhysicsCommands, PhysicsWorld, TriggerEnter, TriggerExit, physics_bridge,
-    physics_reconcile_lifecycle,
+    Contact, PhysicsCommands, PhysicsDiagnostics, PhysicsWorld, TriggerEnter, TriggerExit,
+    physics_bridge, physics_reconcile_lifecycle, reset_physics_diagnostics,
 };
 use crate::plugin::Plugin;
 use crate::render::{
@@ -173,6 +173,7 @@ impl App {
 
         self.world.insert_resource(PhysicsWorld::new());
         self.world.insert_resource(PhysicsCommands::new());
+        self.world.insert_resource(PhysicsDiagnostics::default());
         self.world.insert_resource(Events::<Contact>::default());
         self.world
             .insert_resource(Events::<TriggerEnter>::default());
@@ -285,6 +286,12 @@ impl App {
         // without it puffin's scopes remain disabled.
         puffin::GlobalProfiler::lock().new_frame();
         puffin::profile_scope!("frame");
+
+        // Physics workload counters aggregate on the same render-frame boundary
+        // as puffin, including frame-top lifecycle work and every fixed step.
+        if self.physics_enabled {
+            reset_physics_diagnostics(&mut self.world);
+        }
 
         // Reactive substrate: rotate the per-frame removed-component
         // ledger at frame top so this frame's removals start fresh
@@ -679,5 +686,15 @@ mod tests {
         insert_render_default(&mut world, RenderSetting(11));
 
         assert_eq!(world.resource::<RenderSetting>(), Some(&RenderSetting(11)));
+    }
+
+    #[test]
+    fn with_physics_inserts_workload_diagnostics() {
+        let mut app = App::new().with_physics();
+
+        assert_eq!(
+            app.world_mut().resource::<PhysicsDiagnostics>(),
+            Some(&PhysicsDiagnostics::default())
+        );
     }
 }

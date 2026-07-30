@@ -1,8 +1,6 @@
 # Part 2 — Verbs
 
 **Kind:** Tech buildout (physics & player abilities)
-**Status:** In progress — 2.F.4 complete
-**Depends on:** Part 1 (Mood) complete
 
 ---
 
@@ -116,8 +114,10 @@ verbs, and the first gameplay rules. Non-visual but the riskiest to get wrong.
   defined point in `App::tick` so a one-frame-late reader still sees the event.
 - [x] **2.A.5** `Commands` — a deferred spawn / despawn / insert / remove buffer a
   non-exclusive system can hold, applied at a defined sync point after the systems
-  that queue them. Shape it so an out-of-process actor (scp, [bridge.md]) could
-  enqueue into the same path later — it is one more producer, not a parallel path.
+  that queue them. Local producers use boxed Rust closures for heterogeneous
+  in-process mutations. Future external, AI, or threaded producers use structured
+  messages suited to their boundary and converge on the same authoritative
+  scheduler application seam, not necessarily this queue or representation.
 - [x] **2.A.6** Run-conditions: `system.run_if(cond)` (a predicate over `World`,
   e.g. `in_mode(Telekinesis)`) so per-mode verb systems run only when active.
   Minimal — replaces the early-return idiom.
@@ -143,10 +143,12 @@ Glyph action registration is a translation, not a rewrite.
   wheel sign), recomputed once per frame from Layer 1 on Update. Read helpers:
   `pressed`, `just_pressed`, `just_released`, `axis(neg, pos)`, `wheel`.
 - [x] **2.B.3** Resolve the **FixedUpdate input hazard** (the convention, written
-  down): edge reads stay on Update and write *state/intent* resources; FixedUpdate
-  systems read state, never edges. The once-per-frame action resolve makes this the
-  natural path. (Edges are frame-scoped and cleared once/frame — reading them from
-  a 0..N-step fixed stage double-fires or misses.)
+  down): edge reads happen once per render frame and write *state/intent*
+  resources; FixedUpdate systems read state, never edges. The initial Update
+  placement shipped here is superseded by 2.FH.5's pre-fixed control boundary,
+  while the durable-state and latch semantics remain. (Edges are frame-scoped
+  and cleared once/frame — reading them from a 0..N-step fixed stage
+  double-fires or misses.)
 - [x] **2.B.4** Convenience surface: register the gameplay actions (move axes,
   jump, mode 1/2/3, push/pull/grip/throw, repulse) through the table at game setup,
   with an ergonomic binding API (builder or simple insert).
@@ -238,7 +240,7 @@ subsystems never read a generic `DebugState` value bag. Debug keybindings use th
   state is unchanged. `debug.rs` imports no game or target-subsystem resources.
 
 
-### Phase 2.E — Physics debug-draw (the line / gizmo pipeline / profiling)
+### Phase 2.E — Physics debug-draw (the line / gizmo pipeline)
 
 Source: [graphics.md] — "the one genuinely new GPU primitive Part 2 needs." All
 existing pipelines are TriangleList + Fill. Build the line pipeline once and reuse
@@ -246,6 +248,10 @@ it for colliders, force vectors, trigger volumes, and the future in-game gizmos.
 Land it right after the bridge so it is a debugging multiplier for everything that
 follows. Drawn **into the live game world in dev mode** — there is no editor
 viewport.
+
+**Status:** Intentionally deferred while the blocking character-control runtime
+is hardened. It remains required by the Part 2 done bar and returns before Part 2
+closes, but it does not block 2.FH or ordinary 2.G force work.
 
 **Steps:**
 - [ ] **2.E.1** `LineList` pipeline: a new wgpu pipeline (LineList topology) + a
@@ -283,25 +289,282 @@ already use. No hierarchy needed.
   + eye_offset`. `fps_look` stays as-is on the camera Transform; retire the noclip
   `fps_move`.
 - [ ] **2.F.5** Smoke test: walk the chamber — can't clip walls, floor, or stacked
-  cubes; jump and land; the tunnel / doorway gates the body correctly.
+  cubes; jump and land; the tunnel / doorway gates the body correctly. This
+  validation is held until the runtime corrections below; 2.FH.6 executes and
+  satisfies this step rather than duplicating the same playtest.
 
 **Implementation note:** The retired free-flight behavior survives only under
 `dev-tools` as the engine-owned F8 spectator camera. It transfers `ActiveCamera`
 to a separate entity and suspends physical-player intent while active.
 
+### Phase 2.FH — Character-control runtime hardening
+
+**Kind:** Correctness, scheduling, and diagnostics
+
+**Placement:** After 2.F.4 and before the 2.F.5 validation
+
+**Blocks:** 2.F.5 and 2.G
+
+**Does not include:** Event fan-out, lifecycle burst optimization,
+interpolation, external command ingress, or production walking-push
+
+#### Goal
+
+Make the physical player execute exactly once per fixed step, observe current
+control state, traverse sensors correctly, and expose enough physics profiling
+information to diagnose subsequent work.
+
+**Steps:**
+
+- [x] **2.FH.1 — Physics profiling scopes and reusable workload counters.**
+
+  Add the missing puffin breakdown before changing performance-sensitive paths.
+  The bridge currently exposes no way to distinguish lifecycle reconciliation,
+  transform synchronization, character queries, Rapier solving, write-back, and
+  event publication.
+
+  The diagnostics must expose:
+
+  - Lifecycle reconciliation.
+  - Authored-transform synchronization.
+  - Discrete physics-command processing.
+  - Character integration and KCC queries.
+  - Rapier solve.
+  - Dynamic-pose write-back.
+  - Contact and trigger publication.
+
+  Reusable diagnostics state records relevant workload counts without
+  constructing formatted profiler labels in the fixed-step path. Counts cover
+  enough volume information to distinguish an expensive operation from an
+  unusually large workload.
+
+  This step adds no new dependency; puffin and its diagnostics UI already exist.
+
+  **Implementation note (2026-07-30):** The bridge now emits static puffin scopes
+  for all seven required phases, with character integration and the hosted KCC
+  query separately attributable. The public `PhysicsDiagnostics` resource resets
+  on puffin's render-frame boundary and accumulates lifecycle candidates,
+  transform/command/controller volume, Rapier body-step samples, pose write-back,
+  and published event counts across every fixed step in that frame.
+
+- [ ] **2.FH.2 — Correct change epochs and reactive-query cursor ownership.**
+
+  The current one-epoch-per-stage convention cannot distinguish mutations
+  occurring on opposite sides of a consumer inside that stage. A later mutation
+  can receive the consumer's recorded cursor value and fail the strict
+  `changed_tick > since` comparison forever.
+
+  The runtime contract becomes:
+
+  - Every scheduled system execution receives a distinct change epoch.
+  - Every non-empty deferred-command application batch receives a distinct
+    epoch.
+  - Empty command barriers do not consume epochs.
+  - The epoch remains a `u64` monotonic change-detection value, not a simulation
+    or frame counter.
+  - Overflow must not silently wrap into apparently valid old epochs.
+
+  Cursor ownership becomes explicit:
+
+  - Each scheduled system owns its last successful-run epoch.
+  - `Query<_, Added<T>>` and `Query<_, Changed<T>>` receive that system-owned
+    cursor.
+  - A run condition that prevents the system body from executing does not
+    advance its consumer cursor.
+  - Explicit-cursor world APIs remain caller-owned.
+  - Specialized exclusive consumers such as the physics bridge continue owning
+    their explicit cursors and define their own first-run initialization.
+  - The physics lifecycle consumer must observe complete physics authoring
+    inserted at epoch zero.
+  - No public cursorless reactive API may look like a valid per-run reactor while
+    silently using zero forever.
+
+  First-run semantics:
+
+  - A scheduled reactive query's first execution observes all currently matching
+    components, including components inserted at epoch zero.
+  - Since an addition is also a change, first-run `Changed<T>` includes existing
+    components.
+  - Subsequent executions observe only changes newer than that system's last
+    successful run.
+
+  Regression coverage must include:
+
+  - Epoch-zero insertion, including the physics bridge's explicit lifecycle
+    cursor.
+  - First execution and second execution of bare scheduled `Added`/`Changed`
+    queries.
+  - Producer before consumer.
+  - Producer after consumer.
+  - A non-empty command batch before and after a consumer.
+  - Multiple independent consumers.
+  - Run-condition false/true transitions.
+  - Zero and multiple fixed steps per frame.
+  - Explicit-cursor queries retaining their caller-owned semantics.
+  - Defined overflow behavior.
+  - The original same-epoch lifecycle-loss reproduction at the generic ECS
+    level.
+
+- [ ] **2.FH.3 — Sensor-transparent character movement.**
+
+  The KCC movement query currently includes sensors, causing trigger volumes to
+  behave as invisible walls.
+
+  Required behavior:
+
+  - Sensors are excluded only from the character movement query.
+  - Sensors remain present in Rapier's normal collision/overlap pipeline.
+  - Enter and exit events still carry the correct sensor and other entity.
+  - Static and dynamic solid colliders continue obstructing the capsule.
+  - Nested or overlapping sensors do not alter resolved movement.
+  - A sensor placed directly across a corridor is traversable at normal walking
+    speed.
+
+- [ ] **2.FH.4 — One character integration per entity per fixed step.**
+
+  `MoveCharacter` is currently an order-sensitive discrete command. Each
+  occurrence performs a full KCC integration, including gravity. Two commands
+  for one entity integrate twice; no command means gravity and grounding do not
+  advance.
+
+  Continuous character movement becomes persistent per-entity intent consumed
+  exactly once by the bridge on every fixed step.
+
+  Required semantics:
+
+  - Every active character controller integrates exactly once per fixed step.
+  - Absence of movement input means zero horizontal intent, not absence of
+    simulation.
+  - Gravity, grounding, snapping, and landing continue without a movement
+    submission.
+  - Each entity has at most one effective motion intent for a step.
+  - Jump remains a latched one-shot request and is consumed at most once.
+  - Continuous movement no longer depends on command ordering.
+  - Teleports remain discrete physics commands.
+  - Multiple characters scale by controller count, not by arbitrary command
+    multiplicity.
+  - A character whose controls are disabled still receives zero-input physics
+    integration.
+
+  Regression coverage must prove:
+
+  - Zero horizontal input still advances gravity once.
+  - Repeated intent writes cannot cause repeated integration.
+  - Jump and movement in the same step do not depend on submission order.
+  - A latched jump survives a render frame with no fixed step.
+  - A jump is not repeated across several fixed steps.
+  - Grounding continues while controls are inactive.
+
+- [ ] **2.FH.5 — Pre-fixed control sampling and ownership.**
+
+  The current frame order runs fixed simulation before action resolution, look
+  processing, movement capture, mode changes, and spectator handoff. The
+  physical player consequently acts on previous-frame control and aim state.
+
+  A defined control-sampling boundary establishes the authoritative control
+  snapshot before fixed simulation. This supersedes 2.B.3's one-frame-late
+  placement while preserving its durable-state rule: frame-scoped edges are
+  still sampled once per render frame, latched, and never read independently by
+  each fixed step.
+
+  The boundary includes:
+
+  - Named-action resolution.
+  - Cursor/input-capture gating.
+  - F8 spectator ownership transition.
+  - Aim/yaw update used by movement and future targeting.
+  - Mode changes needed by fixed-step verbs.
+  - Held movement intent.
+  - Latched jump and future one-shot verb intent.
+
+  Required semantics:
+
+  - The first eligible fixed step uses the current control snapshot.
+  - Aim direction, movement direction, and future verb targeting agree within
+    that step.
+  - Zero-fixed-step frames retain one-shot requests.
+  - Multi-fixed-step frames consume one-shot requests once while continuing held
+    intent.
+  - Activating the spectator clears or suspends physical-player intent before
+    physics consumes it.
+  - Returning from spectator mode does not replay stale movement, aim delta, or
+    jump.
+  - UI-captured input cannot leak into the player or spectator.
+  - Action resolution remains proportional to bindings once per render frame and
+    independent of actor count.
+  - The later Update stage remains available for non-control variable-rate
+    gameplay.
+
+- [ ] **2.FH.6 — Character smoke test and recorded experiments.**
+
+  Run and close the original 2.F.5 validation against the corrected scheduling
+  and integration model:
+
+  - Walls, floor, doorway, tunnel, and stacked cubes obstruct the capsule.
+  - Walking, jumping, falling, landing, slopes, and ground snapping behave
+    consistently.
+  - Sensors are traversable while producing overlaps.
+  - F8 transitions cleanly between physical player and spectator.
+  - Puffin attributes physics time to the new subscopes.
+
+  Record, but do not silently canonize, two experiments:
+
+  **Walking-push A/B**
+
+  Compare ordinary solid obstruction with Rapier's approximate character impulse
+  response.
+
+  Evaluate:
+
+  - Light and heavy block response.
+  - Stack stability.
+  - Sustained contact.
+  - Pushing a block near an edge.
+  - Whether walking-push weakens Mode 1's identity.
+  - Whether the behavior feels intentional rather than like solver leakage.
+
+  Production behavior changes only after an explicit design decision.
+
+  **High-refresh presentation**
+
+  Observe player and dynamic-body motion above the 60 Hz fixed rate. Record
+  whether judder is visible and materially harms play. Do not implement
+  interpolation in this phase.
+
+#### 2.FH done bar
+
+- Reactive scheduled queries have real per-system cursors and do not replay from
+  epoch zero.
+- Same-stage and deferred mutations cannot be permanently hidden.
+- Sensors do not block the KCC.
+- Every character integrates exactly once per fixed step.
+- Current aim and control ownership are established before physics.
+- The original 2.F.5 smoke test passes.
+- Walking-push and high-refresh behavior have recorded results, not assumed
+  conclusions.
+- Physics costs are attributable through puffin.
+
 ### Phase 2.G — Verbs & modes (force application)
 
 The heart of Part 2. Modes are **state**; the reticle / indicator / active verb all
-**derive** from the mode; physics applies forces in FixedUpdate reading the Update-
-captured intent (2.B.3). Verb mappings from `design/systems.md`: Mode 1 hands
+**derive** from the mode; physics applies forces in FixedUpdate reading the
+pre-fixed control snapshot established by 2.FH.5. Verb mappings from
+`design/systems.md`: Mode 1 hands
 (left = push, right = pull, both = grip); Mode 2 telekinesis (same at range, wheel =
 distance); throw (both-buttons grip + wheel-click launch); Mode 3 repulsion
 (self-impulse against a surface).
 
 **Steps:**
+- [ ] **2.G.0** Resolve playground mouse-action ownership. The playground
+  currently binds left mouse simultaneously to the editor spawn action, Mode 1
+  push, and Mode 3 repulsion. Push and repulsion are disambiguated by
+  `ControlMode`; the unrelated editor action must be removed, remapped, or gated
+  behind an explicit dev-only editing state. A gameplay click produces only the
+  active mode's verb.
 - [ ] **2.G.1** `ControlMode` state resource (`Hands` / `Telekinesis` / `Repulsion`);
-  a `mode_select` system on Update reads the 1/2/3 actions and writes the mode —
-  the one place mode changes. Run-conditions (2.A.6) gate the per-mode systems.
+  `mode_select` runs at the 2.FH.5 control-sampling boundary, reads the 1/2/3
+  actions, and writes the mode — the one place mode changes. Run-conditions
+  (2.A.6) gate the per-mode systems.
 - [ ] **2.G.2** Force-application primitives on the physics side: apply impulse /
   continuous force / radial impulse to a body by `EntityId`. FixedUpdate.
 - [ ] **2.G.3** Pick / target: a camera-forward raycast (Rapier query) to find the
@@ -323,6 +586,82 @@ distance); throw (both-buttons grip + wheel-click launch); Mode 3 repulsion
 - [ ] **2.G.9** Experiment (pillar 4): the "juggle" loop — hold a cube, wheel it out,
   throw it at a stack, then repulse-dodge backward. If that loop feels good, the
   verbs are landing. This is the milestone question made concrete.
+
+### Phase 2.HP — Interactable substrate hardening
+
+**Placement:** After 2.G and before 2.H
+
+**Blocks:** Trigger-driven rules, destructibles, and independent contact
+consumers
+
+**Does not block:** 2.F.5 or ordinary 2.G force work
+
+**Steps:**
+
+- [ ] **2.HP.1 — Cursor-based event fan-out.**
+
+  Adopt a bounded per-consumer guarantee:
+
+  - Every event receives a monotonic sequence ID with defined overflow behavior.
+  - Each consumer owns its own typed cursor.
+  - Reading advances only the caller's cursor.
+  - New cursors explicitly start "from now" or "from oldest retained."
+  - Falling behind retained history produces a detectable missed-event result.
+  - The event queue does not centrally register consumers.
+  - Reader destruction therefore requires no queue cleanup.
+  - Independent breakage, audio, particle, trigger, and debug consumers cannot
+    steal or replay one another's events; queue-wide draining is not a normal
+    reader API.
+  - Event order remains stable across multiple fixed steps in one render frame.
+
+  The contract is exactly once while the cursor remains within retained history,
+  not "exactly once forever."
+
+- [ ] **2.HP.2 — Lifecycle candidate burst scaling.**
+
+  Remove the demonstrated quadratic behavior from physics authoring
+  reconciliation.
+
+  Preserve:
+
+  - One reconciliation per affected entity even when several authoring
+    components change.
+  - Correct incomplete-body handling.
+  - Remove/reinsert behavior.
+  - Body and collider authoring updates.
+  - Deterministic results.
+
+  Retain a persistent benchmark covering at least 100, 500, 1,000, and 2,000
+  candidates, with the reported measurements recorded as the before baseline.
+
+- [ ] **2.HP.3 — Fragment-style deferred materialization regression.**
+
+  Reproduce the actual future pipeline:
+
+  ```text
+  Contact → PostPhysics rule → Commands spawn fragments
+  ```
+
+  Verify that a batch of fragment entities authored with `Transform`,
+  `RigidBody`, and `Collider` is materialized on the next physics step, exactly
+  once, without missing bodies or duplicate Rapier handles.
+
+  This complements the generic epoch suite with the real 2.H integration path.
+
+- [ ] **2.HP.4 — Integrated trigger and destruction substrate check.**
+
+  Confirm that:
+
+  - Sensors remain traversable.
+  - Trigger readers receive enter/exit once per cursor.
+  - Multiple readers see the same event independently.
+  - Fragment batches reconcile within the measured budget.
+  - PostPhysics structural commands remain visible to physics.
+  - Puffin exposes lifecycle and event-publication burst costs.
+
+Queue-capacity reuse is not a standalone task. If the epoch work naturally
+changes command-batch ownership, retained capacity may be preserved as local
+hygiene. Otherwise it remains deferred until measurement justifies it.
 
 ### Phase 2.H — Interactables & the first gameplay rules
 
@@ -428,12 +767,19 @@ If the last bullet fails, tune forces / masses / feel before starting Part 3.
 - **Glyph pictogram tutorial HUD** (5–6 pictograms) → **Part 3 / 5** (reuses the 2.I
   quad UI pass).
 - **Render interpolation** via `interpolation_alpha` → when frame rate visibly
-  decouples from the fixed rate; not needed for first bring-up.
+  decouples from the fixed rate and the 2.FH.6 high-refresh experiment shows a
+  material defect. Any accepted design must account for its approximately
+  one-fixed-step presentation delay.
 - **`GlobalTransform` / hierarchy** → only when nested / articulated rigs appear
   (turret-on-vehicle, joint-anchored props); not Part 2.
-- **scp inter-frame mutation seam** → designed when scp resumes, reusing the 2.A
-  `Commands` / `Events` path ([bridge.md]). Keep `Commands` enqueue-able by an
-  out-of-process actor.
+- **External/concurrent ingress** → designed when a real producer supplies
+  payload, ordering, backpressure, and failure requirements. It uses structured
+  boundary messages and converges with local `Commands` at the authoritative
+  scheduler application seam; it does not enqueue boxed Rust closures.
+- **Generic command-queue allocation optimization** → only with supporting
+  measurements. Queue-capacity reuse may land as local hygiene if 2.FH.2
+  naturally changes command-batch ownership.
+- **Production walking-push** → only after the explicit 2.FH.6 A/B decision.
 - **Doc debt**: update each `plans/overview/*` system doc as its phase lands; the
   reactive-substrate work also lets `architecture/render.md`'s stale status section
   and the `architecture/reactivity.md` cursor convention be re-baselined.

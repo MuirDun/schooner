@@ -13,6 +13,10 @@ serve:
 run:
     cargo run -p game --bin playground
 
+# Run playground with all dev features enabled
+try:
+    cargo run -p game --features "hot dev-tools" --bin playground
+
 # Validate the code of the project
 validate:
     cargo check --workspace

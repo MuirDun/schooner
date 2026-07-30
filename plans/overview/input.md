@@ -56,7 +56,7 @@ is the build state and Kinesis roadmap.
 - **Out of Kinesis scope:** rebinding persistence / file format, gamepad,
   text-input/IME (Game 2A's UI), full Layer-2 generality.
 
-## The fixed-step discipline (resolved, Part 2.B.3)
+## The fixed-step discipline (current implementation; correction staged)
 
 `Input::end_frame` clears the edges and the wheel exactly once per frame, *after*
 the whole `run_fixed × N → Update → Render` sequence — so a **FixedUpdate** system
@@ -77,13 +77,18 @@ The convention, decided in Part 2.B and now load-bearing for every verb:
   cost is a deterministic one-frame latency, the same shape as a one-frame-late
   event.
 
-We chose this over the alternative — a separate `FixedUpdate` input snapshot
-cleared by the fixed schedule — because one resolve point plus durable intent is
-simpler and matches how `Events<T>` already crosses frames. Mode select stays on
-`Update`, flipping a persistent `ControlMode` read as a level in `FixedUpdate`
-(see [events.md](events.md) example 1). The actionable form of this rule lives in
-the `action.rs` module docs; the idea-level version is in `architecture/input.md`
-§"The Fixed-Step Discipline".
+This remains the as-built behavior through 2.F.4, but controller review exposed
+its mandatory stale-control frame: fixed simulation runs before action
+resolution, look, movement capture, mode changes, and spectator handoff. Phase
+2.FH.5 moves the single action/control sampling point before fixed simulation.
+The durable-state discipline does not change: edges and wheel are still sampled
+once per render frame, one-shots still latch across zero-step frames, and fixed
+steps still consume state rather than raw frame edges. The first eligible fixed
+step will then use the current snapshot without mandatory one-frame latency.
+
+The intended contract lives in `architecture/input.md` §"The Fixed-Step
+Discipline". The current `action.rs` module docs continue to describe the
+as-built Update placement until 2.FH.5 changes the code.
 
 Cross-refs: [events.md](events.md) (input edges drive state transitions),
 [physics.md](physics.md) (the FixedUpdate consumer).

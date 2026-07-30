@@ -11,9 +11,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use rapier3d::control::{
-    CharacterLength as RapierCharacterLength, KinematicCharacterController,
-};
+use rapier3d::control::{CharacterLength as RapierCharacterLength, KinematicCharacterController};
 use rapier3d::prelude::{nalgebra, *};
 
 use crate::ecs::EntityId;
@@ -456,6 +454,7 @@ impl PhysicsWorld {
             horizontal_velocity.z * dt,
         );
         let effective = {
+            puffin::profile_scope!("physics.character_kcc_query");
             let collider = self.colliders.get(handles.collider)?;
             let query = self.broad_phase.as_query_pipeline(
                 self.narrow_phase.query_dispatcher(),
@@ -664,6 +663,14 @@ impl PhysicsWorld {
 
     pub(crate) fn entity_count(&self) -> usize {
         self.entities.len()
+    }
+
+    pub(crate) fn body_count(&self) -> usize {
+        self.bodies.len()
+    }
+
+    pub(crate) fn collider_count(&self) -> usize {
+        self.colliders.len()
     }
 
     pub(crate) fn entity_user_data(entity: EntityId) -> u128 {

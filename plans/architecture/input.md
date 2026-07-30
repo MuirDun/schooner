@@ -118,40 +118,45 @@ grow; until then, it does not.
 This is the part that is easy to get wrong and expensive to debug, so it is a
 written rule, not a convention discovered later.
 
-The local simulation runs two clocks. **Variable-rate** work (input, camera,
-most gameplay) runs once per frame. **Fixed-rate** work (physics, deterministic
-gameplay) runs a *variable number of times* per frame — zero times on a fast
-frame, several times on a slow one — so the simulation steps at a constant rate
-regardless of frame rate. Input's frame-scoped signals are cleared once per
-frame. Those two facts collide:
+The local simulation runs two clocks. A once-per-render-frame **control-sampling
+boundary** resolves actions and establishes control ownership before fixed
+simulation. **Fixed-rate** work (physics, deterministic gameplay) then runs a
+*variable number of times* — zero times on a fast frame, several times on a slow
+one — so the simulation steps at a constant rate regardless of frame rate.
+Later variable-rate gameplay still runs once per frame after fixed simulation.
+Input's frame-scoped signals are cleared once per frame. Those facts collide:
 
 - A fixed-step system that reads an edge **double-fires** on a slow frame that
   runs several fixed steps — the edge is still true on every step.
 - It **misses** the edge entirely on a fast frame that runs zero fixed steps —
   the edge is born and cleared inside a frame the fixed clock never entered.
-- And it reads a **stale** edge anyway, because the resolve runs *after* the
-  frame's fixed steps have already happened.
+- If action resolution or control capture runs after fixed simulation, the first
+  eligible step reads a **stale** snapshot.
 
-This is the same tick-stride mismatch the change-detection cursor faces, and the
-resolution is the same in spirit: keep the frame-scoped reads on the variable
-clock, and hand the fixed clock durable state.
+This is the same tick-stride mismatch the change-detection cursor faces. The
+resolution is to sample frame-scoped input exactly once before fixed simulation
+and hand the fixed clock durable state.
 
-- **Edges and the wheel are read only on the variable clock.** The moment a press
-  becomes a press, or the wheel turns, is observed once per frame.
+- **Edges and the wheel are sampled once per render frame.** The moment a press
+  becomes a press, or the wheel turns, is observed at the pre-fixed control
+  boundary, never independently by each fixed step.
 - **Levels are safe on the fixed clock.** "Is forward held," "which mode is
   active" — these derive from persistent state that does not change across a
   frame's steps, so reading them in fixed work is idempotent. Continuous forces
   (walk, hold) read levels directly.
 - **One-shots are latched.** An edge that must cause exactly one fixed-step action
-  (a jump, a throw) is captured on the variable clock into a small intent, and the
-  fixed clock consumes that intent once. A press on a zero-step frame waits in the
-  latch until a step runs (no miss); a press on a many-step frame is consumed by
-  the first step (no double-fire). The cost is a deterministic one-frame latency,
-  the same shape as an event being readable the frame after it is sent.
+  (a jump, a throw) is captured into a small durable intent, and the fixed clock
+  consumes that intent once. A press on a zero-step frame waits in the latch until
+  a step runs (no miss); a press on a many-step frame is consumed by the first
+  step (no double-fire). Because capture precedes fixed simulation, the first
+  eligible step uses the current frame's request rather than paying mandatory
+  one-frame latency.
 
-Mode selection is the canonical example: the variable clock turns a key edge into
-a persistent mode; the fixed clock reads the mode as a level and gates its
-per-mode systems on it.
+Mode selection is the canonical example: the control boundary turns a key edge
+into a persistent mode; the fixed clock reads the mode as a level and gates its
+per-mode systems on it. Cursor capture, spectator ownership, aim/yaw, held
+movement, and one-shot intent share this boundary so one fixed step cannot
+combine control state sampled from different frames.
 
 ---
 
