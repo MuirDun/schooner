@@ -8,9 +8,9 @@
 //! - [`fps_cursor_toggle`] — Esc flips cursor grab + visibility.
 //! - `fps_look` (Phase G chunk 4) — mouse delta → yaw/pitch → rotation.
 //!
-//! Both are registered on the `Update` stage. Physical player movement belongs
-//! to the hosted character controller. The old free-fly translation behavior
-//! survives only as the `dev-tools` spectator camera.
+//! Both are registered on the pre-fixed `Control` stage. Physical player
+//! movement belongs to the hosted character controller. The old free-fly
+//! translation behavior survives only as the `dev-tools` spectator camera.
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -91,7 +91,7 @@ fn rotation_from_yaw_pitch(yaw: f32, pitch: f32) -> Quat {
     Quat::from_axis_angle(Vec3::Y, yaw) * Quat::from_axis_angle(Vec3::X, pitch)
 }
 
-/// `Update`-stage system: mouse delta → yaw/pitch → rotation.
+/// `Control`-stage system: mouse delta → yaw/pitch → rotation.
 ///
 /// Sign convention (Y-up RH, camera looks down `-Z`):
 /// - Mouse-right (`dx > 0`) turns the player to the right, which
@@ -132,7 +132,7 @@ pub fn fps_look(
     }
 }
 
-/// `Update`-stage system: toggle cursor capture on `Esc just_pressed`.
+/// `Control`-stage system: toggle cursor capture on `Esc just_pressed`.
 ///
 /// Grabbed implies invisible; ungrabbed implies visible. Held as a
 /// separate system (rather than folded into `fps_look`) so Phase H's
@@ -148,11 +148,18 @@ pub fn fps_cursor_toggle(mut input: ResMut<Input>) {
     let grabbed = input.cursor_grabbed();
     input.set_cursor_grabbed(!grabbed);
     input.set_cursor_visible(grabbed);
+    // Raw device motion continues while the cursor is free. Do not apply that
+    // accumulated delta to the camera when this transition reclaims it.
+    input.discard_mouse_delta();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
+    use crate::camera::Camera;
+    use crate::ecs::{Schedule, World};
+    use crate::transform::Transform;
 
     #[test]
     fn default_controller_starts_level() {
@@ -173,11 +180,34 @@ mod tests {
         assert_eq!(c.mouse_sensitivity, d.mouse_sensitivity);
     }
 
-    // The cursor-toggle system itself is exercised behind a
-    // `ResMut<Input>` system param. Direct unit-testing the resource
-    // wiring would re-test the schedule; the toggle's logic is a
-    // straight read-flip-write that we verify by exercising
-    // `Input::set_cursor_*` semantics here.
+    #[test]
+    fn cursor_reclaim_does_not_replay_free_cursor_mouse_motion() {
+        let mut world = World::new();
+        let mut input = Input::new();
+        input.record_key(KeyCode::Escape, true);
+        input.record_mouse_motion(80.0, -30.0);
+        world.insert_resource(input);
+
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert(camera, Camera::perspective_default());
+        world.insert(camera, FpsController::default());
+        world.insert(camera, ActiveCamera);
+
+        let mut schedule = Schedule::new();
+        schedule.add_system(&mut world, Stage::Control, fps_cursor_toggle);
+        schedule.add_system(&mut world, Stage::Control, fps_look);
+        schedule.run_control(&mut world);
+
+        assert!(world.resource::<Input>().unwrap().cursor_grabbed());
+        assert_eq!(
+            world.resource::<Input>().unwrap().mouse_delta(),
+            glam::Vec2::ZERO
+        );
+        let controller = world.get::<FpsController>(camera).unwrap();
+        assert_eq!(controller.yaw, 0.0);
+        assert_eq!(controller.pitch, 0.0);
+    }
 
     #[test]
     fn esc_press_flips_grab_and_visibility() {

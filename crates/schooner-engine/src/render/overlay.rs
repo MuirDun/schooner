@@ -20,7 +20,9 @@
 //!    gameplay-side input handling, the App calls
 //!    [`DebugOverlay::on_window_event`]. If egui consumed the event
 //!    (mouse over an overlay window, keyboard focus in a text field),
-//!    the App skips feeding it into the gameplay `Input` resource.
+//!    the App hides presses, pointer motion, and wheel input from the
+//!    gameplay `Input` resource. Releases still clear held gameplay state
+//!    so UI capture cannot leave a key or button stuck.
 //! 2. A preceding Render-stage debug system calls [`DebugOverlay::run`]
 //!    while panel callbacks have typed access to the ECS world.
 //! 3. `render_frame` calls [`DebugOverlay::render`] after post processing to

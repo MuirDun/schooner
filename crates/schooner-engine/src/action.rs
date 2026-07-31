@@ -6,10 +6,11 @@
 //! Gameplay speaks in verbs ("jump", "grab", "mode-telekinesis"), not in
 //! keys. Each verb is a [`Symbol`] bound to one or more physical
 //! [`Trigger`]s in the [`Bindings`] table; an action is active when *any*
-//! of its triggers is (a logical OR). Once per frame, on `Update`,
-//! [`resolve_actions`] recomputes [`Actions`] — each verb's
+//! of its triggers is (a logical OR). Once per frame, immediately before
+//! `Control`, [`resolve_actions`] recomputes [`Actions`] — each verb's
 //! down / just-pressed / just-released state — from the raw [`Input`]
-//! snapshot, so every gameplay system that frame reads fresh state.
+//! snapshot, so every control sampler and later gameplay system that frame
+//! reads fresh state.
 //!
 //! Two resources, deliberately split:
 //! - [`Bindings`] is **config** — written at setup (and later by
@@ -37,10 +38,11 @@
 //! Edges ([`just_pressed`](Actions::just_pressed) /
 //! [`just_released`](Actions::just_released)) and the
 //! [`wheel`](Actions::wheel) are **frame-scoped** — resolved once per
-//! frame on `Update`, cleared once per frame by `Input::end_frame`.
-//! **Never read them from a `FixedUpdate` system.** `FixedUpdate` reads
-//! *levels* only: [`pressed`](Actions::pressed), [`axis`](Actions::axis),
-//! or a mode/state resource.
+//! frame before `Control`, cleared once per frame by `Input::end_frame`.
+//! `Control` samples them into durable state. **Never read them
+//! independently from a `FixedUpdate` system.** `FixedUpdate` reads *levels*
+//! ([`pressed`](Actions::pressed), [`axis`](Actions::axis), or a mode/state
+//! resource) and consumes explicitly latched one-shots.
 //!
 //! Why: `FixedUpdate` runs 0..N times per frame against the time
 //! accumulator, while an edge lives for exactly one frame. A `FixedUpdate`
@@ -49,29 +51,28 @@
 //!   edge is still true on each step (one press → N jumps);
 //! - **misses** on a fast frame that runs zero fixed steps — the edge is
 //!   born and cleared inside a frame the fixed clock never entered;
-//! - reads a **stale** edge anyway, since the resolve runs on `Update`,
-//!   *after* the frame's fixed steps have already run.
+//! - adds a frame of **latency** if action resolution and sampling happen
+//!   after the frame's fixed steps.
 //!
 //! Levels are safe because they derive from `Input` state that does not
 //! change across a frame's steps — integrating "move forward" on each of
 //! three steps is just correct integration.
 //!
-//! Two handoff shapes carry an edge down to the fixed clock:
-//! - **edge → latch (consume once):** an `Update` system turns the edge
+//! Two handoff shapes carry control down to the fixed clock:
+//! - **edge → latch (consume once):** a `Control` system turns the edge
 //!   into a durable intent (`jump_intent.requested = true`); the first
 //!   fixed step that sees it acts and clears it. A press on a zero-step
 //!   frame waits in the latch (no miss); a press on an N-step frame is
-//!   consumed once (no double-fire). The cost is a deterministic
-//!   one-frame latency — the same shape as an event readable the frame
-//!   after it is sent.
-//! - **continuous → mirror latest:** an `Update` system writes the current
-//!   axis / mode / hold-distance into a state resource; each fixed step
-//!   reads the latest value. No latch — only edges latch.
+//!   consumed once (no double-fire). Because sampling precedes fixed work,
+//!   the first eligible step sees it without mandatory frame latency.
+//! - **continuous → mirror latest:** a `Control` system writes the current
+//!   axis / mode / hold-distance into durable state; each fixed step reads
+//!   the latest value. No latch — only edges latch.
 //!
-//! Mode select is the canonical edge→state case: an `Update` system flips
+//! Mode select is the canonical edge→state case: a `Control` system flips
 //! a persistent `ControlMode` on the 1/2/3 edge, and per-mode
 //! `FixedUpdate` systems gate on that mode as a level (via `run_if`). This
-//! module ships only the rule and the `Update` resolve; the per-verb
+//! module ships only the rule and the once-per-frame resolve; the per-verb
 //! intent resources are authored game-side when the verbs land (Part 2.F
 //! / 2.G).
 
@@ -144,9 +145,10 @@ struct ActionState {
 /// never panics on an unbound symbol (returns `false` / `0.0`).
 ///
 /// Frame-scoped reads (`just_pressed` / `just_released` / [`wheel`](Self::wheel))
-/// belong to `Update` only — see the fixed-step discipline. Levels
-/// ([`pressed`](Self::pressed) / [`axis`](Self::axis)) are safe to read
-/// in `FixedUpdate`.
+/// are sampled at `Control` and remain readable by later once-per-frame
+/// systems — see the fixed-step discipline. Levels
+/// ([`pressed`](Self::pressed) / [`axis`](Self::axis)) are safe to read in
+/// `FixedUpdate`, but one-shot edges must first be latched into durable intent.
 #[derive(Default, Debug)]
 pub struct Actions {
     states: HashMap<Symbol, ActionState>,
@@ -159,12 +161,14 @@ impl Actions {
         self.states.get(&action).is_some_and(|s| s.down)
     }
 
-    /// Did the action become active this frame? (Edge — `Update` only.)
+    /// Did the action become active this frame? (Edge — sample once at
+    /// `Control`, never independently per fixed step.)
     pub fn just_pressed(&self, action: Symbol) -> bool {
         self.states.get(&action).is_some_and(|s| s.just_pressed)
     }
 
-    /// Did the action release this frame? (Edge — `Update` only.)
+    /// Did the action release this frame? (Edge — sample once at `Control`,
+    /// never independently per fixed step.)
     pub fn just_released(&self, action: Symbol) -> bool {
         self.states.get(&action).is_some_and(|s| s.just_released)
     }
@@ -178,19 +182,35 @@ impl Actions {
     }
 
     /// This frame's wheel movement in line units, mirrored from [`Input`].
-    /// Frame-scoped like the edges — read on `Update`, never `FixedUpdate`.
+    /// Frame-scoped like the edges — sample once at `Control`, never
+    /// independently per fixed step.
     pub fn wheel(&self) -> f32 {
         self.wheel
     }
+
+    /// Discard frame-scoped action signals while preserving held levels.
+    ///
+    /// Called when control ownership changes after this frame's resolve so
+    /// the new owner cannot inherit an edge or wheel gesture collected for
+    /// the old owner.
+    #[cfg(any(feature = "dev-tools", test))]
+    pub(crate) fn discard_frame_transients(&mut self) {
+        for state in self.states.values_mut() {
+            state.just_pressed = false;
+            state.just_released = false;
+        }
+        self.wheel = 0.0;
+    }
 }
 
-/// `Update`-stage system: recompute [`Actions`] from [`Input`] +
-/// [`Bindings`]. Registered engine-intrinsically, first in `Update`, so
-/// every gameplay consumer this frame reads fresh state.
+/// Pre-`Control` system: recompute [`Actions`] from [`Input`] +
+/// [`Bindings`]. Registered engine-intrinsically before ownership handoffs,
+/// so every control sampler this frame reads fresh state.
 ///
-/// It must stay on `Update`: edges and the wheel are frame-scoped, and a
-/// `FixedUpdate` resolve (0..N times/frame) would double-fire or miss
-/// them (see the fixed-step discipline in `architecture/input.md`).
+/// It must run exactly once per render frame: edges and the wheel are
+/// frame-scoped, and a `FixedUpdate` resolve (0..N times/frame) would
+/// double-fire or miss them (see the fixed-step discipline in
+/// `architecture/input.md`).
 pub fn resolve_actions(input: Res<Input>, bindings: Res<Bindings>, mut actions: ResMut<Actions>) {
     resolve(&input, &bindings, &mut actions);
 }
@@ -345,6 +365,29 @@ mod tests {
         assert_eq!(actions.wheel(), 0.0);
         assert!(!actions.pressed(zoom_in));
         assert!(actions.just_released(zoom_in));
+    }
+
+    #[test]
+    fn ownership_handoff_discards_edges_but_preserves_action_levels() {
+        let move_forward = sym("action.test.handoff.move");
+        let jump = sym("action.test.handoff.jump");
+        let mut bindings = Bindings::default();
+        bindings.bind(move_forward, Trigger::Key(KeyCode::KeyW));
+        bindings.bind(jump, Trigger::Key(KeyCode::Space));
+        let mut actions = Actions::default();
+
+        resolve(
+            &input_with(&[KeyCode::KeyW, KeyCode::Space], 2.0),
+            &bindings,
+            &mut actions,
+        );
+        actions.discard_frame_transients();
+
+        assert!(actions.pressed(move_forward));
+        assert!(actions.pressed(jump));
+        assert!(!actions.just_pressed(move_forward));
+        assert!(!actions.just_pressed(jump));
+        assert_eq!(actions.wheel(), 0.0);
     }
 
     #[test]

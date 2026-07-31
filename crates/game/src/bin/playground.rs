@@ -335,12 +335,12 @@ fn main() -> anyhow::Result<(), AppError> {
         .bind(act::THROW, Trigger::Mouse(MouseButton::Middle))
         // Mode 3 reuses Left; the active mode disambiguates push vs repulse.
         .bind(act::REPULSE, Trigger::Mouse(MouseButton::Left))
-        .add_system(Stage::Update, fps_cursor_toggle)
-        .add_system(Stage::Update, fps_look)
-        .add_system(Stage::Update, capture_player_movement)
+        .add_system(Stage::Control, fps_cursor_toggle)
+        .add_system(Stage::Control, fps_look)
+        .add_system(Stage::Control, mode_select)
+        .add_system(Stage::Control, capture_player_movement)
         .add_system(Stage::PostPhysics, exclusive(sync_player_camera))
         .add_system(Stage::Update, exclusive(scene::run_transition))
-        .add_system(Stage::Update, mode_select)
         .add_system(Stage::Update, edit_input)
         .add_system(Stage::Update, apply_spawns)
         .add_system(Stage::Update, apply_despawns)
@@ -484,8 +484,8 @@ mod tests {
         world.insert(spectator, ActiveCamera);
 
         let mut schedule = schooner_engine::Schedule::new();
-        schedule.add_system(&mut world, Stage::Update, capture_player_movement);
-        schedule.run(&mut world);
+        schedule.add_system(&mut world, Stage::Control, capture_player_movement);
+        schedule.run_control(&mut world);
 
         assert_eq!(
             world.get::<CharacterIntent>(body),

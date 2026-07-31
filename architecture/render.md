@@ -1,6 +1,11 @@
 # Render — Architecture Overview
 
-> Status: design fixed for Game 0. Forward-only, single directional light, no asset pipeline.
+> **Historical Game 0 snapshot.** This preserves the renderer's original
+> decision context; the feature list and frame-stage diagram predate the
+> dedicated `Control` and `Render` stages and later Kinesis rendering work.
+> See [`plans/architecture/rendering.md`](../plans/architecture/rendering.md)
+> for durable renderer intent and [`player-control.md`](player-control.md) for
+> current frame ordering where it affects player control.
 
 ## The idea
 

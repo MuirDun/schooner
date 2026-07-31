@@ -140,8 +140,8 @@ impl Input {
     }
 
     /// Accumulated motion since the last [`end_frame`](Self::end_frame).
-    /// Reset to zero on rollover. FPS look should read this in
-    /// `Update`, before the frame ends.
+    /// Reset to zero on rollover. FPS look reads this at the pre-fixed
+    /// `Control` boundary.
     pub fn mouse_delta(&self) -> Vec2 {
         self.mouse.delta
     }
@@ -152,10 +152,11 @@ impl Input {
     /// normalized onto the same scale at the winit boundary. Positive is
     /// scroll-up / away from the user. Reset to zero on rollover.
     ///
-    /// Frame-scoped like [`mouse_delta`](Self::mouse_delta): read it in
-    /// `Update`, never in `FixedUpdate` — the per-frame clear means a
-    /// fixed-step read double-fires or misses (see the fixed-step
-    /// discipline in `architecture/input.md`).
+    /// Frame-scoped like [`mouse_delta`](Self::mouse_delta): sample it once
+    /// at `Control` (or another once-per-frame stage), never independently in
+    /// `FixedUpdate` — the per-frame clear means a fixed-step read
+    /// double-fires or misses (see the fixed-step discipline in
+    /// `architecture/input.md`).
     pub fn mouse_wheel(&self) -> f32 {
         self.mouse.wheel
     }
@@ -229,6 +230,45 @@ impl Input {
         self.mouse.wheel += lines;
     }
 
+    /// Discard every frame-scoped signal while preserving held levels.
+    ///
+    /// Control-ownership handoffs use this after action resolution so a key
+    /// edge, wheel gesture, or mouse delta collected for the old owner cannot
+    /// be replayed by the new owner later in the same frame.
+    pub(crate) fn discard_frame_transients(&mut self) {
+        self.keyboard.just_pressed.clear();
+        self.keyboard.just_released.clear();
+        self.mouse.just_pressed.clear();
+        self.mouse.just_released.clear();
+        self.mouse.delta = Vec2::ZERO;
+        self.mouse.wheel = 0.0;
+    }
+
+    /// Discard accumulated relative mouse motion without disturbing key or
+    /// button edges. Cursor-capture transitions use this to avoid applying
+    /// motion gathered while another input owner had the pointer.
+    pub(crate) fn discard_mouse_delta(&mut self) {
+        self.mouse.delta = Vec2::ZERO;
+    }
+
+    /// Release all held keys and mouse buttons when the window loses focus.
+    ///
+    /// Some platforms do not deliver the matching release after an
+    /// alt-tab. Synthesizing releases here prevents a held gameplay level
+    /// from surviving until focus returns.
+    pub(crate) fn release_all(&mut self) {
+        self.keyboard.just_pressed.clear();
+        self.mouse.just_pressed.clear();
+
+        let released_keys: Vec<_> = self.keyboard.down.drain().collect();
+        self.keyboard.just_released.extend(released_keys);
+        let released_buttons: Vec<_> = self.mouse.down.drain().collect();
+        self.mouse.just_released.extend(released_buttons);
+
+        self.mouse.delta = Vec2::ZERO;
+        self.mouse.wheel = 0.0;
+    }
+
     /// End-of-frame rollover.
     ///
     /// Clears one-shot edges (`just_pressed`, `just_released` for
@@ -237,12 +277,7 @@ impl Input {
     /// `down`, last cursor `position`, cursor grab/visibility — is left
     /// alone.
     pub(crate) fn end_frame(&mut self) {
-        self.keyboard.just_pressed.clear();
-        self.keyboard.just_released.clear();
-        self.mouse.just_pressed.clear();
-        self.mouse.just_released.clear();
-        self.mouse.delta = Vec2::ZERO;
-        self.mouse.wheel = 0.0;
+        self.discard_frame_transients();
     }
 }
 
@@ -385,6 +420,40 @@ mod tests {
         input.end_frame();
         assert_eq!(input.mouse_delta(), Vec2::ZERO);
         assert_eq!(input.mouse_position(), Vec2::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn ownership_handoff_discards_transients_but_preserves_held_levels() {
+        let mut input = Input::new();
+        input.record_key(KeyCode::KeyW, true);
+        input.record_mouse_button(MouseButton::Left, true);
+        input.record_mouse_motion(4.0, -2.0);
+        input.record_mouse_wheel(1.0);
+
+        input.discard_frame_transients();
+
+        assert!(input.is_key_down(KeyCode::KeyW));
+        assert!(input.is_mouse_button_down(MouseButton::Left));
+        assert!(!input.just_pressed(KeyCode::KeyW));
+        assert!(!input.mouse_button_just_pressed(MouseButton::Left));
+        assert_eq!(input.mouse_delta(), Vec2::ZERO);
+        assert_eq!(input.mouse_wheel(), 0.0);
+    }
+
+    #[test]
+    fn focus_loss_releases_held_levels_and_discards_motion() {
+        let mut input = Input::new();
+        input.record_key(KeyCode::KeyW, true);
+        input.record_mouse_button(MouseButton::Left, true);
+        input.record_mouse_motion(4.0, -2.0);
+
+        input.release_all();
+
+        assert!(!input.is_key_down(KeyCode::KeyW));
+        assert!(!input.is_mouse_button_down(MouseButton::Left));
+        assert!(input.just_released(KeyCode::KeyW));
+        assert!(input.mouse_button_just_released(MouseButton::Left));
+        assert_eq!(input.mouse_delta(), Vec2::ZERO);
     }
 
     // -- mouse wheel ------------------------------------------------

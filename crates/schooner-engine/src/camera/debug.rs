@@ -56,22 +56,33 @@ fn toggle_spectator(world: &mut World) {
     let Some(mut state) = world.remove_resource::<SpectatorDebugState>() else {
         return;
     };
-    if state.active {
-        deactivate_spectator(world, &mut state);
+    let changed = if state.active {
+        deactivate_spectator(world, &mut state)
     } else {
-        activate_spectator(world, &mut state);
+        activate_spectator(world, &mut state)
+    };
+    if changed {
+        // The frame's raw signals and named actions were collected before the
+        // handoff. Preserve held levels, but prevent the new owner from
+        // inheriting old-owner mouse motion, jump/verb edges, or wheel input.
+        if let Some(input) = world.resource_mut::<Input>() {
+            input.discard_frame_transients();
+        }
+        if let Some(actions) = world.resource_mut::<Actions>() {
+            actions.discard_frame_transients();
+        }
     }
     world.insert_resource(state);
 }
 
-fn activate_spectator(world: &mut World, state: &mut SpectatorDebugState) {
+fn activate_spectator(world: &mut World, state: &mut SpectatorDebugState) -> bool {
     let source = world
         .iter::<ActiveCamera>()
         .map(|(entity, _)| entity)
         .find(|&entity| !world.contains::<SpectatorCamera>(entity));
     let Some(source) = source else {
         log::warn!("spectator camera: no gameplay ActiveCamera to take over from");
-        return;
+        return false;
     };
 
     let (Some(transform), Some(camera), Some(controller)) = (
@@ -80,7 +91,7 @@ fn activate_spectator(world: &mut World, state: &mut SpectatorDebugState) {
         world.get::<FpsController>(source).copied(),
     ) else {
         log::warn!("spectator camera: active camera lacks its controller components");
-        return;
+        return false;
     };
 
     let spectator = state
@@ -100,9 +111,10 @@ fn activate_spectator(world: &mut World, state: &mut SpectatorDebugState) {
     state.active = true;
     state.spectator = Some(spectator);
     state.previous = Some(source);
+    true
 }
 
-fn deactivate_spectator(world: &mut World, state: &mut SpectatorDebugState) {
+fn deactivate_spectator(world: &mut World, state: &mut SpectatorDebugState) -> bool {
     if let Some(spectator) = state.spectator.filter(|&entity| world.is_alive(entity)) {
         world.remove::<ActiveCamera>(spectator);
     }
@@ -124,6 +136,7 @@ fn deactivate_spectator(world: &mut World, state: &mut SpectatorDebugState) {
 
     state.active = false;
     state.previous = None;
+    true
 }
 
 /// `Update`-stage free-flight movement for the active spectator.
@@ -193,7 +206,7 @@ impl Plugin for CameraDebugPlugin {
         let mut app = app
             .insert_resource(SpectatorDebugState::default())
             .bind_key(TOGGLE_SPECTATOR_ACTION, KeyCode::F8)
-            .add_system(Stage::Update, exclusive(toggle_spectator))
+            .add_control_prepare_system(exclusive(toggle_spectator))
             .add_system(Stage::Update, spectator_move);
         if let Some(panels) = app.world_mut().resource_mut::<DebugPanels>() {
             panels.register("camera", spectator_panel);
@@ -241,28 +254,58 @@ mod tests {
     }
 
     #[test]
-    fn f8_action_toggles_the_spectator_through_update() {
+    fn f8_action_toggles_the_spectator_before_control_sampling() {
         use crate::action::{Bindings, Trigger, resolve_actions};
-        use crate::ecs::Schedule;
+        use crate::ecs::{ResMut, Schedule};
+
+        #[derive(Debug, Default)]
+        struct ObservedHandoff(bool);
 
         let mut world = World::new();
         spawn_gameplay_camera(&mut world);
 
         let mut input = Input::new();
         input.record_key(KeyCode::F8, true);
+        input.record_key(KeyCode::Space, true);
+        input.record_mouse_motion(7.0, -3.0);
         let mut bindings = Bindings::default();
         bindings.bind(sym(TOGGLE_SPECTATOR_ACTION), Trigger::Key(KeyCode::F8));
+        let jump = sym("action.test.spectator_jump");
+        bindings.bind(jump, Trigger::Key(KeyCode::Space));
         world.insert_resource(input);
         world.insert_resource(bindings);
         world.insert_resource(Actions::default());
         world.insert_resource(SpectatorDebugState::default());
+        world.insert_resource(ObservedHandoff::default());
 
         let mut schedule = Schedule::new();
-        schedule.add_system(&mut world, Stage::Update, resolve_actions);
-        schedule.add_system(&mut world, Stage::Update, exclusive(toggle_spectator));
-        schedule.run(&mut world);
+        schedule.add_control_prepare_system(&mut world, resolve_actions);
+        schedule.add_control_prepare_system(&mut world, exclusive(toggle_spectator));
+        schedule.add_system(
+            &mut world,
+            Stage::Control,
+            move |state: Res<SpectatorDebugState>,
+                  input: Res<Input>,
+                  actions: Res<Actions>,
+                  mut observed: ResMut<ObservedHandoff>| {
+                assert!(state.active, "ownership must transfer before sampling");
+                assert_eq!(input.mouse_delta(), glam::Vec2::ZERO);
+                assert!(
+                    input.is_key_down(KeyCode::Space),
+                    "held levels remain live for the new owner"
+                );
+                assert!(actions.pressed(jump));
+                assert!(
+                    !actions.just_pressed(jump),
+                    "old-owner one-shots must not cross the handoff"
+                );
+                observed.0 = true;
+            },
+        );
+        schedule.run_control(&mut world);
 
         assert!(world.resource::<SpectatorDebugState>().unwrap().active);
+        assert!(world.resource::<ObservedHandoff>().unwrap().0);
     }
 
     #[test]

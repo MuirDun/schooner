@@ -12,7 +12,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::action::{Actions, Bindings, Trigger, resolve_actions};
 use crate::ecs::{CommandQueue, Events, IntoSystem, Schedule, Stage, World, exclusive};
-use crate::input::{Input, KeyCode};
+use crate::input::{Input, KeyCode, MouseButton};
 use crate::physics::{
     Contact, PhysicsCommands, PhysicsDiagnostics, PhysicsWorld, TriggerEnter, TriggerExit,
     physics_bridge, physics_reconcile_lifecycle, reset_physics_diagnostics,
@@ -35,6 +35,28 @@ use crate::window::WindowConfig;
 /// telekinesis distance) feels the same on both devices. Empirical, not
 /// load-bearing — tuned for feel, not correctness.
 const PIXELS_PER_LINE: f32 = 16.0;
+
+/// Route a keyboard transition across the UI/gameplay ownership boundary.
+///
+/// UI-owned presses must not enter gameplay. Releases always pass through so
+/// a key pressed before UI capture cannot remain stuck in the raw snapshot.
+fn record_routed_key(input: &mut Input, code: KeyCode, pressed: bool, ui_consumed: bool) {
+    if !ui_consumed || !pressed {
+        input.record_key(code, pressed);
+    }
+}
+
+/// Mouse-button equivalent of [`record_routed_key`].
+fn record_routed_mouse_button(
+    input: &mut Input,
+    button: MouseButton,
+    pressed: bool,
+    ui_consumed: bool,
+) {
+    if !ui_consumed || !pressed {
+        input.record_mouse_button(button, pressed);
+    }
+}
 
 /// Insert a production default without overwriting application configuration
 /// authored before GPU startup.
@@ -60,8 +82,9 @@ pub enum AppError {
 /// 1. winit fires `about_to_wait` after handling pending events →
 ///    we ask the window for a redraw.
 /// 2. winit fires `RedrawRequested` → we call [`App::tick`], which
-///    advances [`Time`], runs `FixedUpdate` 0..N times against the
-///    accumulator, then `Update` once, then `Render` once.
+///    advances [`Time`], samples `Control` once, runs `FixedUpdate`
+///    0..N times against the accumulator, then `Update` once, then
+///    `Render` once.
 ///
 /// `Render` is the dedicated stage where the forward pass and the
 /// debug overlay live. Each system execution receives a distinct
@@ -115,12 +138,11 @@ impl App {
         world.insert_resource(Bindings::default());
         world.insert_resource(Actions::default());
         let mut schedule = Schedule::new();
-        // Resolve the action map first each Update so every gameplay
-        // system this frame reads fresh action state. It must stay on
-        // Update — edges and the wheel are frame-scoped, and a
-        // FixedUpdate resolve would double-fire or miss them (see the
-        // fixed-step discipline in architecture/input.md).
-        schedule.add_system(&mut world, Stage::Update, resolve_actions);
+        // Named actions are the first derivation at the once-per-frame
+        // control boundary. Engine-owned ownership handoffs run after this
+        // preparation system; public Control systems then sample one coherent
+        // snapshot before fixed simulation.
+        schedule.add_control_prepare_system(&mut world, resolve_actions);
         Self {
             window_config: WindowConfig::default(),
             window: None,
@@ -255,6 +277,19 @@ impl App {
         self
     }
 
+    /// Register an engine-owned preparation system ahead of public
+    /// [`Stage::Control`] sampling.
+    ///
+    /// This is deliberately crate-private: gameplay should use
+    /// `add_system(Stage::Control, ...)`; only global derivation and ownership
+    /// seams may enter the preparation lane.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn add_control_prepare_system<M, S: IntoSystem<M>>(mut self, system: S) -> Self {
+        self.schedule
+            .add_control_prepare_system(&mut self.world, system);
+        self
+    }
+
     /// Direct mutable access to the world for one-shot setup. Prefer
     /// [`Stage::Startup`] for scene entities, especially physics bodies:
     /// Startup runs after the first tick increment, so change-detection
@@ -277,9 +312,10 @@ impl App {
         Ok(())
     }
 
-    /// One frame: advance [`Time`], run the fixed-step accumulator,
-    /// run `Update` once. The first call always reports a delta of
-    /// zero — there is no prior frame to measure against.
+    /// One frame: advance [`Time`], sample controls once, run the
+    /// fixed-step accumulator, then run `Update` once. The first call
+    /// always reports a delta of zero — there is no prior frame to
+    /// measure against.
     fn tick(&mut self) {
         // Flush the previous puffin frame into any registered diagnostics
         // sinks. Collection enablement is owned by DiagnosticsDebugPlugin;
@@ -333,11 +369,7 @@ impl App {
             }
         };
 
-        for _ in 0..steps {
-            self.schedule.run_fixed(&mut self.world);
-        }
-        self.schedule.run(&mut self.world);
-        self.schedule.run_render(&mut self.world);
+        self.run_frame_stages(steps);
 
         // After systems have run, mirror the requested cursor state
         // onto the actual Window. Doing it here (not before the
@@ -351,6 +383,20 @@ impl App {
         if let Some(input) = self.world.resource_mut::<Input>() {
             input.end_frame();
         }
+    }
+
+    /// Run the scheduled portion of one render frame.
+    ///
+    /// Factored from [`Self::tick`] so the load-bearing stage order has one
+    /// implementation and can be exercised without a live window or wall
+    /// clock in tests.
+    fn run_frame_stages(&mut self, fixed_steps: u32) {
+        self.schedule.run_control(&mut self.world);
+        for _ in 0..fixed_steps {
+            self.schedule.run_fixed(&mut self.world);
+        }
+        self.schedule.run(&mut self.world);
+        self.schedule.run_render(&mut self.world);
     }
 
     /// Push the desired cursor state from `Input` onto the live
@@ -537,12 +583,11 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        // Funnel the event through the egui overlay first. If egui
-        // consumed it (mouse over an overlay window, keyboard focus
-        // in a text field), short-circuit so the gameplay-side
-        // Input resource doesn't *also* see the event. Close /
-        // Resize / Focus are still processed below regardless —
-        // those are App-level signals, not user-typed input.
+        // Funnel the event through the egui overlay first. UI-owned presses,
+        // pointer motion and wheel input do not enter gameplay. Releases still
+        // clear gameplay's held snapshot so a control pressed before UI
+        // capture cannot get stuck. Close / Resize / Focus are always
+        // processed because they are App-level signals.
         let egui_consumed = if let Some(overlay) = self.world.resource_mut::<DebugOverlay>() {
             overlay.on_window_event(&event).consumed
         } else {
@@ -570,6 +615,13 @@ impl ApplicationHandler for App {
                 // The intent is written to Input; sync_cursor mirrors
                 // it onto the live Window after the next schedule.
                 if let Some(input) = self.world.resource_mut::<Input>() {
+                    if !focused {
+                        // A release that happens while another application has
+                        // focus may never be delivered by winit. Drop held
+                        // gameplay levels now so focus regain cannot replay
+                        // stale movement or buttons.
+                        input.release_all();
+                    }
                     input.set_cursor_grabbed(focused);
                     input.set_cursor_visible(!focused);
                 }
@@ -578,12 +630,6 @@ impl ApplicationHandler for App {
                 self.tick();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if egui_consumed {
-                    // egui owns the keystroke (e.g. text-field focus).
-                    // Skip recording it on the gameplay-side Input so
-                    // typing in the overlay can't double-fire WASD.
-                    return;
-                }
                 // Drop OS auto-repeat: `record_key` is idempotent on
                 // repeats anyway, but skipping early avoids touching
                 // the world borrow per autorepeat tick.
@@ -593,17 +639,14 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     let pressed = matches!(event.state, ElementState::Pressed);
                     if let Some(input) = self.world.resource_mut::<Input>() {
-                        input.record_key(code, pressed);
+                        record_routed_key(input, code, pressed, egui_consumed);
                     }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if egui_consumed {
-                    return;
-                }
                 let pressed = matches!(state, ElementState::Pressed);
                 if let Some(input) = self.world.resource_mut::<Input>() {
-                    input.record_mouse_button(button, pressed);
+                    record_routed_mouse_button(input, button, pressed, egui_consumed);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -665,9 +708,19 @@ impl ApplicationHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecs::{Res, ResMut};
 
     #[derive(Debug, PartialEq, Eq)]
     struct RenderSetting(u32);
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct StageLog(Vec<&'static str>);
+
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct ActionSamples {
+        control_runs: u32,
+        saw_edge: bool,
+    }
 
     #[test]
     fn render_default_preserves_preconfigured_resource() {
@@ -696,5 +749,88 @@ mod tests {
             app.world_mut().resource::<PhysicsDiagnostics>(),
             Some(&PhysicsDiagnostics::default())
         );
+    }
+
+    #[test]
+    fn frame_runs_control_once_before_the_entire_fixed_burst() {
+        let mut app = App::new()
+            .insert_resource(StageLog(Vec::new()))
+            .add_system(Stage::Control, |mut log: ResMut<StageLog>| {
+                log.0.push("control")
+            })
+            .add_system(Stage::FixedUpdate, |mut log: ResMut<StageLog>| {
+                log.0.push("fixed")
+            })
+            .add_system(Stage::Update, |mut log: ResMut<StageLog>| {
+                log.0.push("update")
+            })
+            .add_system(Stage::Render, |mut log: ResMut<StageLog>| {
+                log.0.push("render")
+            });
+
+        app.run_frame_stages(3);
+
+        assert_eq!(
+            app.world.resource::<StageLog>().unwrap().0,
+            vec!["control", "fixed", "fixed", "fixed", "update", "render"]
+        );
+    }
+
+    #[test]
+    fn actions_resolve_once_before_control_independent_of_fixed_step_count() {
+        let action_name = "action.test.pre_fixed_resolve";
+        let action = sym(action_name);
+        let mut app = App::new()
+            .bind_key(action_name, KeyCode::Space)
+            .insert_resource(ActionSamples::default())
+            .add_system(
+                Stage::Control,
+                move |actions: Res<Actions>, mut samples: ResMut<ActionSamples>| {
+                    samples.control_runs += 1;
+                    samples.saw_edge = actions.just_pressed(action);
+                },
+            );
+        app.world
+            .resource_mut::<Input>()
+            .unwrap()
+            .record_key(KeyCode::Space, true);
+
+        app.run_frame_stages(3);
+
+        assert_eq!(
+            app.world.resource::<ActionSamples>(),
+            Some(&ActionSamples {
+                control_runs: 1,
+                saw_edge: true,
+            })
+        );
+    }
+
+    #[test]
+    fn ui_consumed_key_press_is_hidden_but_release_clears_held_state() {
+        let mut input = Input::new();
+
+        record_routed_key(&mut input, KeyCode::KeyW, true, true);
+        assert!(!input.is_key_down(KeyCode::KeyW));
+
+        record_routed_key(&mut input, KeyCode::KeyW, true, false);
+        input.end_frame();
+        record_routed_key(&mut input, KeyCode::KeyW, false, true);
+        assert!(!input.is_key_down(KeyCode::KeyW));
+        assert!(input.just_released(KeyCode::KeyW));
+    }
+
+    #[test]
+    fn ui_consumed_mouse_press_is_hidden_but_release_clears_held_state() {
+        let mut input = Input::new();
+
+        record_routed_mouse_button(&mut input, MouseButton::Left, true, true);
+        assert!(!input.is_mouse_button_down(MouseButton::Left));
+
+        record_routed_mouse_button(&mut input, MouseButton::Left, true, false);
+        input.end_frame();
+        record_routed_mouse_button(&mut input, MouseButton::Left, false, true);
+        assert!(!input.is_mouse_button_down(MouseButton::Left));
+        assert!(input.mouse_button_just_released(MouseButton::Left));
     }
 }

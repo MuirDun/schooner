@@ -1,6 +1,10 @@
 # Camera — Architecture Overview
 
-> Status: design fixed for Game 0. First-person controller only; gamepad, action-map binding, smoothing, and grounded physics deferred.
+> **Historical Game 0 snapshot.** The projection/controller split and
+> coordinate conventions remain useful decision history, but the direct
+> `fps_move` free-flight player and deferred-physics timeline are no longer
+> current. See [`player-control.md`](player-control.md) for the physical player,
+> spectator ownership, and pre-fixed look/control pipeline.
 
 ## The idea
 

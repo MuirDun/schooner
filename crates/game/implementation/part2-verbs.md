@@ -488,7 +488,7 @@ information to diagnose subsequent work.
   independence, zero-step latch retention, and one-shot consumption across
   multiple fixed steps.
 
-- [ ] **2.FH.5 — Pre-fixed control sampling and ownership.**
+- [x] **2.FH.5 — Pre-fixed control sampling and ownership.**
 
   The current frame order runs fixed simulation before action resolution, look
   processing, movement capture, mode changes, and spectator handoff. The
@@ -527,6 +527,20 @@ information to diagnose subsequent work.
     independent of actor count.
   - The later Update stage remains available for non-control variable-rate
     gameplay.
+
+  **Implementation note (2026-07-31):** The scheduler now exposes a public
+  once-per-render-frame `Control` stage before the entire fixed-step burst.
+  An engine-only preparation lane resolves named actions and performs spectator
+  ownership handoff first, independent of plugin registration order; commands
+  flush before public control sampling. The playground samples cursor capture,
+  aim, mode, held movement, and the jump latch there in that order, while
+  spectator free-flight and other non-control variable-rate work remain on
+  `Update`. Ownership and cursor-capture transitions discard frame-scoped mouse
+  motion and one-shot action signals without discarding held levels, and loss of
+  window/UI ownership cannot leave gameplay keys or buttons stuck. Regressions
+  cover frame-stage order, zero-step latch retention, one-shot consumption
+  across a multi-step burst, F8-before-sampling handoff, stale aim/edge
+  suppression, inactive-player intent clearing, and UI-consumed input routing.
 
 - [ ] **2.FH.6 — Character smoke test and recorded experiments.**
 

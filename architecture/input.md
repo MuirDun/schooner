@@ -1,6 +1,11 @@
 # Input — Architecture Overview
 
-> Status: design fixed for Game 0. Action layer deferred.
+> **Historical Game 0 snapshot.** This records the original raw-input design
+> and decision history; its claims that named actions and the pre-fixed control
+> boundary are deferred are no longer current. See
+> [`plans/architecture/input.md`](../plans/architecture/input.md) for the
+> current input contract and [`player-control.md`](player-control.md) for the
+> as-built player pipeline.
 
 ## The idea
 

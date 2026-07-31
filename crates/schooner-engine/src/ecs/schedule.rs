@@ -1,13 +1,17 @@
 //! Ordered system execution for the engine stages.
 //!
 //! The engine runs systems in a closed set of stages named by [`Stage`]:
+//! - [`Stage::Control`] — once per render frame, before fixed simulation.
+//!   Samples frame-scoped input into durable control state such as held
+//!   movement and latched one-shot requests.
 //! - [`Stage::FixedUpdate`] — fixed timestep, 0..N times per frame,
 //!   driven by an accumulator in the App loop. This is the pre-physics
 //!   intent stage: deterministic gameplay writes forces and desired poses here.
 //! - [`Stage::PostPhysics`] — fixed timestep, immediately after the engine's
 //!   physics bridge. Deterministic gameplay reads settled poses and contacts here.
-//! - [`Stage::Update`] — variable timestep, once per frame. Input,
-//!   camera, gameplay logic. `delta` scales with real frame time.
+//! - [`Stage::Update`] — variable timestep, once per frame after fixed
+//!   simulation. Non-control camera and gameplay logic lives here;
+//!   `delta` scales with real frame time.
 //! - [`Stage::Render`] — once per frame, after `Update`. Owns the
 //!   forward pass, the egui overlay, and any future post-process
 //!   work. Systems here are expected to read the post-`Update`
@@ -48,6 +52,9 @@ use crate::ecs::world::World;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stage {
     Startup,
+    /// Once-per-render-frame control sampling, after named actions and
+    /// engine-owned control handoffs but before any fixed step.
+    Control,
     /// Fixed-step intent writers. Kept under its original name for source
     /// compatibility; it is the pre-physics half of the fixed schedule.
     FixedUpdate,
@@ -85,13 +92,19 @@ impl SystemStage {
     }
 }
 
-/// Holds the two fixed stages and runs them against a [`World`].
+/// Holds the frame and fixed stages and runs them against a [`World`].
 ///
 /// Add systems once during App setup via
-/// [`Schedule::add_system`]; run them each frame via [`Schedule::run`]
-/// (variable tick) and [`Schedule::run_fixed`] (driven by the
-/// fixed-timestep accumulator).
+/// [`Schedule::add_system`]; run them each frame via
+/// [`Schedule::run_control`] (once before fixed work),
+/// [`Schedule::run_fixed`] (driven by the fixed-timestep accumulator), and
+/// [`Schedule::run`] (the later variable tick).
 pub struct Schedule {
+    /// Engine-only preparation for the public Control stage. Action
+    /// resolution and ownership handoffs live here so their ordering cannot
+    /// depend on where a plugin appears in an application's builder chain.
+    control_prepare: SystemStage,
+    control: SystemStage,
     fixed_update: SystemStage,
     physics: SystemStage,
     post_physics: SystemStage,
@@ -109,6 +122,8 @@ impl Default for Schedule {
 impl Schedule {
     pub fn new() -> Self {
         Self {
+            control_prepare: SystemStage::new(),
+            control: SystemStage::new(),
             fixed_update: SystemStage::new(),
             physics: SystemStage::new(),
             post_physics: SystemStage::new(),
@@ -143,12 +158,38 @@ impl Schedule {
         }
         let boxed: Box<dyn System> = Box::new(system);
         match stage {
+            Stage::Control => self.control.push(boxed),
             Stage::FixedUpdate => self.fixed_update.push(boxed),
             Stage::PostPhysics => self.post_physics.push(boxed),
             Stage::Update => self.update.push(boxed),
             Stage::Render => self.render.push(boxed),
             Stage::Startup => self.startup.push(boxed),
         }
+        self
+    }
+
+    /// Register engine-owned work that must complete before public
+    /// [`Stage::Control`] systems sample their authoritative snapshot.
+    ///
+    /// Kept crate-private: games register ordinary samplers in
+    /// [`Stage::Control`]. The preparation lane exists only for global
+    /// derivation and ownership seams such as named-action resolution and
+    /// spectator handoff.
+    pub(crate) fn add_control_prepare_system<M, S: IntoSystem<M>>(
+        &mut self,
+        world: &mut World,
+        system: S,
+    ) -> &mut Self {
+        let system = system.into_system();
+        let accesses = system.param_access(world);
+        if let Err(err) = check_param_conflicts(&accesses, |c| {
+            world
+                .component_name(c.component_id)
+                .unwrap_or("<unregistered>")
+        }) {
+            panic!("{err}");
+        }
+        self.control_prepare.push(Box::new(system));
         self
     }
 
@@ -171,6 +212,22 @@ impl Schedule {
         }
         self.physics.push(Box::new(system));
         self
+    }
+
+    /// Establish the render frame's authoritative control snapshot.
+    ///
+    /// Engine preparation resolves named actions and performs ownership
+    /// handoffs first. Public [`Stage::Control`] systems then sample cursor
+    /// gating, aim, modes, held intent, and latched one-shots. Commands flush
+    /// between the two lanes and after the stage so the first eligible fixed
+    /// step observes all structural changes. Called exactly once per render
+    /// frame, even when that frame has zero fixed steps.
+    pub fn run_control(&mut self, world: &mut World) {
+        puffin::profile_scope!("control_stage");
+        self.control_prepare.run(world);
+        CommandQueue::apply(world);
+        self.control.run(world);
+        CommandQueue::apply(world);
     }
 
     /// Run every [`Stage::Update`] system in registration order, assigning
@@ -215,6 +272,7 @@ impl Schedule {
 
     pub fn system_count(&self, stage: Stage) -> usize {
         match stage {
+            Stage::Control => self.control.len(),
             Stage::FixedUpdate => self.fixed_update.len(),
             Stage::PostPhysics => self.post_physics.len(),
             Stage::Update => self.update.len(),
@@ -247,6 +305,7 @@ mod tests {
     fn empty_schedule_runs_without_panic() {
         let mut world = World::new();
         let mut sched = Schedule::new();
+        sched.run_control(&mut world);
         sched.run_fixed(&mut world);
         sched.run(&mut world);
         sched.run_render(&mut world);
@@ -258,6 +317,7 @@ mod tests {
         world.insert_resource(CommandQueue::default());
         let before = world.current_tick();
         let mut sched = Schedule::new();
+        sched.run_control(&mut world);
         sched.run_fixed(&mut world);
         sched.run(&mut world);
         sched.run_render(&mut world);
@@ -283,15 +343,101 @@ mod tests {
         let before = world.current_tick();
         let mut sched = Schedule::new();
         sched
+            .add_system(&mut world, Stage::Control, || {})
             .add_system(&mut world, Stage::FixedUpdate, || {})
             .add_system(&mut world, Stage::Update, || {})
             .add_system(&mut world, Stage::Render, || {});
+        sched.run_control(&mut world);
         sched.run_fixed(&mut world);
         sched.run_fixed(&mut world);
         sched.run_fixed(&mut world);
         sched.run(&mut world);
         sched.run_render(&mut world);
-        assert_eq!(world.current_tick(), before + 5);
+        assert_eq!(world.current_tick(), before + 6);
+    }
+
+    #[test]
+    fn control_prepare_always_runs_before_public_control_sampling() {
+        let mut world = World::new();
+        world.insert_resource(Log(Vec::new()));
+        let mut sched = Schedule::new();
+
+        // Public gameplay registration can happen before a later plugin adds
+        // an engine-owned handoff; lane ordering, not builder order, wins.
+        sched.add_system(&mut world, Stage::Control, |mut log: ResMut<Log>| {
+            log.0.push("sample")
+        });
+        sched.add_control_prepare_system(&mut world, |mut log: ResMut<Log>| log.0.push("prepare"));
+
+        sched.run_control(&mut world);
+
+        assert_eq!(
+            world.resource::<Log>().unwrap().0,
+            vec!["prepare", "sample"]
+        );
+    }
+
+    #[derive(Debug, Default, PartialEq)]
+    struct TestControlIntent {
+        held: bool,
+        one_shot: bool,
+        held_steps: u32,
+        one_shot_consumptions: u32,
+    }
+
+    #[test]
+    fn zero_step_latch_survives_and_multi_step_burst_consumes_it_once() {
+        let mut world = World::new();
+        world.insert_resource(TestControlIntent::default());
+        let mut sched = Schedule::new();
+        sched.add_system(
+            &mut world,
+            Stage::Control,
+            |mut intent: ResMut<TestControlIntent>| {
+                intent.held = true;
+                intent.one_shot = true;
+            },
+        );
+        sched.add_system(
+            &mut world,
+            Stage::FixedUpdate,
+            |mut intent: ResMut<TestControlIntent>| {
+                if intent.held {
+                    intent.held_steps += 1;
+                }
+                if intent.one_shot {
+                    intent.one_shot = false;
+                    intent.one_shot_consumptions += 1;
+                }
+            },
+        );
+
+        // The render frame sampled control but happened to owe no fixed step.
+        sched.run_control(&mut world);
+        assert_eq!(
+            world.resource::<TestControlIntent>(),
+            Some(&TestControlIntent {
+                held: true,
+                one_shot: true,
+                held_steps: 0,
+                one_shot_consumptions: 0,
+            })
+        );
+
+        // The next fixed burst sees the retained request in its first step,
+        // consumes it once, and continues applying the held level.
+        sched.run_fixed(&mut world);
+        sched.run_fixed(&mut world);
+        sched.run_fixed(&mut world);
+        assert_eq!(
+            world.resource::<TestControlIntent>(),
+            Some(&TestControlIntent {
+                held: true,
+                one_shot: false,
+                held_steps: 3,
+                one_shot_consumptions: 1,
+            })
+        );
     }
 
     #[test]
@@ -349,9 +495,11 @@ mod tests {
         let mut world = World::new();
         let mut sched = Schedule::new();
         sched
+            .add_system(&mut world, Stage::Control, || {})
             .add_system(&mut world, Stage::Update, || {})
             .add_system(&mut world, Stage::Update, || {})
             .add_system(&mut world, Stage::FixedUpdate, || {});
+        assert_eq!(sched.system_count(Stage::Control), 1);
         assert_eq!(sched.system_count(Stage::Update), 2);
         assert_eq!(sched.system_count(Stage::FixedUpdate), 1);
     }
@@ -836,6 +984,7 @@ mod tests {
         // on Stage). Keeps the closed-set invariant honest.
         fn _exhaustive(s: Stage) -> &'static str {
             match s {
+                Stage::Control => "control",
                 Stage::FixedUpdate => "fixed",
                 Stage::PostPhysics => "post_physics",
                 Stage::Update => "update",
@@ -843,6 +992,7 @@ mod tests {
                 Stage::Startup => "startup",
             }
         }
+        assert_eq!(_exhaustive(Stage::Control), "control");
         assert_eq!(_exhaustive(Stage::FixedUpdate), "fixed");
         assert_eq!(_exhaustive(Stage::PostPhysics), "post_physics");
         assert_eq!(_exhaustive(Stage::Update), "update");

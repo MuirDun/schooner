@@ -7,11 +7,14 @@
 //! `FixedUpdate` step counts is a private field — systems do not see
 //! it, the app loop does.
 //!
-//! ## Two stages, one [`Time`]
+//! ## Two clocks, one [`Time`]
 //!
+//! - [`Stage::Control`](crate::ecs::Stage::Control) runs once per render
+//!   frame before fixed simulation and samples frame-scoped input into
+//!   durable intent.
 //! - [`Stage::Update`](crate::ecs::Stage::Update) runs once per frame
-//!   at real frame rate. Its `delta_secs` is the wall-clock time
-//!   since the last frame.
+//!   after fixed simulation at real frame rate. Its `delta_secs` is the
+//!   wall-clock time since the last frame.
 //! - [`Stage::FixedUpdate`](crate::ecs::Stage::FixedUpdate) runs
 //!   0..N times per frame at `fixed_delta` (1/60 by default).
 //!   The accumulator banks unspent real time and pays it out in
@@ -94,9 +97,9 @@ impl Time {
     /// number of `FixedUpdate` steps the app should run this frame.
     ///
     /// Updates `delta_secs`, `elapsed_secs`, and
-    /// `interpolation_alpha`. The `Update` stage runs exactly once
-    /// per frame regardless of the returned count — only the
-    /// fixed-step loop is accumulator-driven.
+    /// `interpolation_alpha`. The `Control` and `Update` stages each run
+    /// exactly once per frame regardless of the returned count — only
+    /// the fixed-step loop is accumulator-driven.
     ///
     /// Negative or non-finite `real_delta` is clamped to zero;
     /// monotonic clocks should never go backwards but the OS
