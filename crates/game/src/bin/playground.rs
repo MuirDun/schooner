@@ -6,10 +6,10 @@ use game::scene::{self, PendingTransition, Player, SceneId};
 use glam::{Quat, Vec3};
 #[cfg(feature = "dev-tools")]
 use schooner_engine::EngineDebugPlugins;
-use schooner_engine::ecs::{Commands, Events, Query, Res, ResMut, exclusive};
+use schooner_engine::ecs::{Commands, Events, Query, Res, ResMut, WriteOnly, exclusive};
 use schooner_engine::{
     Actions, ActiveCamera, App, AppError, Camera, CharacterController, CharacterControllerState,
-    Collider, EntityId, FpsController, Input, KeyCode, LogConfig, MouseButton, PhysicsCommands,
+    CharacterIntent, Collider, EntityId, FpsController, Input, KeyCode, LogConfig, MouseButton,
     RigidBody, Stage, Symbol, Transform, Trigger, WindowConfig, World, fps_cursor_toggle, fps_look,
     logging, sym,
 };
@@ -231,23 +231,6 @@ impl Acts {
 #[derive(Default)]
 struct CubeStack(Vec<EntityId>);
 
-#[derive(Debug, Default)]
-struct PlayerMovementIntent {
-    forward: f32,
-    right: f32,
-    jump_requested: bool,
-}
-
-impl PlayerMovementIntent {
-    fn request_jump(&mut self) {
-        self.jump_requested = true;
-    }
-
-    fn take_jump(&mut self) -> bool {
-        std::mem::take(&mut self.jump_requested)
-    }
-}
-
 #[derive(Debug)]
 struct PlayerBody(EntityId);
 
@@ -267,46 +250,31 @@ fn capture_player_movement(
     actions: Res<Actions>,
     acts: Res<Acts>,
     input: Res<Input>,
-    active_player_camera: Query<(&ActiveCamera, &PlayerCamera)>,
-    mut intent: ResMut<PlayerMovementIntent>,
+    active_player_camera: Query<(&FpsController, &ActiveCamera, &PlayerCamera)>,
+    player_intent: Query<(WriteOnly<CharacterIntent>, &Player)>,
 ) {
-    if !input.cursor_grabbed() || active_player_camera.into_iter().next().is_none() {
-        intent.forward = 0.0;
-        intent.right = 0.0;
-        intent.jump_requested = false;
-        return;
-    }
-
-    intent.forward = actions.axis(acts.move_back, acts.move_forward);
-    intent.right = actions.axis(acts.move_left, acts.move_right);
-    if actions.just_pressed(acts.jump) {
-        intent.request_jump();
-    }
-}
-
-fn submit_player_movement(
-    mut intent: ResMut<PlayerMovementIntent>,
-    player: Res<PlayerBody>,
-    cameras: Query<(&FpsController, &ActiveCamera, &PlayerCamera)>,
-    mut physics: ResMut<PhysicsCommands>,
-) {
-    let Some((controller, _, _)) = cameras.into_iter().next() else {
-        intent.forward = 0.0;
-        intent.right = 0.0;
-        intent.jump_requested = false;
+    let Some((mut intent, _)) = player_intent.into_iter().next() else {
         return;
     };
+    let Some((controller, _, _)) = active_player_camera.into_iter().next() else {
+        intent.clear();
+        return;
+    };
+    if !input.cursor_grabbed() {
+        intent.clear();
+        return;
+    }
 
     let velocity = walk_velocity(
         controller.yaw,
-        intent.forward,
-        intent.right,
+        actions.axis(acts.move_back, acts.move_forward),
+        actions.axis(acts.move_left, acts.move_right),
         controller.move_speed,
     );
-    if intent.take_jump() {
-        physics.jump_character(player.0, PLAYER_JUMP_SPEED);
+    intent.set_horizontal_velocity(velocity);
+    if actions.just_pressed(acts.jump) {
+        intent.request_jump(PLAYER_JUMP_SPEED);
     }
-    physics.move_character(player.0, velocity);
 }
 
 fn sync_player_camera(world: &mut World) {
@@ -348,7 +316,6 @@ fn main() -> anyhow::Result<(), AppError> {
         .insert_resource(PendingTransition::default())
         .insert_resource(EditModeResource(EditMode::Add))
         .insert_resource(CubeStack::default())
-        .insert_resource(PlayerMovementIntent::default())
         // Layer 2 action bindings (Part 2.B.4). The verbs/controller
         // consume these in 2.F/2.G; 2.B.5 smoke-tests the pipeline.
         .insert_resource(Acts::new())
@@ -371,7 +338,6 @@ fn main() -> anyhow::Result<(), AppError> {
         .add_system(Stage::Update, fps_cursor_toggle)
         .add_system(Stage::Update, fps_look)
         .add_system(Stage::Update, capture_player_movement)
-        .add_system(Stage::FixedUpdate, submit_player_movement)
         .add_system(Stage::PostPhysics, exclusive(sync_player_camera))
         .add_system(Stage::Update, exclusive(scene::run_transition))
         .add_system(Stage::Update, mode_select)
@@ -414,6 +380,7 @@ fn spawn_player(world: &mut World) {
     );
     world.insert(body, CharacterController::default());
     world.insert(body, CharacterControllerState::default());
+    world.insert(body, CharacterIntent::default());
     world.insert(body, Player);
     world.insert_resource(PlayerBody(body));
 
@@ -451,15 +418,6 @@ mod tests {
         let velocity = walk_velocity(std::f32::consts::FRAC_PI_2, 1.0, 0.0, 5.0);
 
         assert!(velocity.abs_diff_eq(Vec3::NEG_X * 5.0, 1e-5));
-    }
-
-    #[test]
-    fn jump_intent_persists_until_consumed_once() {
-        let mut intent = PlayerMovementIntent::default();
-
-        intent.request_jump();
-        assert!(intent.take_jump());
-        assert!(!intent.take_jump());
     }
 
     #[test]
@@ -509,29 +467,29 @@ mod tests {
     }
 
     #[test]
-    fn fixed_player_movement_is_suppressed_without_active_player_camera() {
+    fn movement_capture_clears_intent_without_active_player_camera() {
         let mut world = World::new();
         let body = world.spawn();
-        world.insert_resource(PlayerBody(body));
-        world.insert_resource(PlayerMovementIntent {
-            forward: 1.0,
-            right: 1.0,
-            jump_requested: true,
-        });
-        world.insert_resource(PhysicsCommands::new());
+        let mut intent = CharacterIntent::default();
+        intent.set_horizontal_velocity(Vec3::new(3.0, 0.0, 4.0));
+        intent.request_jump(PLAYER_JUMP_SPEED);
+        world.insert(body, intent);
+        world.insert(body, Player);
+        world.insert_resource(Actions::default());
+        world.insert_resource(Acts::new());
+        world.insert_resource(Input::default());
 
         let spectator = world.spawn();
         world.insert(spectator, FpsController::default());
         world.insert(spectator, ActiveCamera);
 
         let mut schedule = schooner_engine::Schedule::new();
-        schedule.add_system(&mut world, Stage::FixedUpdate, submit_player_movement);
-        schedule.run_fixed(&mut world);
+        schedule.add_system(&mut world, Stage::Update, capture_player_movement);
+        schedule.run(&mut world);
 
-        let intent = world.resource::<PlayerMovementIntent>().unwrap();
-        assert_eq!(intent.forward, 0.0);
-        assert_eq!(intent.right, 0.0);
-        assert!(!intent.jump_requested);
-        assert!(world.resource::<PhysicsCommands>().unwrap().is_empty());
+        assert_eq!(
+            world.get::<CharacterIntent>(body),
+            Some(&CharacterIntent::default())
+        );
     }
 }

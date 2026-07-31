@@ -361,6 +361,7 @@ impl PhysicsWorld {
         rapier_collider.set_restitution(collider.material.restitution);
         rapier_collider.set_sensor(collider.sensor);
         rapier_collider.set_active_events(active_events(collider, contact_events));
+        rapier_collider.set_active_collision_types(active_collision_types(collider));
         if let Some(events) = contact_events {
             rapier_collider.set_contact_force_event_threshold(events.force_threshold);
         }
@@ -424,9 +425,11 @@ impl PhysicsWorld {
 
     /// Resolve one fixed step of character movement against the hosted world.
     ///
-    /// The query excludes the character's own collider. Horizontal velocity
-    /// comes from gameplay; gravity and ground detection remain physics
-    /// outcomes so downstream rules do not infer them independently.
+    /// The query excludes the character's own collider and sensors. Sensors
+    /// still participate in the subsequent Rapier step, where they report
+    /// overlaps without changing the KCC's resolved movement. Horizontal
+    /// velocity comes from gameplay; gravity and ground detection remain
+    /// physics outcomes so downstream rules do not infer them independently.
     pub(crate) fn move_character(
         &mut self,
         entity: EntityId,
@@ -460,7 +463,9 @@ impl PhysicsWorld {
                 self.narrow_phase.query_dispatcher(),
                 &self.bodies,
                 &self.colliders,
-                QueryFilter::default().exclude_rigid_body(handles.body),
+                QueryFilter::default()
+                    .exclude_rigid_body(handles.body)
+                    .exclude_sensors(),
             );
             let controller = rapier_character_controller(controller);
             controller.move_shape(
@@ -713,7 +718,8 @@ fn collider_builder(collider: Collider, contact_events: Option<ContactEvents>) -
         .friction(collider.material.friction)
         .restitution(collider.material.restitution)
         .sensor(collider.sensor)
-        .active_events(active_events(collider, contact_events));
+        .active_events(active_events(collider, contact_events))
+        .active_collision_types(active_collision_types(collider));
     match contact_events {
         Some(events) => builder.contact_force_event_threshold(events.force_threshold),
         None => builder,
@@ -735,6 +741,15 @@ fn active_events(collider: Collider, contact_events: Option<ContactEvents>) -> A
         ActiveEvents::CONTACT_FORCE_EVENTS
     } else {
         ActiveEvents::empty()
+    }
+}
+
+fn active_collision_types(collider: Collider) -> ActiveCollisionTypes {
+    let default = ActiveCollisionTypes::default();
+    if collider.sensor {
+        default | ActiveCollisionTypes::KINEMATIC_FIXED | ActiveCollisionTypes::KINEMATIC_KINEMATIC
+    } else {
+        default
     }
 }
 

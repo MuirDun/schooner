@@ -417,7 +417,7 @@ information to diagnose subsequent work.
   independent consumers, run-condition transitions, fixed-step stride,
   tick-zero physics authoring, strict explicit cursors, and overflow refusal.
 
-- [ ] **2.FH.3 — Sensor-transparent character movement.**
+- [x] **2.FH.3 — Sensor-transparent character movement.**
 
   The KCC movement query currently includes sensors, causing trigger volumes to
   behave as invisible walls.
@@ -432,7 +432,15 @@ information to diagnose subsequent work.
   - A sensor placed directly across a corridor is traversable at normal walking
     speed.
 
-- [ ] **2.FH.4 — One character integration per entity per fixed step.**
+  **Implementation note (2026-07-31):** The hosted KCC scene query now excludes
+  both the character's own body and sensor colliders, while the normal Rapier
+  step retains those sensors for overlap reporting. Sensor colliders enable the
+  otherwise-disabled kinematic–fixed and kinematic–kinematic overlap pairs
+  without enabling fixed–fixed work. Bridge regressions cover static and dynamic
+  obstruction, unchanged movement through nested sensors, normal-speed corridor
+  traversal, and exactly one correctly mapped trigger enter and exit.
+
+- [x] **2.FH.4 — One character integration per entity per fixed step.**
 
   `MoveCharacter` is currently an order-sensitive discrete command. Each
   occurrence performs a full KCC integration, including gravity. Two commands
@@ -466,6 +474,19 @@ information to diagnose subsequent work.
   - A latched jump survives a render frame with no fixed step.
   - A jump is not repeated across several fixed steps.
   - Grounding continues while controls are inactive.
+
+  **Implementation note (2026-07-31):** `CharacterIntent` is now persistent
+  per-entity ECS state with one held horizontal velocity and one latched jump
+  request; repeated writes replace that state instead of queuing integrations.
+  `PhysicsCommands` retains teleports only. On every fixed step the bridge
+  processes discrete commands, then visits the controller set once, treating a
+  missing or cleared intent as zero input and consuming a jump only after an
+  actual KCC integration. The playground writes the component during
+  variable-rate control capture and no longer submits movement commands from
+  `FixedUpdate`. Diagnostics and regressions cover controller-count scaling,
+  zero-input gravity and landing, last-write-wins movement, jump/movement order
+  independence, zero-step latch retention, and one-shot consumption across
+  multiple fixed steps.
 
 - [ ] **2.FH.5 — Pre-fixed control sampling and ownership.**
 

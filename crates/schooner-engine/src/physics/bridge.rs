@@ -11,8 +11,8 @@
 
 use crate::ecs::{EntityId, Events, World};
 use crate::physics::{
-    CharacterController, CharacterControllerState, CharacterMovement, Collider, Contact,
-    ContactEvents, PhysicsCharacterWorkload, PhysicsCommand, PhysicsCommandWorkload,
+    CharacterController, CharacterControllerState, CharacterIntent, CharacterMovement, Collider,
+    Contact, ContactEvents, PhysicsCharacterWorkload, PhysicsCommand, PhysicsCommandWorkload,
     PhysicsCommands, PhysicsDiagnostics, PhysicsEventWorkload, PhysicsLifecycleWorkload,
     PhysicsSolveWorkload, PhysicsStepOutput, PhysicsTransformSyncWorkload, PhysicsWorld,
     PhysicsWritebackWorkload, RigidBody, TriggerEnter, TriggerExit,
@@ -46,7 +46,8 @@ pub(crate) fn physics_bridge(world: &mut World) {
     let sync_tick = world.current_tick();
     physics_reconcile_lifecycle(world);
     let transform_sync = sync_changed_transforms(world, transform_since, sync_tick);
-    let (commands, characters) = apply_physics_commands(world, dt);
+    let commands = apply_physics_commands(world);
+    let characters = integrate_characters(world, dt);
 
     let Some(physics) = world.resource_mut::<PhysicsWorld>() else {
         return;
@@ -317,25 +318,18 @@ fn sync_changed_transforms(
     workload
 }
 
-fn apply_physics_commands(
-    world: &mut World,
-    dt: f32,
-) -> (PhysicsCommandWorkload, PhysicsCharacterWorkload) {
+fn apply_physics_commands(world: &mut World) -> PhysicsCommandWorkload {
     puffin::profile_scope!("physics.command_processing");
 
     let mut command_workload = PhysicsCommandWorkload::default();
-    let mut character_workload = PhysicsCharacterWorkload::default();
     if !world.contains_resource::<PhysicsWorld>() {
-        return (command_workload, character_workload);
+        return command_workload;
     }
     let commands: Vec<PhysicsCommand> = match world.resource_mut::<PhysicsCommands>() {
         Some(commands) => commands.drain().collect(),
-        None => return (command_workload, character_workload),
+        None => return command_workload,
     };
     command_workload.total = count(commands.len());
-    if commands.is_empty() {
-        return (command_workload, character_workload);
-    }
 
     for command in commands {
         match command {
@@ -352,48 +346,69 @@ fn apply_physics_commands(
                     apply_teleport_pose(world, entity, transform);
                 }
             }
-            PhysicsCommand::MoveCharacter {
-                entity,
-                horizontal_velocity,
-            } => {
-                puffin::profile_scope!("physics.character_integration");
-                command_workload.character_moves =
-                    command_workload.character_moves.saturating_add(1);
-                let Some(controller) = world.get::<CharacterController>(entity).copied() else {
-                    continue;
-                };
-                let Some(state) = world.get::<CharacterControllerState>(entity).copied() else {
-                    continue;
-                };
-                let movement = world.resource_mut::<PhysicsWorld>().and_then(|physics| {
-                    physics.move_character(entity, controller, state, horizontal_velocity, dt)
-                });
-                if let Some(movement) = movement {
-                    character_workload.integrations =
-                        character_workload.integrations.saturating_add(1);
-                    character_workload.kcc_queries =
-                        character_workload.kcc_queries.saturating_add(1);
-                    apply_character_movement(world, movement);
-                }
-            }
-            PhysicsCommand::JumpCharacter {
-                entity,
-                launch_speed,
-            } => {
-                command_workload.character_jumps =
-                    command_workload.character_jumps.saturating_add(1);
-                let Some(mut state) = world.get_mut::<CharacterControllerState>(entity) else {
-                    continue;
-                };
-                if state.grounded {
-                    state.grounded = false;
-                    state.vertical_velocity = launch_speed;
-                }
-            }
         }
     }
 
-    (command_workload, character_workload)
+    command_workload
+}
+
+fn integrate_characters(world: &mut World, dt: f32) -> PhysicsCharacterWorkload {
+    puffin::profile_scope!("physics.character_integration");
+
+    let mut workload = PhysicsCharacterWorkload::default();
+    if !world.contains_resource::<PhysicsWorld>() {
+        return workload;
+    }
+
+    let controllers: Vec<(EntityId, CharacterController)> = world
+        .iter::<CharacterController>()
+        .map(|(entity, controller)| (entity, *controller))
+        .collect();
+    workload.controllers = count(controllers.len());
+
+    for (entity, controller) in controllers {
+        let Some(mut state) = world.get::<CharacterControllerState>(entity).copied() else {
+            continue;
+        };
+        let intent = world
+            .get::<CharacterIntent>(entity)
+            .copied()
+            .unwrap_or_default();
+        let jump_speed = intent.pending_jump_speed();
+        if jump_speed.is_some() {
+            workload.jump_requests = workload.jump_requests.saturating_add(1);
+        }
+
+        let mut jump_applied = false;
+        if let Some(launch_speed) = jump_speed
+            && state.grounded
+        {
+            state.grounded = false;
+            state.vertical_velocity = launch_speed;
+            jump_applied = true;
+        }
+
+        let movement = world.resource_mut::<PhysicsWorld>().and_then(|physics| {
+            physics.move_character(entity, controller, state, intent.horizontal_velocity(), dt)
+        });
+        let Some(movement) = movement else {
+            continue;
+        };
+
+        workload.integrations = workload.integrations.saturating_add(1);
+        workload.kcc_queries = workload.kcc_queries.saturating_add(1);
+        if jump_applied {
+            workload.jumps_applied = workload.jumps_applied.saturating_add(1);
+        }
+        if jump_speed.is_some()
+            && let Some(mut intent) = world.get_mut::<CharacterIntent>(entity)
+        {
+            intent.consume_jump();
+        }
+        apply_character_movement(world, movement);
+    }
+
+    workload
 }
 
 fn apply_teleport_pose(world: &mut World, entity: EntityId, transform: Transform) {
@@ -612,28 +627,61 @@ mod tests {
     }
 
     #[test]
-    fn character_move_applies_gravity_while_airborne() {
+    fn zero_input_character_integrates_gravity_once() {
         let mut world = physics_world();
         let character = spawn_character(&mut world, Vec3::new(0.0, 2.0, 0.0));
-        physics_bridge(&mut world);
 
-        world.increment_tick();
-        world
-            .resource_mut::<PhysicsCommands>()
-            .unwrap()
-            .move_character(character, Vec3::ZERO);
         physics_bridge(&mut world);
 
         let transform = world.get::<Transform>(character).unwrap();
         let state = world.get::<CharacterControllerState>(character).unwrap();
         assert!(transform.translation.y < 2.0);
         assert!(!state.grounded);
-        assert!(state.vertical_velocity < 0.0);
+        let expected_velocity = -9.81 * world.resource::<Time>().unwrap().fixed_delta;
+        assert!((state.vertical_velocity - expected_velocity).abs() < 1.0e-6);
         let diagnostics = world.resource::<PhysicsDiagnostics>().unwrap();
-        assert_eq!(diagnostics.commands.total, 1);
-        assert_eq!(diagnostics.commands.character_moves, 1);
+        assert_eq!(diagnostics.commands.total, 0);
+        assert_eq!(diagnostics.characters.controllers, 1);
         assert_eq!(diagnostics.characters.integrations, 1);
         assert_eq!(diagnostics.characters.kcc_queries, 1);
+    }
+
+    #[test]
+    fn repeated_intent_writes_do_not_multiply_character_integrations() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 0.9, 0.0));
+        world.resource_mut::<PhysicsWorld>().unwrap().gravity = vector![0.0, 0.0, 0.0].into();
+
+        set_character_velocity(&mut world, character, Vec3::X);
+        set_character_velocity(&mut world, character, Vec3::X * 5.0);
+        set_character_velocity(&mut world, character, Vec3::X * 3.0);
+        physics_bridge(&mut world);
+
+        let dt = world.resource::<Time>().unwrap().fixed_delta;
+        let x = world.get::<Transform>(character).unwrap().translation.x;
+        assert!((x - 3.0 * dt).abs() < 1.0e-6);
+        let diagnostics = world.resource::<PhysicsDiagnostics>().unwrap();
+        assert_eq!(diagnostics.commands.total, 0);
+        assert_eq!(diagnostics.characters.controllers, 1);
+        assert_eq!(diagnostics.characters.integrations, 1);
+        assert_eq!(diagnostics.characters.kcc_queries, 1);
+    }
+
+    #[test]
+    fn character_workload_scales_with_controller_count() {
+        let mut world = physics_world();
+        let first = spawn_character(&mut world, Vec3::new(0.0, 0.9, -1.0));
+        let second = spawn_character(&mut world, Vec3::new(0.0, 0.9, 1.0));
+        world.resource_mut::<PhysicsWorld>().unwrap().gravity = vector![0.0, 0.0, 0.0].into();
+        set_character_velocity(&mut world, first, Vec3::X);
+        set_character_velocity(&mut world, second, Vec3::X * 2.0);
+
+        physics_bridge(&mut world);
+
+        let diagnostics = world.resource::<PhysicsDiagnostics>().unwrap();
+        assert_eq!(diagnostics.characters.controllers, 2);
+        assert_eq!(diagnostics.characters.integrations, 2);
+        assert_eq!(diagnostics.characters.kcc_queries, 2);
     }
 
     #[test]
@@ -693,15 +741,111 @@ mod tests {
         world.resource_mut::<PhysicsWorld>().unwrap().gravity = vector![0.0, 0.0, 0.0].into();
 
         world.increment_tick();
-        world
-            .resource_mut::<PhysicsCommands>()
-            .unwrap()
-            .move_character(character, Vec3::new(120.0, 0.0, 0.0));
+        set_character_velocity(&mut world, character, Vec3::new(120.0, 0.0, 0.0));
         physics_bridge(&mut world);
 
         let x = world.get::<Transform>(character).unwrap().translation.x;
         assert!(x > 0.1, "self-collision prevented movement: x={x}");
         assert!(x < 0.8, "character crossed the wall: x={x}");
+    }
+
+    #[test]
+    fn character_move_stops_at_a_dynamic_solid() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 0.9, 0.0));
+        spawn_dynamic_box(
+            &mut world,
+            Vec3::new(1.1, 0.9, 0.0),
+            Vec3::new(0.1, 2.0, 2.0),
+        );
+        world.resource_mut::<PhysicsWorld>().unwrap().gravity = vector![0.0, 0.0, 0.0].into();
+        physics_bridge(&mut world);
+
+        world.increment_tick();
+        set_character_velocity(&mut world, character, Vec3::new(120.0, 0.0, 0.0));
+        physics_bridge(&mut world);
+
+        let x = world.get::<Transform>(character).unwrap().translation.x;
+        assert!(x < 0.8, "character crossed the dynamic solid: x={x}");
+    }
+
+    #[test]
+    fn nested_sensors_do_not_change_resolved_character_movement() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 0.9, 0.0));
+        spawn_static_sensor(
+            &mut world,
+            Vec3::new(1.0, 0.9, 0.0),
+            Vec3::new(0.4, 1.0, 1.0),
+        );
+        spawn_static_sensor(
+            &mut world,
+            Vec3::new(1.0, 0.9, 0.0),
+            Vec3::new(0.2, 0.8, 0.8),
+        );
+        world.resource_mut::<PhysicsWorld>().unwrap().gravity = vector![0.0, 0.0, 0.0].into();
+        physics_bridge(&mut world);
+
+        world.increment_tick();
+        set_character_velocity(&mut world, character, Vec3::new(120.0, 0.0, 0.0));
+        physics_bridge(&mut world);
+
+        let x = world.get::<Transform>(character).unwrap().translation.x;
+        assert!(
+            (x - 2.0).abs() < 1.0e-4,
+            "nested sensors altered the requested movement: x={x}"
+        );
+    }
+
+    #[test]
+    fn character_traverses_corridor_sensor_and_reports_enter_and_exit() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 0.9, 0.0));
+        let sensor = spawn_static_sensor(
+            &mut world,
+            Vec3::new(1.25, 0.9, 0.0),
+            Vec3::new(0.15, 1.0, 0.9),
+        );
+        spawn_static_box(
+            &mut world,
+            Vec3::new(1.75, 0.9, -1.0),
+            Vec3::new(1.75, 1.0, 0.1),
+        );
+        spawn_static_box(
+            &mut world,
+            Vec3::new(1.75, 0.9, 1.0),
+            Vec3::new(1.75, 1.0, 0.1),
+        );
+        world.resource_mut::<PhysicsWorld>().unwrap().gravity = vector![0.0, 0.0, 0.0].into();
+        physics_bridge(&mut world);
+
+        set_character_velocity(&mut world, character, Vec3::new(3.0, 0.0, 0.0));
+        for _ in 0..70 {
+            world.increment_tick();
+            physics_bridge(&mut world);
+        }
+
+        let x = world.get::<Transform>(character).unwrap().translation.x;
+        assert!(x > 3.4, "sensor blocked normal walking movement: x={x}");
+
+        let enters: Vec<TriggerEnter> = world
+            .resource::<Events<TriggerEnter>>()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect();
+        let exits: Vec<TriggerExit> = world
+            .resource::<Events<TriggerExit>>()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(enters.len(), 1);
+        assert_eq!(enters[0].sensor, sensor);
+        assert_eq!(enters[0].other, character);
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0].sensor, sensor);
+        assert_eq!(exits[0].other, character);
     }
 
     #[test]
@@ -714,12 +858,6 @@ mod tests {
             Vec3::new(5.0, 0.1, 5.0),
         );
         physics_bridge(&mut world);
-
-        world.increment_tick();
-        world
-            .resource_mut::<PhysicsCommands>()
-            .unwrap()
-            .move_character(character, Vec3::ZERO);
         physics_bridge(&mut world);
 
         let state = world.get::<CharacterControllerState>(character).unwrap();
@@ -737,12 +875,6 @@ mod tests {
             Vec3::new(5.0, 0.1, 5.0),
         );
         physics_bridge(&mut world);
-
-        world.increment_tick();
-        world
-            .resource_mut::<PhysicsCommands>()
-            .unwrap()
-            .move_character(character, Vec3::ZERO);
         physics_bridge(&mut world);
         assert!(
             world
@@ -753,28 +885,159 @@ mod tests {
         let grounded_y = world.get::<Transform>(character).unwrap().translation.y;
 
         world.increment_tick();
-        {
-            let commands = world.resource_mut::<PhysicsCommands>().unwrap();
-            commands.jump_character(character, 5.0);
-            commands.move_character(character, Vec3::ZERO);
-        }
+        request_character_jump(&mut world, character, 5.0);
         physics_bridge(&mut world);
 
         let launched = *world.get::<CharacterControllerState>(character).unwrap();
         assert!(!launched.grounded);
         assert!(launched.vertical_velocity > 0.0);
         assert!(world.get::<Transform>(character).unwrap().translation.y > grounded_y);
+        assert!(
+            !world
+                .get::<CharacterIntent>(character)
+                .unwrap()
+                .jump_requested()
+        );
 
         world.increment_tick();
-        world
-            .resource_mut::<PhysicsCommands>()
-            .unwrap()
-            .move_character(character, Vec3::ZERO);
         physics_bridge(&mut world);
 
         let continued = world.get::<CharacterControllerState>(character).unwrap();
         assert!(continued.vertical_velocity < launched.vertical_velocity);
         assert!(continued.vertical_velocity > 0.0);
+        let first_continuation_velocity = continued.vertical_velocity;
+
+        world.increment_tick();
+        physics_bridge(&mut world);
+
+        let continued_again = world.get::<CharacterControllerState>(character).unwrap();
+        assert!(continued_again.vertical_velocity < first_continuation_velocity);
+        assert!(continued_again.vertical_velocity > 0.0);
+    }
+
+    #[test]
+    fn jump_and_movement_writes_are_order_independent() {
+        let mut jump_first = physics_world();
+        let jump_first_character = spawn_character(&mut jump_first, Vec3::new(0.0, 0.9, 0.0));
+        spawn_static_box(
+            &mut jump_first,
+            Vec3::new(0.0, -0.1, 0.0),
+            Vec3::new(5.0, 0.1, 5.0),
+        );
+        physics_bridge(&mut jump_first);
+        physics_bridge(&mut jump_first);
+
+        let mut movement_first = physics_world();
+        let movement_first_character =
+            spawn_character(&mut movement_first, Vec3::new(0.0, 0.9, 0.0));
+        spawn_static_box(
+            &mut movement_first,
+            Vec3::new(0.0, -0.1, 0.0),
+            Vec3::new(5.0, 0.1, 5.0),
+        );
+        physics_bridge(&mut movement_first);
+        physics_bridge(&mut movement_first);
+
+        request_character_jump(&mut jump_first, jump_first_character, 5.0);
+        set_character_velocity(
+            &mut jump_first,
+            jump_first_character,
+            Vec3::new(3.0, 0.0, 0.0),
+        );
+        set_character_velocity(
+            &mut movement_first,
+            movement_first_character,
+            Vec3::new(3.0, 0.0, 0.0),
+        );
+        request_character_jump(&mut movement_first, movement_first_character, 5.0);
+
+        physics_bridge(&mut jump_first);
+        physics_bridge(&mut movement_first);
+
+        let jump_first_transform = jump_first.get::<Transform>(jump_first_character).unwrap();
+        let movement_first_transform = movement_first
+            .get::<Transform>(movement_first_character)
+            .unwrap();
+        assert!(
+            jump_first_transform
+                .translation
+                .abs_diff_eq(movement_first_transform.translation, 1.0e-6)
+        );
+        assert_eq!(
+            jump_first.get::<CharacterControllerState>(jump_first_character),
+            movement_first.get::<CharacterControllerState>(movement_first_character)
+        );
+    }
+
+    #[test]
+    fn jump_latch_survives_a_frame_without_fixed_simulation() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 0.9, 0.0));
+        spawn_static_box(
+            &mut world,
+            Vec3::new(0.0, -0.1, 0.0),
+            Vec3::new(5.0, 0.1, 5.0),
+        );
+        physics_bridge(&mut world);
+        physics_bridge(&mut world);
+        request_character_jump(&mut world, character, 5.0);
+
+        let fixed_steps = world.resource_mut::<Time>().unwrap().advance(0.0);
+        assert_eq!(fixed_steps, 0);
+        physics_reconcile_lifecycle(&mut world);
+
+        assert!(
+            world
+                .get::<CharacterIntent>(character)
+                .unwrap()
+                .jump_requested()
+        );
+        physics_bridge(&mut world);
+        assert!(
+            world
+                .get::<CharacterControllerState>(character)
+                .unwrap()
+                .vertical_velocity
+                > 0.0
+        );
+        assert!(
+            !world
+                .get::<CharacterIntent>(character)
+                .unwrap()
+                .jump_requested()
+        );
+    }
+
+    #[test]
+    fn controller_without_control_intent_continues_falling_and_lands() {
+        let mut world = physics_world();
+        let character = spawn_character(&mut world, Vec3::new(0.0, 2.0, 0.0));
+        spawn_static_box(
+            &mut world,
+            Vec3::new(0.0, -0.1, 0.0),
+            Vec3::new(5.0, 0.1, 5.0),
+        );
+        world.remove::<CharacterIntent>(character);
+
+        for _ in 0..90 {
+            world.increment_tick();
+            physics_bridge(&mut world);
+        }
+
+        let transform = world.get::<Transform>(character).unwrap();
+        let state = world.get::<CharacterControllerState>(character).unwrap();
+        assert!(state.grounded);
+        assert_eq!(state.vertical_velocity, 0.0);
+        assert!(transform.translation.x.abs() < 1.0e-6);
+        assert!((transform.translation.y - 0.9).abs() < 0.02);
+        assert_eq!(
+            world
+                .resource::<PhysicsDiagnostics>()
+                .unwrap()
+                .characters
+                .integrations,
+            90
+        );
     }
 
     #[test]
@@ -784,16 +1047,18 @@ mod tests {
         physics_bridge(&mut world);
 
         world.increment_tick();
-        {
-            let commands = world.resource_mut::<PhysicsCommands>().unwrap();
-            commands.jump_character(character, 5.0);
-            commands.move_character(character, Vec3::ZERO);
-        }
+        request_character_jump(&mut world, character, 5.0);
         physics_bridge(&mut world);
 
         let state = world.get::<CharacterControllerState>(character).unwrap();
         assert!(!state.grounded);
         assert!(state.vertical_velocity < 0.0);
+        assert!(
+            !world
+                .get::<CharacterIntent>(character)
+                .unwrap()
+                .jump_requested()
+        );
     }
 
     #[test]
@@ -1064,7 +1329,22 @@ mod tests {
         world.insert(entity, Collider::capsule_y(0.55, 0.35));
         world.insert(entity, CharacterController::default());
         world.insert(entity, CharacterControllerState::default());
+        world.insert(entity, CharacterIntent::default());
         entity
+    }
+
+    fn set_character_velocity(world: &mut World, entity: EntityId, velocity: Vec3) {
+        world
+            .get_mut::<CharacterIntent>(entity)
+            .unwrap()
+            .set_horizontal_velocity(velocity);
+    }
+
+    fn request_character_jump(world: &mut World, entity: EntityId, launch_speed: f32) {
+        world
+            .get_mut::<CharacterIntent>(entity)
+            .unwrap()
+            .request_jump(launch_speed);
     }
 
     fn spawn_static_box(world: &mut World, translation: Vec3, half_extents: Vec3) -> EntityId {
@@ -1072,6 +1352,22 @@ mod tests {
         world.insert(entity, Transform::from_translation(translation));
         world.insert(entity, RigidBody::static_body());
         world.insert(entity, Collider::cuboid(half_extents));
+        entity
+    }
+
+    fn spawn_dynamic_box(world: &mut World, translation: Vec3, half_extents: Vec3) -> EntityId {
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(translation));
+        world.insert(entity, RigidBody::dynamic());
+        world.insert(entity, Collider::cuboid(half_extents));
+        entity
+    }
+
+    fn spawn_static_sensor(world: &mut World, translation: Vec3, half_extents: Vec3) -> EntityId {
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(translation));
+        world.insert(entity, RigidBody::static_body());
+        world.insert(entity, Collider::cuboid(half_extents).sensor(true));
         entity
     }
 

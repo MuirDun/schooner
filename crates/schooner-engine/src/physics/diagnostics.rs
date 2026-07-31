@@ -51,15 +51,16 @@ pub struct PhysicsTransformSyncWorkload {
 pub struct PhysicsCommandWorkload {
     pub total: u64,
     pub teleports: u64,
-    pub character_moves: u64,
-    pub character_jumps: u64,
 }
 
 /// Character-controller integrations and their hosted KCC queries.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicsCharacterWorkload {
+    pub controllers: u64,
     pub integrations: u64,
     pub kcc_queries: u64,
+    pub jump_requests: u64,
+    pub jumps_applied: u64,
 }
 
 /// Rapier solver volume accumulated across fixed steps.
@@ -127,15 +128,16 @@ impl PhysicsCommandWorkload {
     fn merge(&mut self, delta: Self) {
         add(&mut self.total, delta.total);
         add(&mut self.teleports, delta.teleports);
-        add(&mut self.character_moves, delta.character_moves);
-        add(&mut self.character_jumps, delta.character_jumps);
     }
 }
 
 impl PhysicsCharacterWorkload {
     fn merge(&mut self, delta: Self) {
+        add(&mut self.controllers, delta.controllers);
         add(&mut self.integrations, delta.integrations);
         add(&mut self.kcc_queries, delta.kcc_queries);
+        add(&mut self.jump_requests, delta.jump_requests);
+        add(&mut self.jumps_applied, delta.jumps_applied);
     }
 }
 

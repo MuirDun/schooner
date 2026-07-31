@@ -23,8 +23,8 @@ pub enum CharacterLength {
 /// Declares that a kinematic body is moved through character-controller
 /// collision resolution rather than by directly authoring its next pose.
 ///
-/// Movement intent and solved state land in the following 2.F Steps. This
-/// component establishes the stable authoring surface and keeps backend
+/// [`CharacterIntent`] carries control input and [`CharacterControllerState`]
+/// carries the latest solved outcome. This component keeps backend
 /// configuration out of game code.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CharacterController {
@@ -48,6 +48,64 @@ impl Default for CharacterController {
             max_slope_climb_angle: std::f32::consts::FRAC_PI_4,
             min_slope_slide_angle: std::f32::consts::FRAC_PI_4,
             snap_to_ground: Some(CharacterLength::Relative(0.2)),
+        }
+    }
+}
+
+/// Persistent control intent consumed by a character controller.
+///
+/// Horizontal velocity is held across fixed steps until a control-sampling
+/// system replaces it. Jump is a latched one-shot request: it survives frames
+/// with no fixed step and is cleared by the physics bridge after one actual
+/// character integration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharacterIntent {
+    horizontal_velocity: Vec3,
+    jump_speed: Option<f32>,
+}
+
+impl CharacterIntent {
+    /// Current world-space horizontal velocity in metres per second.
+    pub fn horizontal_velocity(&self) -> Vec3 {
+        self.horizontal_velocity
+    }
+
+    /// Replace held movement intent. Vertical input is ignored because gravity
+    /// and jumping own that axis.
+    pub fn set_horizontal_velocity(&mut self, velocity: Vec3) {
+        self.horizontal_velocity = Vec3::new(velocity.x, 0.0, velocity.z);
+    }
+
+    /// Latch one jump request. A later write before integration replaces the
+    /// launch speed without creating another integration.
+    pub fn request_jump(&mut self, launch_speed: f32) {
+        self.jump_speed = Some(launch_speed.max(0.0));
+    }
+
+    /// Whether a jump request is waiting for a fixed-step integration.
+    pub fn jump_requested(&self) -> bool {
+        self.jump_speed.is_some()
+    }
+
+    /// Clear held movement and any unconsumed one-shot request.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(crate) fn pending_jump_speed(&self) -> Option<f32> {
+        self.jump_speed
+    }
+
+    pub(crate) fn consume_jump(&mut self) {
+        self.jump_speed = None;
+    }
+}
+
+impl Default for CharacterIntent {
+    fn default() -> Self {
+        Self {
+            horizontal_velocity: Vec3::ZERO,
+            jump_speed: None,
         }
     }
 }
@@ -256,6 +314,34 @@ mod tests {
                 vertical_velocity: 0.0,
             }
         );
+    }
+
+    #[test]
+    fn character_intent_holds_one_horizontal_value_and_one_jump_latch() {
+        let mut intent = CharacterIntent::default();
+
+        intent.set_horizontal_velocity(Vec3::new(3.0, 99.0, -4.0));
+        intent.set_horizontal_velocity(Vec3::new(-2.0, -99.0, 5.0));
+        intent.request_jump(-3.0);
+
+        assert_eq!(intent.horizontal_velocity(), Vec3::new(-2.0, 0.0, 5.0));
+        assert_eq!(intent.pending_jump_speed(), Some(0.0));
+        assert!(intent.jump_requested());
+
+        intent.consume_jump();
+        assert!(!intent.jump_requested());
+        assert_eq!(intent.horizontal_velocity(), Vec3::new(-2.0, 0.0, 5.0));
+    }
+
+    #[test]
+    fn clearing_character_intent_removes_held_and_latched_input() {
+        let mut intent = CharacterIntent::default();
+        intent.set_horizontal_velocity(Vec3::X);
+        intent.request_jump(5.0);
+
+        intent.clear();
+
+        assert_eq!(intent, CharacterIntent::default());
     }
 
     #[test]

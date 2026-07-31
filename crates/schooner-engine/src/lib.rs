@@ -42,11 +42,11 @@ pub use input::{Input, KeyCode, MouseButton};
 pub use logging::LogConfig;
 pub use material::{BlendMode, Material};
 pub use physics::{
-    BodyKind, CharacterController, CharacterControllerState, CharacterLength, Collider,
-    ColliderShape, Contact, ContactEvents, PhysicsCharacterWorkload, PhysicsCommandWorkload,
-    PhysicsCommands, PhysicsDiagnostics, PhysicsEventWorkload, PhysicsLifecycleWorkload,
-    PhysicsMaterial, PhysicsSolveWorkload, PhysicsTransformSyncWorkload, PhysicsWritebackWorkload,
-    RigidBody, TeleportVelocity, TriggerEnter, TriggerExit,
+    BodyKind, CharacterController, CharacterControllerState, CharacterIntent, CharacterLength,
+    Collider, ColliderShape, Contact, ContactEvents, PhysicsCharacterWorkload,
+    PhysicsCommandWorkload, PhysicsCommands, PhysicsDiagnostics, PhysicsEventWorkload,
+    PhysicsLifecycleWorkload, PhysicsMaterial, PhysicsSolveWorkload, PhysicsTransformSyncWorkload,
+    PhysicsWritebackWorkload, RigidBody, TeleportVelocity, TriggerEnter, TriggerExit,
 };
 #[cfg(feature = "dev-tools")]
 pub use plugin::EngineDebugPlugins;

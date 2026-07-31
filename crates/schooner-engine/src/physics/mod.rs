@@ -22,8 +22,8 @@ pub(crate) use bridge::{physics_bridge, physics_reconcile_lifecycle};
 pub(crate) use command::PhysicsCommand;
 pub use command::{PhysicsCommands, TeleportVelocity};
 pub use component::{
-    BodyKind, CharacterController, CharacterControllerState, CharacterLength, Collider,
-    ColliderShape, ContactEvents, PhysicsMaterial, RigidBody,
+    BodyKind, CharacterController, CharacterControllerState, CharacterIntent, CharacterLength,
+    Collider, ColliderShape, ContactEvents, PhysicsMaterial, RigidBody,
 };
 pub(crate) use diagnostics::reset_physics_diagnostics;
 pub use diagnostics::{
